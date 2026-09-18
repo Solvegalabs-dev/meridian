@@ -124,6 +124,7 @@ export async function generateMovementWindows(
   macroEvents: object[]
 ): Promise<MovementWindow[]> {
   const anthropic = getAnthropicClient();
+  console.log('[ff088] domain:', domain, 'using fishing windows:', domain === 'fishing')
   const prompt = domain === 'fishing'
     ? FISHING_MOVEMENT_PROMPT(patternMatchYear, signalBrief, macroEvents)
     : MOVEMENT_PROMPT(domain, patternMatchYear, signalBrief, macroEvents);
