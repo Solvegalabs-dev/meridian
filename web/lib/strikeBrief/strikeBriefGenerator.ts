@@ -10,9 +10,7 @@ const FISHING_AGENT_EXCLUDE = ['SALMON', 'AQUATIC', 'FISHING', 'BONNEVILLE', 'MC
 
 function isFishingTerm(s: string): boolean {
   const upper = s.toUpperCase()
-  const result = FISHING_AGENT_EXCLUDE.some(term => upper.includes(term))
-  console.log('[fishing-filter]', s, '->', result)
-  return result
+  return FISHING_AGENT_EXCLUDE.some(term => upper.includes(term))
 }
 
 // --- Time window resolution (Mountain Time) ---
@@ -402,13 +400,9 @@ export async function generateStrikeBrief(
       condition_delta: parsed.condition_delta ?? null,
       pattern_match_year: context.patternMatchYear,
       confidence_tier: parsed.confidence_tier ?? context.confidenceTier,
-      agent_hits: (() => {
-        const filtered = context.domain === 'fishing'
-          ? context.agentHits
-          : context.agentHits.filter(h => !isFishingTerm(h))
-        console.log('[agent-filter] raw hits:', context.agentHits.length, 'filtered:', filtered.length)
-        return filtered
-      })(),
+      agent_hits: context.domain === 'fishing'
+        ? context.agentHits
+        : context.agentHits.filter(h => !isFishingTerm(h)),
     })
     .select()
     .single();

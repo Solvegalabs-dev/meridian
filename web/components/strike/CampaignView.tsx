@@ -2,11 +2,12 @@
 
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
 
 type UnitProfile = {
   id?: string
   objective_id?: string
-  geo?: { unit?: string; state?: string } | null
+  geo?: { unit?: string; state?: string; water_body?: string } | null
   timing?: { trip_start?: string; trip_end?: string } | null
   agent_build_status?: string
 } | null
@@ -90,11 +91,14 @@ function formatDates(timing: UnitTiming): string {
   return end ? `${start} – ${end}` : start
 }
 
-function UnitRow({ unit }: { unit: EnrichedUnit }) {
+function UnitRow({ unit, isFishing }: { unit: EnrichedUnit; isFishing?: boolean }) {
   const router = useRouter()
   const geo = unit.profile?.geo
-  const unitName = geo?.unit ? `Unit ${geo.unit}${geo.state ? `, ${geo.state}` : ''}` : 'Unit TBD'
+  const unitName = isFishing
+    ? (geo?.water_body ?? 'Water TBD')
+    : (geo?.unit ? `Unit ${geo.unit}${geo.state ? `, ${geo.state}` : ''}` : 'Unit TBD')
   const dates = formatDates(unit.profile?.timing)
+  const dateLabel = isFishing && dates ? `Season window: ${dates}` : dates
   const isMissed = unit.status === 'missed' || unit.role?.toUpperCase() === 'MISSED'
 
   return (
@@ -109,7 +113,7 @@ function UnitRow({ unit }: { unit: EnrichedUnit }) {
             {formatRole(unit.role)}
           </span>
         </div>
-        {dates && <div className="text-xs text-slate-400 mt-0.5">{dates}</div>}
+        {dateLabel && <div className="text-xs text-slate-400 mt-0.5">{dateLabel}</div>}
         {isMissed && unit.missed_reason && (
           <div className="text-xs text-slate-500 mt-0.5 italic">{unit.missed_reason}</div>
         )}
@@ -169,13 +173,14 @@ export default function CampaignView({ campaigns }: { campaigns: Campaign[] }) {
           </div>
         ) : (
           campaigns.map(campaign => {
+            const isFishing = isFishingTaxonomyKey(campaign.taxonomy_key ?? '')
             const pivotUnits = campaign.units.filter(u => u.pivot_recommended)
             return (
               <div key={campaign.id}>
                 {/* Campaign header */}
                 <div className="flex items-center gap-2 px-4 mb-2">
                   <div className="font-semibold text-white text-base flex-1 min-w-0 truncate">
-                    {campaign.name}
+                    {isFishing && <span className="mr-1">🎣</span>}{campaign.name}
                   </div>
                   {campaign.taxonomy_key && (
                     <span className="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded font-mono flex-shrink-0">
@@ -195,7 +200,7 @@ export default function CampaignView({ campaigns }: { campaigns: Campaign[] }) {
                   {campaign.units.length === 0 ? (
                     <div className="px-4 py-4 text-slate-500 text-sm">No units in this campaign.</div>
                   ) : (
-                    campaign.units.map(unit => <UnitRow key={unit.id} unit={unit} />)
+                    campaign.units.map(unit => <UnitRow key={unit.id} unit={unit} isFishing={isFishing} />)
                   )}
                 </div>
               </div>

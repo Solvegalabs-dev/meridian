@@ -7,6 +7,63 @@ export type MovementWindow = {
   confidence_tier: 'T1' | 'T2' | 'T3' | 'T4';
 };
 
+const FISHING_MOVEMENT_PROMPT = (
+  patternMatchYear: number | null,
+  signalBrief: string,
+  macroEvents: object[]
+) => `You are Meridian's feed window prediction engine for the fishing domain.
+
+Generate time-of-day fish feeding activity windows for today. Apply these rules:
+
+FEED WINDOW LOGIC:
+- Pre-dawn (0430): night-feeding fish transitioning to daytime holds; surface activity minimal
+- First light (0600): surface hatches begin; trout and salmon most active near surface
+- Morning (0800): primary hatch window; peak surface feeding for most freshwater species
+- Midday (1100): solar warming peaks; dissolved oxygen loss at surface; fish retreat to depth
+- Afternoon (1500): water cools slightly; subsurface and riffle feeding resumes
+- Evening (1700): evening hatch peak; second major feeding window of day
+- Last light (1900): final surface push before dark; fish active in riffles and seams
+
+WATER TEMPERATURE ADJUSTMENT:
+- Cold water (<45°F): compress activity to midday warmth window; fish sluggish pre-dawn
+- Optimal range (50-68°F): full distribution applies
+- Warm water (>72°F): reduce midday probability sharply (<15%); push to early morning and evening only
+
+BAROMETRIC PRESSURE ADJUSTMENT:
+- Falling pressure: reduce all feeding probabilities by 10-20%; fish sense pressure drops
+- Rising pressure: increase morning and evening windows; fish feed aggressively
+- Stable pressure: normal distribution applies
+
+FLOW RATE ADJUSTMENT:
+- High flow: fish holding in slower water; feeding windows compress to eddy and seam locations
+- Normal flow: full distribution applies
+
+PATTERN MATCH ADJUSTMENT:
+${patternMatchYear ? `- Conditions match ${patternMatchYear}. Use that year's run timing and feeding patterns as baseline.` : '- No pattern match — use standard feed window model.'}
+
+SIGNAL BRIEF (current conditions):
+${signalBrief}
+
+MACRO EVENTS (recent domain events):
+${JSON.stringify(macroEvents.slice(0, 5), null, 2)}
+
+CONFIDENCE TIERS:
+- T1: Only when signal brief contains confirmed water temperature and flow data
+- T2: When pattern match year provides confirmed feeding activity data
+- T3: When feed window model applied without current water confirmation
+- T4: When insufficient data — modeled estimate only
+
+Output a JSON array of exactly 7 feed windows. Use bracket extraction — no markdown fencing.
+[
+  {"time": "0430", "probability": 0.30, "reason": "one sentence", "confidence_tier": "T3"},
+  {"time": "0600", "probability": 0.82, "reason": "one sentence", "confidence_tier": "T3"},
+  {"time": "0800", "probability": 0.90, "reason": "one sentence", "confidence_tier": "T3"},
+  {"time": "1100", "probability": 0.25, "reason": "one sentence", "confidence_tier": "T3"},
+  {"time": "1500", "probability": 0.55, "reason": "one sentence", "confidence_tier": "T3"},
+  {"time": "1700", "probability": 0.88, "reason": "one sentence", "confidence_tier": "T3"},
+  {"time": "1900", "probability": 0.72, "reason": "one sentence", "confidence_tier": "T3"}
+]`;
+
 const MOVEMENT_PROMPT = (
   domain: string,
   patternMatchYear: number | null,
@@ -67,12 +124,17 @@ export async function generateMovementWindows(
   macroEvents: object[]
 ): Promise<MovementWindow[]> {
   const anthropic = getAnthropicClient();
+  console.log('[ff088] domain:', domain, 'using fishing windows:', domain === 'fishing')
+  const prompt = domain === 'fishing'
+    ? FISHING_MOVEMENT_PROMPT(patternMatchYear, signalBrief, macroEvents)
+    : MOVEMENT_PROMPT(domain, patternMatchYear, signalBrief, macroEvents);
+
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 600,
     messages: [{
       role: 'user',
-      content: MOVEMENT_PROMPT(domain, patternMatchYear, signalBrief, macroEvents),
+      content: prompt,
     }],
   });
 
