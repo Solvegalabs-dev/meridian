@@ -24,8 +24,17 @@ interface ObjProps {
   category: string
 }
 
+export interface HuntLocation {
+  lat: number | null
+  lon: number | null
+  nws_grid_office: string | null
+  nws_grid_x: number | null
+  nws_grid_y: number | null
+}
+
 interface Props {
   obj: ObjProps
+  location?: HuntLocation | null
   tier: string
   accountType: string | null
   initialSources: WatchSource[]
@@ -35,7 +44,7 @@ interface Props {
 
 type DrawerView = 'menu' | 'edit' | 'watch'
 
-export default function ObjectiveDetailClient({ obj, tier, accountType, initialSources, unseenAlertCount = 0, smsAlertsEnabled = false }: Props) {
+export default function ObjectiveDetailClient({ obj, location = null, tier, accountType, initialSources, unseenAlertCount = 0, smsAlertsEnabled = false }: Props) {
   const [closeModalOpen, setCloseModalOpen]     = useState(false)
   const [abandonModalOpen, setAbandonModalOpen] = useState(false)
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false)
@@ -72,6 +81,13 @@ export default function ObjectiveDetailClient({ obj, tier, accountType, initialS
   const [listingPrice, setListingPrice]     = useState((ctx.listing_price as string | undefined) ?? '')
   const [targetPrice, setTargetPrice]       = useState((ctx.target_price as string | undefined) ?? '')
   const [floorPrice, setFloorPrice]         = useState((ctx.floor_price as string | undefined) ?? '')
+
+  // Hunt location state (FF-074) — only shown when an objective_profiles row exists
+  const [huntLat, setHuntLat]               = useState(location?.lat?.toString() ?? '')
+  const [huntLon, setHuntLon]               = useState(location?.lon?.toString() ?? '')
+  const [locationSaving, setLocationSaving] = useState(false)
+  const [locationError, setLocationError]   = useState<string | null>(null)
+  const [locationConfirm, setLocationConfirm] = useState<string | null>(null)
 
   // Sync targetDate whenever the prop updates (router.refresh() replaces props
   // without remounting, so useState initializer runs only once on mount).
@@ -169,6 +185,37 @@ export default function ObjectiveDetailClient({ obj, tier, accountType, initialS
     }
 
     closeDrawer()
+    router.refresh()
+  }
+
+  async function handleLocationSave() {
+    setLocationError(null)
+    setLocationConfirm(null)
+
+    const lat = Number(huntLat)
+    const lon = Number(huntLon)
+    if (!huntLat.trim() || !huntLon.trim() || !Number.isFinite(lat) || !Number.isFinite(lon)
+        || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      setLocationError('Enter decimal coordinates, e.g. 40.948 and -110.668.')
+      return
+    }
+
+    setLocationSaving(true)
+    const res = await fetch(`/api/objectives/${obj.id}/location`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lon }),
+    })
+    setLocationSaving(false)
+
+    const d = await res.json() as { error?: string; location?: HuntLocation }
+    if (!res.ok || !d.location) {
+      setLocationError(d.error ?? 'Save failed — please try again.')
+      return
+    }
+
+    const loc = d.location
+    setLocationConfirm(`Weather targeting set — ${loc.nws_grid_office} grid ${loc.nws_grid_x},${loc.nws_grid_y}`)
     router.refresh()
   }
 
@@ -504,6 +551,68 @@ export default function ObjectiveDetailClient({ obj, tier, accountType, initialS
                         style={{ background: 'var(--ov-navy)', border: '1px solid var(--ov-border-md)', color: 'var(--ov-text-hi)' }}
                       />
                     </div>
+                  </>
+                )}
+
+                {location && (
+                  <>
+                    <div style={{ borderTop: '1px solid var(--ov-border)', paddingTop: '12px' }}>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--ov-text-dim)' }}>Hunt Location</p>
+                      {location.nws_grid_office && location.nws_grid_x != null && location.nws_grid_y != null && (
+                        <p className="text-[11px]" style={{ color: 'var(--ov-text-dim)' }}>
+                          Current weather grid: {location.nws_grid_office} {location.nws_grid_x},{location.nws_grid_y}
+                        </p>
+                      )}
+                    </div>
+                    {locationError && (
+                      <div className="p-3 rounded-lg text-[12px]" style={{ background: 'rgba(200,90,84,.12)', color: '#C85A54' }}>
+                        {locationError}
+                      </div>
+                    )}
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <label className={labelCls} style={{ color: 'var(--ov-text-dim)' }}>Latitude</label>
+                        <input
+                          type="number"
+                          step="any"
+                          inputMode="decimal"
+                          value={huntLat}
+                          onChange={e => { setHuntLat(e.target.value); setLocationConfirm(null) }}
+                          placeholder="40.948"
+                          className={inputCls}
+                          style={{ background: 'var(--ov-navy)', border: '1px solid var(--ov-border-md)', color: 'var(--ov-text-hi)' }}
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className={labelCls} style={{ color: 'var(--ov-text-dim)' }}>Longitude</label>
+                        <input
+                          type="number"
+                          step="any"
+                          inputMode="decimal"
+                          value={huntLon}
+                          onChange={e => { setHuntLon(e.target.value); setLocationConfirm(null) }}
+                          placeholder="-110.668"
+                          className={inputCls}
+                          style={{ background: 'var(--ov-navy)', border: '1px solid var(--ov-border-md)', color: 'var(--ov-text-hi)' }}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[11px] -mt-2" style={{ color: 'var(--ov-text-dim)' }}>
+                      Find your coordinates at forecast.weather.gov — click your hunt area and copy lat/lon from the URL
+                    </p>
+                    <button
+                      onClick={handleLocationSave}
+                      disabled={locationSaving}
+                      className="w-full py-2 rounded-lg text-[13px] font-medium transition-colors disabled:opacity-40"
+                      style={{ border: '1px solid var(--gold)', color: 'var(--gold)' }}
+                    >
+                      {locationSaving ? 'Resolving weather grid...' : 'Save location'}
+                    </button>
+                    {locationConfirm && (
+                      <div className="p-3 rounded-lg text-[12px]" style={{ background: 'rgba(76,175,125,.12)', color: '#4CAF7D' }}>
+                        {locationConfirm}
+                      </div>
+                    )}
                   </>
                 )}
 

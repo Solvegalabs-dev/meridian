@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
 import { ChevronLeft } from 'lucide-react'
@@ -46,6 +46,13 @@ export default async function ObjectiveDetailPage({ params }: { params: { id: st
     supabase.from('watch_alerts').select('id', { count: 'exact', head: true }).eq('user_id', user.id).eq('objective_id', obj.id).is('user_seen_at', null),
     supabase.from('signal_class_accuracy').select('signal_class, outcomes_scored, accuracy_avg, weight_modifier').eq('user_id', user.id).eq('objective_domain', obj.category as string).order('outcomes_scored', { ascending: false }),
   ])
+
+  // FF-074: hunt location lives on objective_profiles (service client — ownership verified above)
+  const { data: locationProfile } = await createServiceClient()
+    .from('objective_profiles')
+    .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y')
+    .eq('objective_id', obj.id)
+    .maybeSingle()
 
   const hasCalendar = (calConnections?.length ?? 0) > 0
 
@@ -119,6 +126,7 @@ export default async function ObjectiveDetailPage({ params }: { params: { id: st
             tier={(profile as { tier?: string; account_type?: string } | null)?.tier ?? 'trial'}
             accountType={(profile as { tier?: string; account_type?: string } | null)?.account_type ?? null}
             smsAlertsEnabled={(profile as { sms_alerts_enabled?: boolean } | null)?.sms_alerts_enabled ?? false}
+            location={locationProfile as import('./ObjectiveDetailClient').HuntLocation | null}
             initialSources={(watchSources ?? []) as import('@/components/watchlist/WatchSourcesPanel').WatchSource[]}
             unseenAlertCount={unseenAlertCount ?? 0}
           />
