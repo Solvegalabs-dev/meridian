@@ -135,18 +135,30 @@ export async function runAgent(
     nws_grid_office?: string | null
     nws_grid_x?: number | null
     nws_grid_y?: number | null
+    state?: string | null
+    hunt_unit_id?: string | null
+    usgs_gauge_ids?: string[] | null
+    snotel_station_ids?: string[] | null
   } | null = null;
   if (geoContext.objectiveId) {
     const { data: gp } = await supabase
       .from('objective_profiles')
-      .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y')
-      .eq('id', geoContext.objectiveId)
+      .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y, state, hunt_unit_id, usgs_gauge_ids, snotel_station_ids')
+      .eq('objective_id', geoContext.objectiveId)
       .maybeSingle();
     geoProfile = gp;
   }
 
-  // 3c. Build URL with geo substitution — NWS fallback is Elizabeth Pass (OBJ-17)
-  const url = buildUrl(agent.source_url_template as string, geoContext)
+  // 3c. Build URL with geo substitution — NWS fallback is Elizabeth Pass (OBJ-17).
+  // FF-089 geo vars are substituted before buildUrl(), which would otherwise
+  // fill {state} from geoContext.state ?? 'UT' and ignore the resolved profile state.
+  const template = (agent.source_url_template as string)
+    .replace(/\{usgs_gauge_ids\}/g,    geoProfile?.usgs_gauge_ids?.join(',') ?? '')
+    .replace(/\{usgs_gauge_id\}/g,     geoProfile?.usgs_gauge_ids?.[0] ?? '')
+    .replace(/\{snotel_station_id\}/g, geoProfile?.snotel_station_ids?.[0] ?? '')
+    .replace(/\{state\}/g,             geoProfile?.state ?? geoContext.state ?? 'UT')
+    .replace(/\{hunt_unit_id\}/g,      geoProfile?.hunt_unit_id ?? '');
+  const url = buildUrl(template, geoContext)
     .replace('{nws_grid_office}', geoProfile?.nws_grid_office ?? 'GJT')
     .replace('{nws_grid_x}',     String(geoProfile?.nws_grid_x ?? 69))
     .replace('{nws_grid_y}',     String(geoProfile?.nws_grid_y ?? 170))

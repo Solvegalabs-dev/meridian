@@ -2,9 +2,10 @@
 // Core: intake contract is universal. org_source is the cohort partition key.
 // Third-vertical test: BaseMaps, GoHunt, and FishBrain all POST to this same route — YES
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 import { createServiceClient } from '@/lib/supabase/server'
 import { resolveAgentBundle } from '@/lib/swarm/objectiveRouter'
-import { resolveNWSGridpoint } from '@/lib/geo/nwsGridpoint'
+import { resolveFullGeography } from '@/lib/geo/locationResolver'
 
 export const dynamic = 'force-dynamic'
 
@@ -99,20 +100,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: insertError.message }, { status: 500 })
   }
 
-  // Resolve NWS gridpoint if lat/lon provided — non-blocking, best-effort
+  // Resolve full geography (FF-089) if lat/lon provided — non-blocking, best-effort.
+  // waitUntil keeps the function alive after the response so the ~8s resolve completes.
   if (lat != null && lon != null && objProfile?.id) {
-    void resolveNWSGridpoint(lat, lon).then(async (grid) => {
-      if (!grid) return
-      await supabase
+    waitUntil(resolveFullGeography(lat, lon).then(async (geo) => {
+      if (!geo) return
+      const { error } = await supabase
         .from('objective_profiles')
-        .update({
-          nws_grid_office: grid.gridOffice,
-          nws_grid_x: grid.gridX,
-          nws_grid_y: grid.gridY,
-          nws_zone_id: grid.zoneId,
-        })
+        .update(geo)
         .eq('id', objProfile.id)
-    }).catch(e => console.error('[objectives/create] gridpoint update failed:', e))
+      if (error) console.error('[objectives/create] geography update failed:', error.message)
+    }).catch(e => console.error('[objectives/create] geography update failed:', e)))
   }
 
   return NextResponse.json(
