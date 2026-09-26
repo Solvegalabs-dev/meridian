@@ -11,13 +11,13 @@ export type FullGeography = {
   nws_zone_id: string | null
   state: string | null              // 2-letter code, from the NWS county zone (e.g. UTC043 → UT)
   county: string | null             // county name, from the NWS county zone
-  usgs_gauge_ids: string[]          // active stream gauges within 25 mi, nearest first
+  usgs_gauge_ids: string[]          // active stream gauges within 50 mi, nearest first
   snotel_station_ids: string[]      // active SNOTEL station IDs within 50 mi, nearest first
   elevation_ft_avg: number | null   // USGS 3DEP point elevation, NWS grid elevation fallback
 }
 
 const NWS_HEADERS = { 'User-Agent': 'Meridian/1.0 (ghostnet5x5@gmail.com)' }
-const GAUGE_RADIUS_MI = 25
+const GAUGE_RADIUS_MI = 50
 const SNOTEL_RADIUS_MI = 50
 const MAX_STATIONS = 5
 
@@ -44,7 +44,8 @@ async function resolveCountyName(countyZoneId: string): Promise<string | null> {
   return data?.properties?.name ?? null
 }
 
-// USGS site service has no radius parameter — query a bounding box, then filter by distance.
+// USGS site service has no radius parameter (lat/lng/radius → HTTP 400 "unrecognized keyword: lat"),
+// so query a bounding box, then filter by distance.
 async function resolveUSGSGauges(lat: number, lon: number): Promise<string[]> {
   try {
     const dLat = GAUGE_RADIUS_MI / 69
@@ -52,18 +53,19 @@ async function resolveUSGSGauges(lat: number, lon: number): Promise<string[]> {
     const bBox = [lon - dLon, lat - dLat, lon + dLon, lat + dLat].map(n => n.toFixed(4)).join(',')
     const res = await fetch(
       `https://waterservices.usgs.gov/nwis/site/?format=rdb&bBox=${bBox}&siteType=ST&siteStatus=active`,
-      { signal: AbortSignal.timeout(10000) })
+      { signal: AbortSignal.timeout(20000) })
     if (!res.ok) return []
 
-    // RDB: '#' comments, a header row, a column-width row, then tab-separated data
-    const rows = (await res.text()).split('\n').filter(l => l && !l.startsWith('#'))
+    // RDB: '#' comments, a header row, a column-format row (5s, 15s, 16d…), then tab-separated data
+    const rows = (await res.text()).split('\n').map(l => l.replace(/\r$/, '')).filter(l => l && !l.startsWith('#'))
     const header = rows[0]?.split('\t') ?? []
     const iSite = header.indexOf('site_no')
     const iLat = header.indexOf('dec_lat_va')
     const iLon = header.indexOf('dec_long_va')
     if (iSite < 0 || iLat < 0 || iLon < 0) return []
 
-    return rows.slice(2)
+    return rows.slice(1)
+      .filter(r => !r.split('\t').every(c => /^\d+[sdn]$/.test(c)))
       .map(r => r.split('\t'))
       .map(c => ({ id: c[iSite], d: distanceMi(lat, lon, Number(c[iLat]), Number(c[iLon])) }))
       .filter(g => g.id && Number.isFinite(g.d) && g.d <= GAUGE_RADIUS_MI)
