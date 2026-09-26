@@ -1,6 +1,6 @@
 // PATCH /api/objectives/[id]/location — FF-074 hunt location entry
 // Sets lat/lon on objective_profiles and resolves the full geography (FF-089):
-// NWS gridpoint, state/county, nearby USGS gauges + SNOTEL stations, elevation.
+// NWS gridpoint, state/county, nearby USGS gauges + SNOTEL stations, elevation, hunt unit.
 // All geo fields are rewritten together so nothing from a previous location lingers.
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
@@ -58,7 +58,7 @@ export async function PATCH(
       ...geo,
     })
     .eq('objective_id', params.id)
-    .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y, nws_zone_id, state, county, usgs_gauge_ids, snotel_station_ids, elevation_ft_avg')
+    .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y, nws_zone_id, state, county, usgs_gauge_ids, snotel_station_ids, elevation_ft_avg, hunt_unit_id')
     .maybeSingle()
 
   if (error) {
