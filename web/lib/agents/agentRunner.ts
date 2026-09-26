@@ -61,12 +61,17 @@ export async function runAgent(
     };
   }
 
-  // 2. Check cadence — skip if last hit was within cadence window
-  const { data: lastRun } = await supabase
+  // 2. Check cadence — skip if last hit was within cadence window.
+  // Scoped per objective: the swarm runs one agent once per assigned objective (FF-089).
+  let lastRunQuery = supabase
     .from('agent_run_log')
     .select('ran_at')
     .eq('agent_key', agentKey)
-    .eq('result', 'hit')
+    .eq('result', 'hit');
+  if (geoContext.objectiveId) {
+    lastRunQuery = lastRunQuery.eq('geo_context->>objectiveId', geoContext.objectiveId);
+  }
+  const { data: lastRun } = await lastRunQuery
     .order('ran_at', { ascending: false })
     .limit(1)
     .maybeSingle();
