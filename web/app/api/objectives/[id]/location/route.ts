@@ -1,9 +1,10 @@
 // PATCH /api/objectives/[id]/location — FF-074 hunt location entry
-// Sets lat/lon on objective_profiles and resolves the NWS gridpoint so weather
-// agents target the user's actual hunt area instead of the GJT fallback.
+// Sets lat/lon on objective_profiles and resolves the full geography (FF-089):
+// NWS gridpoint, state/county, nearby USGS gauges + SNOTEL stations, elevation.
+// All geo fields are rewritten together so nothing from a previous location lingers.
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
-import { resolveNWSGridpoint } from '@/lib/geo/nwsGridpoint'
+import { resolveFullGeography } from '@/lib/geo/locationResolver'
 
 export const dynamic = 'force-dynamic'
 
@@ -38,9 +39,10 @@ export async function PATCH(
     .maybeSingle()
   if (!obj) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  // Resolve before writing so lat/lon and gridpoint never disagree
-  const grid = await resolveNWSGridpoint(lat, lon)
-  if (!grid) {
+  // Resolve before writing so lat/lon and gridpoint never disagree.
+  // The NWS grid is required (weather targeting); the other sources are best-effort.
+  const geo = await resolveFullGeography(lat, lon)
+  if (!geo?.nws_grid_office) {
     return NextResponse.json(
       { error: 'Could not resolve an NWS forecast grid for those coordinates. Check they are inside the US and try again.' },
       { status: 422 }
@@ -53,13 +55,10 @@ export async function PATCH(
     .update({
       lat,
       lon,
-      nws_grid_office: grid.gridOffice,
-      nws_grid_x: grid.gridX,
-      nws_grid_y: grid.gridY,
-      nws_zone_id: grid.zoneId || null,
+      ...geo,
     })
     .eq('objective_id', params.id)
-    .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y')
+    .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y, nws_zone_id, state, county, usgs_gauge_ids, snotel_station_ids, elevation_ft_avg')
     .maybeSingle()
 
   if (error) {

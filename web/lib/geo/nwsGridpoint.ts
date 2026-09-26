@@ -7,6 +7,8 @@ export type NWSGridpoint = {
   gridX: number       // e.g. 69
   gridY: number       // e.g. 170
   zoneId: string      // e.g. 'UTZ017'
+  countyZoneId?: string // e.g. 'UTC043' — first two letters are the state code
+  gridDataUrl?: string  // raw gridpoint URL (carries grid elevation)
 }
 
 export async function resolveNWSGridpoint(lat: number, lon: number): Promise<NWSGridpoint | null> {
@@ -24,6 +26,8 @@ export async function resolveNWSGridpoint(lat: number, lon: number): Promise<NWS
         gridX?: number
         gridY?: number
         forecastZone?: string
+        county?: string
+        forecastGridData?: string
       }
     };
 
@@ -37,6 +41,8 @@ export async function resolveNWSGridpoint(lat: number, lon: number): Promise<NWS
       gridX: p.gridX,
       gridY: p.gridY,
       zoneId,
+      countyZoneId: p.county?.split('/').pop(),
+      gridDataUrl: p.forecastGridData,
     };
   } catch {
     return null;
