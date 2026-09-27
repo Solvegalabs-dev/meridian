@@ -2,15 +2,22 @@
 // Third-vertical test: GoHunt and FishBrain consume same router contract — YES
 import { createServiceClient } from '@/lib/supabase/server'
 
-// Key name extracted from data_source_url placeholder patterns like FRED_API_KEY, EIA_API_KEY
+// Key name extracted from data_source_url placeholder patterns like FRED_API_KEY, EIA_API_KEY.
+// Movebank uses HTTP Basic Auth (MOVEBANK_USERNAME + MOVEBANK_PASSWORD) rather than a
+// single _API_KEY-suffixed env var, so it's special-cased below (FF-093).
 function extractKeyName(dataSourceUrl: string | null): string | null {
   if (!dataSourceUrl) return null
   const match = dataSourceUrl.match(/([A-Z_]+_API_KEY)/)
-  return match ? match[1] : null
+  if (match) return match[1]
+  if (dataSourceUrl.toUpperCase().includes('MOVEBANK')) return 'MOVEBANK_USERNAME'
+  return null
 }
 
 function keyInEnv(keyName: string | null): boolean {
   if (!keyName) return true
+  if (keyName === 'MOVEBANK_USERNAME') {
+    return !!process.env.MOVEBANK_USERNAME && !!process.env.MOVEBANK_PASSWORD
+  }
   return !!process.env[keyName]
 }
 

@@ -2,6 +2,8 @@
 // Extracted from app/api/mip/brief/route.ts so server components can call it directly
 // instead of self-fetching the API route.
 import { createServiceClient } from '@/lib/supabase/server'
+import { applyCollarCalibration } from '@/lib/swarm/agents/outdoor/collarCalibration'
+import { extractCurrentConditions } from '@/lib/sweep/patternDeviation/currentConditionsExtractor'
 
 export type SignalChip = { label: string; value: string; status: 'ok' | 'warn' | 'critical' }
 export type TimeWindow = { window: string; action: string; priority: 'high' | 'medium' | 'low' }
@@ -87,14 +89,14 @@ export async function getMipBriefPayload(
 
   let { data: profile } = await supabase
     .from('objective_profiles')
-    .select('id, objective_id, assigned_agents')
+    .select('id, objective_id, assigned_agents, taxonomy_key, lat, lon, domain')
     .eq('id', objectiveId)
     .maybeSingle()
 
   if (!profile) {
     const { data: byArcId } = await supabase
       .from('objective_profiles')
-      .select('id, objective_id, assigned_agents')
+      .select('id, objective_id, assigned_agents, taxonomy_key, lat, lon, domain')
       .eq('objective_id', objectiveId)
       .maybeSingle()
     profile = byArcId
@@ -220,6 +222,31 @@ export async function getMipBriefPayload(
   if (sweep) sources.push('Meridian Arc Swarm')
   if ((terrainRows ?? []).length > 0) sources.push('USGS 3DEP Terrain')
   if (brief) sources.push('Strike Brief Engine')
+
+  // FF-093 — Movebank collar calibration (read-only; safe on every brief build)
+  if (profile?.taxonomy_key && profile.lat != null && profile.lon != null) {
+    const tempChip = signalChips.find(c => /temp/i.test(c.label))
+    const currentTempF = tempChip ? Number(tempChip.value) : undefined
+    const conditions = await extractCurrentConditions(String(profile.domain ?? 'elk_hunt'), null)
+
+    const calibration = await applyCollarCalibration(
+      profile.taxonomy_key as string,
+      Number(profile.lat),
+      Number(profile.lon),
+      new Date().getMonth() + 1,
+      {
+        droughtLevel: conditions.droughtLevel,
+        currentTempF: currentTempF != null && !isNaN(currentTempF) ? currentTempF : undefined,
+      }
+    )
+
+    if (calibration.pattern_found) {
+      for (const w of calibration.calibrated_windows) {
+        timeWindows.push({ window: w.window, action: w.action, priority: w.priority })
+      }
+      sources.push(calibration.data_credit)
+    }
+  }
 
   const derivedTier = confidencePct > 0
     ? confidenceTier(confidencePct)
