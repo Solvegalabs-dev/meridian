@@ -22,7 +22,8 @@ export interface Objective {
   outcome: string
   success_condition: string | null
   target_date: string | null
-  status: 'active' | 'paused' | 'closed' | 'achieved'
+  status: 'active' | 'paused' | 'closed' | 'achieved' | 'abandoned' | 'archived'
+  closure_type: 'closed' | 'abandoned' | null
   confidence: number
   confidence_prev: number | null
   sweep_frequency: 'weekly' | 'daily' | 'manual'

@@ -6,23 +6,6 @@ import { sendBulkSweepFailureAlert } from '@/lib/email/resend'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 600
 
-function getBaseUrl(): string {
-  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
-  return 'http://localhost:3000'
-}
-
-async function fireNextInvocation() {
-  const baseUrl = getBaseUrl()
-  const secret = process.env.CRON_SECRET?.trim() ?? ''
-  const controller = new AbortController()
-  setTimeout(() => controller.abort(), 3000) // 3s handles Vercel cold starts
-  await fetch(`${baseUrl}/api/admin/sweeps/process-account-queue`, {
-    method: 'GET',
-    headers: { 'X-Cron-Secret': secret },
-    signal: controller.signal,
-  }).catch(() => {}) // AbortError expected — next invocation runs independently
-}
 
 export async function GET(request: NextRequest) {
   const cronSecret = request.headers.get('x-cron-secret')
@@ -48,25 +31,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ processed: 0, message: 'Queue empty' })
   }
 
-  // Mark this account running immediately so the self-chain picks a DIFFERENT account.
+  // Mark this account running immediately to prevent double-processing on concurrent cron fires.
   await supabase
     .from('bulk_sweep_job_accounts')
     .update({ sweep_status: 'running', started_at: new Date().toISOString() })
     .eq('id', nextAccount.id)
     .eq('sweep_status', 'pending') // only if still pending (prevent double-processing)
-
-  // Check how many accounts are still pending across all jobs.
-  const { count: pendingCount } = await supabase
-    .from('bulk_sweep_job_accounts')
-    .select('id', { count: 'exact', head: true })
-    .eq('sweep_status', 'pending')
-
-  // Fire self-chain NOW — early in the function while we have full time budget.
-  // This is more reliable than firing at the end (avoids cold-start abort timing issues).
-  if ((pendingCount ?? 0) > 0) {
-    console.log(`[queue-worker] ${pendingCount} more pending — firing self-chain early`)
-    await fireNextInvocation()
-  }
 
   console.log(`[queue-worker] processing account=${nextAccount.id} job=${nextAccount.job_id} user=${nextAccount.user_id}`)
 

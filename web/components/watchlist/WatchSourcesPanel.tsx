@@ -321,7 +321,7 @@ export default function WatchSourcesPanel({
               <input
                 value={urlInput}
                 onChange={e => setUrlInput(e.target.value)}
-                placeholder="e.g. careers.alaskaair.com"
+                placeholder="e.g. https://careers.company.com"
                 className={inputCls}
                 style={inputStyle}
               />
@@ -332,7 +332,7 @@ export default function WatchSourcesPanel({
               <input
                 value={signalInput}
                 onChange={e => setSignalInput(e.target.value)}
-                placeholder="e.g. First Officer positions listed"
+                placeholder="e.g. specific job title, keyword, or announcement to watch for"
                 className={inputCls}
                 style={inputStyle}
               />

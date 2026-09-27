@@ -10,7 +10,7 @@ export default async function SettingsPage() {
   if (!user) redirect('/login')
 
   const [{ data: profile }, { data: connections }] = await Promise.all([
-    supabase.from('profiles').select('*, phone_number, sms_alerts_enabled').eq('id', user.id).single(),
+    supabase.from('profiles').select('*, phone_number, sms_alerts_enabled, voice_mode, voice_addon').eq('id', user.id).single(),
     supabase
       .from('calendar_connections')
       .select('id, provider, label, is_active, sync_status, last_synced_at, last_error, event_count, created_at, updated_at')

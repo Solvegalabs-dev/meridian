@@ -44,7 +44,7 @@ export default function InferencePanel({ inferenceBlock: ib, defaultExpanded = t
         <div className="flex items-center gap-2">
           <Eye size={14} style={{ color: 'var(--gold)' }} />
           <span className="text-[13px] font-semibold" style={{ color: 'var(--ov-text-hi)' }}>
-            What this implies
+            What this Means
           </span>
         </div>
         <span className="text-[11px]" style={{ color: 'var(--ov-text-dim)' }}>
@@ -66,7 +66,7 @@ export default function InferencePanel({ inferenceBlock: ib, defaultExpanded = t
             className="text-[9px] font-semibold uppercase tracking-widest mb-1"
             style={{ color: 'var(--gold)' }}
           >
-            Meridian sees this
+            Meridian Arc Sees This
           </p>
           <p className="text-[13px] leading-relaxed" style={{ color: 'var(--ov-text-hi)' }}>
             {ib.user_blind_spot}
@@ -99,7 +99,7 @@ export default function InferencePanel({ inferenceBlock: ib, defaultExpanded = t
                   className="text-[10px] font-semibold uppercase tracking-wide mb-0.5"
                   style={{ color: gateIsUrgent ? 'var(--ov-amber)' : 'var(--blue-mid)' }}
                 >
-                  Decision gate{decisionDays !== null ? ` · ${decisionDays}d` : ''}
+                  Decision gate
                 </p>
                 <p className="text-[12px] leading-relaxed" style={{ color: 'var(--ov-text-mid)' }}>
                   {ib.decision_gate.description}
@@ -215,12 +215,19 @@ export default function InferencePanel({ inferenceBlock: ib, defaultExpanded = t
             </div>
           )}
 
-          {/* Absence signal */}
+          {/* Absence signal — "The Bottom Line": forward-looking synthesis, most actionable content on this tab */}
+          {/* DO NOT string-replace stored AI output — only template variables */}
           {ib.absence_signal.is_meaningful && ib.absence_signal.description && (
             <div className="px-4 py-3">
               <p
-                className="text-[12px] leading-relaxed italic"
-                style={{ color: 'var(--ov-text-dim)' }}
+                className="text-[10px] font-semibold uppercase tracking-wide mb-1.5"
+                style={{ color: 'var(--gold)' }}
+              >
+                The Bottom Line
+              </p>
+              <p
+                className="text-[13px] leading-relaxed font-medium"
+                style={{ color: 'var(--ov-text-hi)' }}
               >
                 {ib.absence_signal.description}
               </p>

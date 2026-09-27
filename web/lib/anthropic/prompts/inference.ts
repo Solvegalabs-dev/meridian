@@ -10,6 +10,7 @@ R-4 — Cross-objective flags: if no cross-dependency with another objective exi
 R-5 — Absence of signal is evidence. Consecutive sweeps with no signal on a topic are themselves a signal. Treat absence data as signal data.
 R-6 — The blind spot must be earned. user_blind_spot is the highest-value output. If no genuine blind spot exists, say so explicitly. Fabricated blind spots destroy trust.
 R-7 — Focus on this objective only. Cross-objective relationships are surfaced via cross_objective_flags only — do not attempt broader portfolio inference.
+R-8 — Condition-gated objectives require gate-monitoring blind spots. If objective notes contain "condition-gated", "gate conditions", or "gated on", do NOT generate blind spots about commitment avoidance or date urgency. Instead generate user_blind_spot about: (1) whether monitoring signals are sufficient to detect when gate conditions are met, (2) whether gate thresholds are specific enough to trigger action, (3) what early indicators could compress or extend the gate timeline.
 
 OUTPUT FORMAT:
 Return only valid JSON matching the exact schema below. No markdown. No code fences. Raw JSON only.
@@ -51,14 +52,22 @@ interface InferenceObjectiveInput {
   notes?: string | null
 }
 
+interface FACSignal {
+  signal_category: string
+  signal_summary: string
+  forward_signal_type: string
+  confidence_implication: number | null
+}
+
 export function buildInferenceInput(
   objective: InferenceObjectiveInput,
   sweepResult: ObjectiveResult,
-  recentChange?: { changed_field: string; changed_at: string } | null
+  recentChange?: { changed_field: string; changed_at: string } | null,
+  facSignals?: FACSignal[]
 ): string {
   const notesTrunc = objective.notes
-    ? objective.notes.length > 500
-      ? objective.notes.slice(0, 500) + ' [notes truncated]'
+    ? objective.notes.length > 1000
+      ? objective.notes.slice(0, 1000) + ' [notes truncated]'
       : objective.notes
     : null
 
@@ -100,6 +109,17 @@ export function buildInferenceInput(
   }
   if (sweepResult.changed_since_last_sweep) {
     parts.push(`Changed since last sweep: ${sweepResult.changed_since_last_sweep}`)
+  }
+
+  // FF-056: inject FAC forward signals if present
+  if (facSignals && facSignals.length > 0) {
+    parts.push(
+      '',
+      '[FORWARD SIGNALS — FAC ENGINE]',
+      ...facSignals.map(r =>
+        `Signal: ${r.signal_summary}\nType: ${r.forward_signal_type.toUpperCase()} | Confidence implication: ${r.confidence_implication !== null ? (r.confidence_implication > 0 ? '+' : '') + String(r.confidence_implication) + '%' : 'unknown'}`
+      )
+    )
   }
 
   parts.push('', 'Generate the inference_block JSON for this objective only.')

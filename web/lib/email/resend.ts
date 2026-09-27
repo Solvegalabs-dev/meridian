@@ -72,6 +72,13 @@ interface SweepReportObjective {
   actions: string[]
 }
 
+interface SweepFACReport {
+  signal_category: string
+  signal_summary: string
+  forward_signal_type: 'risk' | 'opportunity' | 'condition_change'
+  confidence_implication: number
+}
+
 // Per-account bulk-sweep report email. Unlike sendConfidenceAlert (a
 // best-effort side notification that swallows its own errors), this one
 // throws on failure so the caller (executeBulkSweepJob) can record a real
@@ -82,11 +89,13 @@ export async function sendSweepReportEmail({
   summary,
   topPriorityAction,
   objectives,
+  facReports,
 }: {
   toEmail: string
   summary: string | null
   topPriorityAction: string | null
   objectives: SweepReportObjective[]
+  facReports?: SweepFACReport[]
 }) {
   if (!RESEND_API_KEY) {
     throw new Error('RESEND_API_KEY not set — cannot send sweep report email')
@@ -135,6 +144,20 @@ export async function sendSweepReportEmail({
         <p style="font-size: 11px; color: #8098B4; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 8px;">Recommended actions</p>
         <ul style="font-size: 13px; color: #4A5568; padding-left: 18px; margin: 0 0 24px;">${actionsHtml}</ul>
       ` : ''}
+      ${facReports && facReports.length > 0 ? `
+        <div style="border-top: 1px solid #E2E8F0; margin: 24px 0; padding-top: 20px;">
+          <p style="font-size: 11px; color: #8098B4; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 12px;">⚡ What&apos;s ahead — FAC Engine</p>
+          ${facReports.map(r => {
+            const icon = r.forward_signal_type === 'risk' ? '⚠️' :
+                         r.forward_signal_type === 'opportunity' ? '🟢' : '📡';
+            const impl = r.confidence_implication > 0 ? `+${r.confidence_implication}%` : `${r.confidence_implication}%`;
+            return `<div style="margin-bottom: 12px;">
+              <p style="font-size: 11px; font-weight: 600; color: #1A1A2E; margin: 0 0 3px; text-transform: uppercase; letter-spacing: 0.04em;">${icon} ${r.signal_category.replace(/_/g, ' ')}</p>
+              <p style="font-size: 12px; color: #4A5568; margin: 0;">${r.signal_summary} <span style="color: #8098B4;">(Confidence: ${impl})</span></p>
+            </div>`;
+          }).join('')}
+        </div>
+      ` : ''}
       <p style="font-size: 13px; color: #4A5568; margin: 0 0 20px;">
         Log in and fill out Sections A through D of your Alpha Journal based on this week's sweep.
       </p>
@@ -164,6 +187,68 @@ export async function sendSweepReportEmail({
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Resend API error (${res.status}): ${text}`)
+  }
+}
+
+export async function sendAgentEscalationAlert({
+  agentKey,
+  consecutiveErrors,
+  lastErrorMessage,
+}: {
+  agentKey: string
+  consecutiveErrors: number
+  lastErrorMessage?: string
+}) {
+  if (!RESEND_API_KEY) {
+    console.warn('RESEND_API_KEY not set — skipping agent escalation alert')
+    return
+  }
+
+  const html = `
+    <div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+      <span style="font-size: 13px; color: #C0392B; text-transform: uppercase; letter-spacing: 0.1em;">🚨 Meridian Arc · Swarm Maestro</span>
+      <h2 style="font-size: 20px; color: #1A1A2E; margin: 12px 0 8px;">
+        Agent down — ${consecutiveErrors} consecutive errors
+      </h2>
+      <p style="font-size: 14px; color: #4A5568; margin: 0 0 8px;">
+        <strong>${agentKey}</strong> has failed ${consecutiveErrors} times in a row.
+      </p>
+      ${lastErrorMessage ? `
+        <div style="background: #FEF2F2; border: 1px solid #FECACA; border-radius: 8px; padding: 12px; margin: 16px 0;">
+          <p style="font-size: 12px; color: #C0392B; font-family: monospace; margin: 0; word-break: break-all;">${lastErrorMessage}</p>
+        </div>
+      ` : ''}
+      <p style="font-size: 13px; color: #4A5568; margin: 16px 0;">
+        This agent has crossed the Definition of Insanity threshold. Manual investigation required — this agent will not resolve itself.
+      </p>
+      <a href="${APP_URL}/admin" style="display: inline-block; background: #C0392B; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 500;">
+        Open admin panel →
+      </a>
+      <p style="font-size: 11px; color: #8098B4; margin-top: 32px;">
+        Solvega Labs · meridianarc.ai
+      </p>
+    </div>
+  `
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: `Meridian Arc <${FROM_EMAIL}>`,
+        to: ADMIN_EMAIL,
+        subject: `🚨 ${agentKey} — ${consecutiveErrors} consecutive failures`,
+        html,
+      }),
+    })
+    if (!res.ok) {
+      console.error('[resend] Agent escalation alert failed:', await res.text().catch(() => ''))
+    }
+  } catch (err) {
+    console.error('[resend] Agent escalation alert failed:', err)
   }
 }
 

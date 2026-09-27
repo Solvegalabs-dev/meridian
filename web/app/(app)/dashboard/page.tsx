@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import HeadlineCard from '@/components/dashboard/HeadlineCard'
 import GoalCard from '@/components/dashboard/GoalCard'
@@ -9,6 +10,9 @@ import ConfidenceGraph, { type ObjectiveSeries } from '@/components/dashboard/Co
 import AskMeridianBar from '@/components/ask/AskMeridianBar'
 import AskMeridianLoader from '@/components/AskMeridianLoader'
 import { getConfidenceStatus } from '@/lib/utils/confidenceStatus'
+import { DrivingModeEntry } from '@/components/voice/DrivingModeEntry'
+import { userVoiceTier, canUseFull } from '@/lib/voice/voiceTier'
+import type { VoiceBrief } from '@/lib/voice/voiceBriefTypes'
 
 const STATUS_RANK = { risk: 0, watch: 1, on_track: 2 }
 
@@ -19,15 +23,26 @@ export default async function DashboardPage() {
   const now = new Date()
   const calWindowEnd = new Date(now.getTime() + 45 * 24 * 60 * 60 * 1000)
 
-  const [{ data: profile }, { data: objectives }, { data: lastSweep }, { data: unreadSignals }, { data: upcomingEvents }, { data: episodeData }, { data: latestSweepMeta }] = await Promise.all([
-    supabase.from('profiles').select('full_name, sweep_count, tier, account_type').eq('id', user!.id).single(),
+  const [{ data: profile }, { data: objectives }, { data: lastSweep }, { data: unreadSignals }, { data: upcomingEvents }, { data: episodeData }, { data: latestSweepMeta }, { data: latestVoiceSweep }] = await Promise.all([
+    supabase.from('profiles').select('full_name, sweep_count, tier, account_type, voice_addon, voice_mode').eq('id', user!.id).single(),
     supabase.from('objectives').select('id, obj_id, title, confidence, confidence_prev, target_date, updated_at, status').eq('user_id', user!.id).eq('status', 'active').order('sort_order'),
     supabase.from('sweeps').select('*').eq('user_id', user!.id).eq('status', 'complete').not('raw_response', 'is', null).order('completed_at', { ascending: false }).limit(1).single(),
     supabase.from('signals').select('objective_ids').eq('user_id', user!.id).eq('is_read', false),
     supabase.from('calendar_events').select('id, starts_at, summary, objective_ids').eq('user_id', user!.id).gte('starts_at', now.toISOString()).lte('starts_at', calWindowEnd.toISOString()).order('starts_at').limit(5),
     supabase.from('objective_episodes').select('objective_id, episode_number, confidence_end, created_at, narrative').eq('user_id', user!.id).order('episode_number', { ascending: true }),
     supabase.from('sweeps').select('status, raw_response').eq('user_id', user!.id).neq('trigger_type', 'user_action').order('completed_at', { ascending: false }).limit(1).single(),
+    supabase.from('sweeps').select('voice_brief').eq('user_id', user!.id).eq('status', 'complete').not('voice_brief', 'is', null).order('completed_at', { ascending: false }).limit(1).single(),
   ])
+
+  const voiceProfile = profile as { tier?: string | null; account_type?: string | null; voice_addon?: boolean | null; voice_mode?: boolean | null } | null
+  const voiceTier = userVoiceTier({
+    pricing_tier: voiceProfile?.tier ?? null,
+    account_type: voiceProfile?.account_type ?? null,
+    voice_addon: voiceProfile?.voice_addon ?? false,
+  })
+  const voiceBrief = (latestVoiceSweep?.voice_brief ?? null) as VoiceBrief | null
+  const showDrivingMode = canUseFull(voiceTier) && (voiceProfile?.voice_mode ?? false) && voiceBrief !== null && voiceBrief.taskers.length > 0
+  const showConciergeEntry = canUseFull(voiceTier)
 
   const hasSweep = !!lastSweep
   const lastSweepFailed = !!latestSweepMeta && (
@@ -159,6 +174,20 @@ export default async function DashboardPage() {
 
       <AskMeridianLoader />
 
+      {showDrivingMode && voiceBrief && (
+        <DrivingModeEntry voiceBrief={voiceBrief} />
+      )}
+
+      {showConciergeEntry && (
+        <Link
+          href="/concierge"
+          className="flex items-center justify-center w-full rounded-2xl py-3 text-[14px] font-semibold transition-opacity hover:opacity-80"
+          style={{ backgroundColor: 'rgba(46,124,184,0.15)', color: '#7ab3e0', border: '1px solid rgba(46,124,184,0.25)' }}
+        >
+          Ask Meridian →
+        </Link>
+      )}
+
       <CrossDepBanner crossDeps={crossDeps} />
 
       <p className="text-[10px] text-center pt-2" style={{ color: 'var(--ov-text-dim)' }}>
@@ -176,6 +205,11 @@ export default async function DashboardPage() {
       topObjectiveName={sortedObjectives[0]?.title}
       context={sweepData?.sweep_summary}
     />
+    <div className="flex justify-center pb-2">
+      <Link href="/ask/history" className="text-[10px]" style={{ color: 'var(--gold)' }}>
+        Ask Meridian History →
+      </Link>
+    </div>
     </div>
   )
 }

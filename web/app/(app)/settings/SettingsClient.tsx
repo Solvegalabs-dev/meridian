@@ -1,12 +1,15 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { SWEEP_CREDIT_BUNDLES, ASK_CREDIT_BUNDLES } from '@/lib/subscription/tiers'
 import { getEffectiveTier } from '@/lib/tiers'
 import { registerPushSubscription } from '@/lib/watchlist/registerPush'
+import { userVoiceTier } from '@/lib/voice/voiceTier'
+import { getAvailableVoices, stopSpeaking } from '@/lib/voice/ttsEngine'
+import { useAppStore } from '@/store/useAppStore'
 
 interface Profile {
   full_name: string | null
@@ -23,6 +26,11 @@ interface Profile {
   created_at: string | null
   phone_number: string | null
   sms_alerts_enabled: boolean | null
+  voice_mode: boolean | null
+  voice_addon: boolean | null
+  voice_type: string | null
+  voice_rate: number | null
+  voice_volume: number | null
 }
 
 interface Props {
@@ -65,6 +73,21 @@ export default function SettingsClient({ email, profile }: Props) {
   const [smsSaved, setSmsSaved] = useState(false)
   const [smsError, setSmsError] = useState<string | null>(null)
 
+  // Voice state
+  const [voiceMode, setVoiceMode] = useState<boolean>(profile?.voice_mode ?? false)
+  const [voiceSaving, setVoiceSaving] = useState(false)
+  const [voiceSaved, setVoiceSaved] = useState(false)
+
+  // Voice personalization
+  const [voiceType, setVoiceType] = useState<string>(profile?.voice_type ?? '')
+  const [voiceRate, setVoiceRate] = useState<number>(profile?.voice_rate ?? 1.0)
+  const [voiceVolume, setVoiceVolume] = useState<number>(profile?.voice_volume ?? 1.0)
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([])
+  const [voicePrefSaving, setVoicePrefSaving] = useState(false)
+  const [voicePrefSaved, setVoicePrefSaved] = useState(false)
+  const [previewPlaying, setPreviewPlaying] = useState(false)
+  const setVoicePreferences = useAppStore(s => s.setVoicePreferences)
+
   // Push state
   const [pushStatus, setPushStatus] = useState<'idle' | 'requesting' | 'granted' | 'error'>('idle')
   const [pushError, setPushError] = useState<string | null>(null)
@@ -75,6 +98,58 @@ export default function SettingsClient({ email, profile }: Props) {
   })
   const canUseSms = effectiveTier === 'accelerator' || effectiveTier === 'command'
   const canUsePush = effectiveTier === 'accelerator' || effectiveTier === 'command'
+
+  const voiceTier = userVoiceTier({
+    pricing_tier: profile?.tier ?? null,
+    account_type: profile?.account_type ?? null,
+    voice_addon: profile?.voice_addon ?? false,
+  })
+  const canUseVoicePrefs = voiceTier === 'brief' || voiceTier === 'full'
+
+  useEffect(() => {
+    if (!canUseVoicePrefs) return
+    void getAvailableVoices().then(setAvailableVoices)
+  }, [canUseVoicePrefs])
+
+  async function handleSaveVoicePrefs() {
+    setVoicePrefSaving(true)
+    const res = await fetch('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        voice_type: voiceType || null,
+        voice_rate: voiceRate,
+        voice_volume: voiceVolume,
+      }),
+    })
+    if (res.ok) {
+      setVoicePreferences({ voiceType: voiceType || null, voiceRate, voiceVolume })
+      setVoicePrefSaved(true)
+      setTimeout(() => setVoicePrefSaved(false), 2000)
+    }
+    setVoicePrefSaving(false)
+  }
+
+  const handlePreviewVoice = useCallback(() => {
+    if (previewPlaying) {
+      stopSpeaking()
+      setPreviewPlaying(false)
+      return
+    }
+    setPreviewPlaying(true)
+    // Use local slider values directly for preview
+    window.speechSynthesis.cancel()
+    const u = new SpeechSynthesisUtterance('Here is how your voice sounds with these settings.')
+    u.rate = voiceRate
+    u.volume = voiceVolume
+    if (voiceType) {
+      const voice = window.speechSynthesis.getVoices().find(v => v.name === voiceType)
+      if (voice) u.voice = voice
+    }
+    u.onend = () => setPreviewPlaying(false)
+    u.onerror = () => setPreviewPlaying(false)
+    window.speechSynthesis.speak(u)
+  }, [previewPlaying, voiceType, voiceRate, voiceVolume])
 
   async function handleConsentToggle() {
     setConsentSaving(true)
@@ -125,6 +200,22 @@ export default function SettingsClient({ email, profile }: Props) {
       setSmsError(d.error ?? 'Save failed')
     }
     setSmsSaving(false)
+  }
+
+  async function handleVoiceModeToggle() {
+    setVoiceSaving(true)
+    const next = !voiceMode
+    const res = await fetch('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice_mode: next }),
+    })
+    if (res.ok) {
+      setVoiceMode(next)
+      setVoiceSaved(true)
+      setTimeout(() => setVoiceSaved(false), 2000)
+    }
+    setVoiceSaving(false)
   }
 
   async function handlePushEnable() {
@@ -357,6 +448,115 @@ export default function SettingsClient({ email, profile }: Props) {
           </div>
         </div>
 
+        {/* Voice */}
+        <div className="bg-white rounded-2xl border border-[var(--border)] p-6">
+          <h2 className="text-[13px] font-semibold text-[var(--text)] uppercase tracking-wider mb-4">Voice</h2>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[13px] text-[var(--text2)]">Always use voice input</p>
+              <p className="text-[11px] text-[var(--text3)] mt-0.5">
+                Mic icon appears on all text fields. Tap to speak instead of type.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              {voiceSaved && <span className="text-[12px] text-[var(--green)]">✓ Saved</span>}
+              <div
+                onClick={() => !voiceSaving && handleVoiceModeToggle()}
+                className={`relative w-10 h-6 rounded-full transition-colors ${
+                  voiceMode ? 'bg-navy' : 'bg-gray-300'
+                } ${voiceSaving ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
+              >
+                <span
+                  className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                    voiceMode ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Voice personalization — brief+ tiers only */}
+          {canUseVoicePrefs && (
+            <div className="mt-5 pt-5 border-t border-[var(--border)] space-y-4">
+              <p className="text-[11px] font-semibold text-[var(--text2)] uppercase tracking-wide">Voice Personalization</p>
+
+              {/* Voice type */}
+              <div>
+                <label className="block text-[12px] text-[var(--text3)] mb-1.5">Voice</label>
+                <div className="flex gap-2">
+                  <select
+                    value={voiceType}
+                    onChange={e => setVoiceType(e.target.value)}
+                    className="flex-1 px-3 py-2 rounded-lg border border-[var(--border)] text-[13px] text-[var(--text)] focus:outline-none focus:border-[var(--blue)] transition-colors"
+                  >
+                    <option value="">System default</option>
+                    {availableVoices.map(v => (
+                      <option key={v.name} value={v.name}>{v.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={handlePreviewVoice}
+                    className="px-3 py-2 rounded-lg border border-[var(--border)] text-[12px] text-[var(--text2)] hover:border-[var(--blue)] hover:text-[var(--blue)] transition-colors whitespace-nowrap"
+                  >
+                    {previewPlaying ? 'Stop' : 'Preview'}
+                  </button>
+                </div>
+                <p className="text-[11px] mt-1" style={{ color: 'var(--text3)' }}>
+                  Natural AI voices with gender and accent options coming soon.
+                </p>
+              </div>
+
+              {/* Rate */}
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-[12px] text-[var(--text3)]">Speed</label>
+                  <span className="text-[12px] text-[var(--text2)]">{voiceRate.toFixed(1)}×</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.7}
+                  max={1.4}
+                  step={0.1}
+                  value={voiceRate}
+                  onChange={e => setVoiceRate(parseFloat(e.target.value))}
+                  className="w-full accent-navy"
+                />
+                <div className="flex justify-between text-[10px] text-[var(--text3)] mt-0.5">
+                  <span>Slower</span><span>Faster</span>
+                </div>
+              </div>
+
+              {/* Volume */}
+              <div>
+                <div className="flex justify-between mb-1">
+                  <label className="text-[12px] text-[var(--text3)]">Volume</label>
+                  <span className="text-[12px] text-[var(--text2)]">{Math.round(voiceVolume * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={1.0}
+                  step={0.05}
+                  value={voiceVolume}
+                  onChange={e => setVoiceVolume(parseFloat(e.target.value))}
+                  className="w-full accent-navy"
+                />
+                <div className="flex justify-between text-[10px] text-[var(--text3)] mt-0.5">
+                  <span>Quieter</span><span>Louder</span>
+                </div>
+              </div>
+
+              <button
+                onClick={handleSaveVoicePrefs}
+                disabled={voicePrefSaving}
+                className="w-full py-2 rounded-lg border border-[var(--border)] text-[13px] text-[var(--text2)] hover:border-[var(--blue)] hover:text-[var(--blue)] transition-colors disabled:opacity-50"
+              >
+                {voicePrefSaved ? '✓ Saved' : voicePrefSaving ? 'Saving...' : 'Save voice settings'}
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Plan & Billing */}
         {(() => {
           const tier = profile?.tier ?? 'trial'
@@ -447,7 +647,7 @@ export default function SettingsClient({ email, profile }: Props) {
 
               {/* Ask query credit bundles */}
               <div className="mt-5 pt-4 border-t border-[var(--border)]">
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-[var(--text3)] mb-3">Add ask query credits</p>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-[var(--text3)] mb-3">Ask Arc Credits</p>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {ASK_CREDIT_BUNDLES.map(b => (
                     <div

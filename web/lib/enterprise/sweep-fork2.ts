@@ -3,6 +3,8 @@ import { getAnthropicClient } from '@/lib/anthropic/client'
 import { getCaseRiskNarrative, getMacroContextForSnapshot } from './lookback'
 import { OBJECTIVE_SWEEP_PROMPT } from './sweep-prompts'
 import type { CohortPattern, TierChangeProjection } from './sweep-prompts'
+import { sendWatchAlert } from '@/lib/email/sendWatchAlert'
+import { sendSmsAlert } from '@/lib/watchlist/sendSmsAlert'
 
 export type ObjectiveSweepResult = {
   resultId: string
@@ -164,7 +166,7 @@ export async function runObjectiveSweep(
   const supabase = createServiceClient()
 
   // ── Step 1: Load objective + Fork 1 context ──
-  const [{ data: objData }, { data: metricsData }, { data: allCasesData }] = await Promise.all([
+  const [{ data: objData }, { data: metricsData }, { data: allCasesData }, { data: institutionData }] = await Promise.all([
     supabase
       .from('enterprise_objectives')
       .select('id, obj_id, title, statement, case_scope, objective_state, alert_threshold, fusion_sources')
@@ -179,6 +181,11 @@ export async function runObjectiveSweep(
       .from('enterprise_cases')
       .select('id, case_ref, region, fico_band, loan_status, ltv_ratio, dti_ratio, current_balance')
       .eq('institution_id', institutionId),
+    supabase
+      .from('enterprise_institutions')
+      .select('name, alert_phone')
+      .eq('id', institutionId)
+      .single(),
   ])
 
   if (!objData) throw new Error(`Objective ${objectiveId} not found`)
@@ -326,15 +333,39 @@ export async function runObjectiveSweep(
 
   // Escalate monitoring_lite objective to focus if alert triggered
   if (alertTriggered && objective.objective_state === 'monitoring_lite') {
+    const escalatedAt = new Date().toISOString()
     await supabase
       .from('enterprise_objectives')
-      .update({ objective_state: 'focus', last_focus_sweep_at: new Date().toISOString() })
+      .update({ objective_state: 'focus', last_focus_sweep_at: escalatedAt, escalated_at: escalatedAt })
       .eq('id', objectiveId)
 
     await supabase
       .from('enterprise_objective_results')
       .update({ escalated_to_focus: true })
       .eq('id', resultId)
+
+    // Best-effort internal ops alert — never blocks the sweep. SMS "to" is
+    // per-institution (alert_phone) with an env fallback, per FF-035D.
+    const institutionName = (institutionData as { name?: string } | null)?.name ?? 'Institution'
+    const smsTo = (institutionData as { alert_phone?: string | null } | null)?.alert_phone
+      || process.env.ADMIN_ALERT_PHONE
+    const portalUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://meridianarc.ai'}/enterprise`
+    const objectiveTitle = `${institutionName} — ${objective.title}`
+    const signalSummary = alertReason || `${objective.title} crossed its alert threshold.`
+    const actionText = posResult.what_to_do || 'Review the escalated objective in the portal.'
+
+    await Promise.allSettled([
+      sendWatchAlert({
+        to: process.env.ADMIN_ALERT_EMAIL || 'jason@solvega.ai',
+        objectiveTitle,
+        signalSummary,
+        actionText,
+        directUrl: portalUrl,
+      }),
+      ...(smsTo
+        ? [sendSmsAlert({ to: smsTo, objectiveTitle, signalSummary, actionText, directUrl: portalUrl })]
+        : []),
+    ])
   }
 
   return {

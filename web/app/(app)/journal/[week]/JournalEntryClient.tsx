@@ -218,7 +218,7 @@ export default function JournalEntryClient({ week, weekOf, initialEntry, objecti
         <div className="space-y-2">
           {sectionC.map((item, i) => (
             <div key={i} className="flex items-start gap-2">
-              <input type="text" placeholder="OBJ-01"
+              <input type="text" placeholder="Goal name"
                 defaultValue={item.obj}
                 disabled={isComplete}
                 className="w-20 flex-shrink-0 px-2 py-1.5 rounded-lg border border-[var(--border)] text-[13px] focus:outline-none focus:border-[var(--blue)] disabled:opacity-60"

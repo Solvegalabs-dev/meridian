@@ -77,31 +77,38 @@ export async function GET(request: NextRequest) {
     .eq('status', 'scheduled')
     .lte('scheduled_at', new Date().toISOString())
 
-  if (!dueJobs || dueJobs.length === 0) {
-    return NextResponse.json({ kicked_off: 0, stale_reaped: staleSweeps?.length ?? 0 })
-  }
-
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ??
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
-  const secret = process.env.CRON_SECRET ?? ''
 
-  for (const job of dueJobs) {
-    await supabase.from('bulk_sweep_jobs')
-      .update({ status: 'running', started_at: new Date().toISOString() })
-      .eq('id', job.id)
-    console.log(`[cron:job-started] ${job.id} — kicking off queue worker`)
+  if (dueJobs && dueJobs.length > 0) {
+    for (const job of dueJobs) {
+      await supabase.from('bulk_sweep_jobs')
+        .update({ status: 'running', started_at: new Date().toISOString() })
+        .eq('id', job.id)
+      console.log(`[cron:job-started] ${job.id} — kicking off queue worker`)
+    }
   }
 
-  // Kick off the queue worker once — it self-chains until the queue is empty.
-  // await with AbortController so the request is guaranteed sent before this function returns.
-  // Aborting client-side does NOT cancel the queue worker — it keeps running independently.
-  const controller = new AbortController()
-  setTimeout(() => controller.abort(), 500)
-  await fetch(`${baseUrl}/api/admin/sweeps/process-account-queue`, {
-    method: 'GET',
-    headers: { 'X-Cron-Secret': secret },
-    signal: controller.signal,
-  }).catch(() => {}) // AbortError expected
+  // Drain one pending account from any running job.
+  // Self-chaining was removed from process-account-queue — each cron fire here
+  // picks up exactly one pending account. At */5 cadence: ~5 min per account.
+  const { count: pendingCount } = await supabase
+    .from('bulk_sweep_job_accounts')
+    .select('id', { count: 'exact', head: true })
+    .eq('sweep_status', 'pending')
 
-  return NextResponse.json({ kicked_off: dueJobs.length, stale_reaped: staleSweeps?.length ?? 0 })
+  if ((pendingCount ?? 0) > 0) {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 500)
+    await fetch(`${baseUrl}/api/admin/sweeps/process-account-queue`, {
+      headers: { 'X-Cron-Secret': process.env.CRON_SECRET ?? '' },
+      signal: controller.signal,
+    }).catch(() => {})
+  }
+
+  return NextResponse.json({
+    kicked_off: dueJobs?.length ?? 0,
+    stale_reaped: staleSweeps?.length ?? 0,
+    pending_drained: (pendingCount ?? 0) > 0 ? 1 : 0,
+  })
 }

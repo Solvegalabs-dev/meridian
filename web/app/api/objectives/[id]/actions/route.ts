@@ -119,6 +119,12 @@ export async function POST(
 
   if (actionError) return NextResponse.json({ error: actionError.message }, { status: 500 })
 
+  // FF-061: stamp last_user_action_at to reset the FAC activity gate
+  await supabase.from('objectives')
+    .update({ last_user_action_at: new Date().toISOString() })
+    .eq('id', params.id)
+    .eq('user_id', user.id)
+
   // 4. Lightweight confidence recompute — Haiku only, no external calls.
   // Runs for every action source. Provenance is passed through and weighted
   // inside the scoring prompt: completing an engine recommendation is real

@@ -43,13 +43,22 @@ export default function DoNextCard({ topAction, moreActions, hasSweep }: DoNextC
                   + {moreActions.length} more action{moreActions.length !== 1 ? 's' : ''}
                 </button>
               ) : (
-                <ul className="mt-3 space-y-2">
-                  {moreActions.map((action, i) => (
-                    <li key={i} className="text-[13px] leading-[1.45]" style={{ color: 'var(--ov-text-mid)' }}>
-                      {action}
-                    </li>
-                  ))}
-                </ul>
+                <>
+                  <ul className="mt-3 space-y-2">
+                    {moreActions.map((action, i) => (
+                      <li key={i} className="text-[13px] leading-[1.45]" style={{ color: 'var(--ov-text-mid)' }}>
+                        {action}
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    onClick={() => setExpanded(false)}
+                    className="text-[11px] font-medium mt-3"
+                    style={{ color: 'var(--gold)' }}
+                  >
+                    Collapse ↑
+                  </button>
+                </>
               )}
             </>
           )}

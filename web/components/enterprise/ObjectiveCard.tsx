@@ -150,6 +150,14 @@ function FocusCard({ objective, onStateChange, changingState, linkMap = new Map(
           </span>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {objective.escalated_at && (
+            <span
+              className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-900/40 text-red-400 cursor-help"
+              title={`Auto-escalated from Monitoring Lite on ${new Date(objective.escalated_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`}
+            >
+              ESCALATED
+            </span>
+          )}
           {r && <ConfidenceBadge score={r.confidence_score} />}
           <div className="relative">
             <button

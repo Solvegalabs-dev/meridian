@@ -149,7 +149,7 @@ function Page1Illustration() {
   const tiles = [
     { icon: <Target size={16} color={P.blue} />,              chipBg: 'rgba(46,124,184,.14)', label: 'Your Goals',        desc: "The objectives you're tracking, each with a live on-track score." },
     { icon: <Radio size={16} color="#A9861A" />,              chipBg: 'rgba(201,162,39,.18)', label: "This Week's Brief", desc: 'What changed — the signals Meridian found for you this week.' },
-    { icon: <MessageCircle size={16} color={P.green} />,      chipBg: 'rgba(47,158,107,.15)', label: 'Ask Meridian Arc',  desc: 'Ask questions or get hints about any goal, anytime.' },
+    { icon: <MessageCircle size={16} color={P.green} />,      chipBg: 'rgba(47,158,107,.15)', label: 'Ask Meridian',  desc: 'Ask questions or get hints about any goal, anytime.' },
   ]
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>

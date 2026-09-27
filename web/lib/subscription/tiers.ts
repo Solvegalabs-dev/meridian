@@ -13,7 +13,7 @@ export const TIERS = {
     label: 'Explorer',
     price_monthly: 19,
     price_annual: 190,
-    max_objectives: 5,
+    max_objectives: 4, // active-only count
     sweep_cadence: 'weekly',
     max_predictions: 10,
     history_days: 90,
@@ -23,7 +23,7 @@ export const TIERS = {
     label: 'Accelerator',
     price_monthly: 49,
     price_annual: 490,
-    max_objectives: 15,
+    max_objectives: 8, // active-only count
     sweep_cadence: 'five_weekly',
     max_predictions: null, // unlimited
     history_days: 365,

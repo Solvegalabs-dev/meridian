@@ -179,6 +179,16 @@ export default function AskMeridian({ initialUsage }: AskMeridianProps) {
         </button>
       </form>
 
+      <div className="flex justify-end mt-1.5">
+        <a
+          href="/ask/history"
+          className="text-xs"
+          style={{ color: '#C9A227' }}
+        >
+          History →
+        </a>
+      </div>
+
       {/* Error */}
       {error && !atLimit && (
         <div

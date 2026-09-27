@@ -1,5 +1,6 @@
 // app/api/ask/route.ts
 // FF-017 — Ask Meridian: On-Demand Intelligence Queries
+// FF-065 — Unified Ask: intent router (external = Brave+Sonnet, internal = Concierge/Sonnet)
 // Solvega Labs LLC · Meridian Arc · Confidential
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -9,10 +10,12 @@ import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages/messag
 import { createClient } from '@/lib/supabase/server'
 import { extractAskSignals } from '@/lib/ask/extractSignals'
 import { extractResponseSignals } from '@/lib/ask/extractResponseSignals'
-
+import { classifyAskIntent, type AskIntent } from '@/lib/ask/intentClassifier'
+import { buildConciergeContext } from '@/lib/concierge/buildConciergeContext'
+import { buildConciergePrompt, type ConciergeResponse } from '@/lib/concierge/conciergePrompt'
+import { executeBraveSearch } from '@/lib/signals/braveSearch'
 
 // ── Tier gate ──────────────────────────────────────────────────────────────
-// command=10, accelerator=3 (+credits), explorer=1 (teaser), trial/null=0
 const ASK_LIMITS: Record<string, number> = {
   command: 20,
   accelerator: 10,
@@ -25,7 +28,6 @@ function getEffectiveTier(profile: {
   tier: string | null
   complimentary_expires_at: string | null
 }): string {
-  // complimentary_expires_at check fires before all other tier logic (per MPB v7.9)
   if (
     profile.complimentary_expires_at &&
     new Date(profile.complimentary_expires_at) > new Date()
@@ -37,48 +39,6 @@ function getEffectiveTier(profile: {
   if (raw.includes('accelerator')) return 'accelerator'
   if (raw.includes('command')) return 'command'
   return raw
-}
-
-// ── Optional Brave Search ──────────────────────────────────────────────────
-// Set BRAVE_SEARCH_API_KEY in Vercel env to enable live web data.
-// Without the key the route still works — Claude answers from training
-// knowledge + objective context, and web_search_used = false.
-async function braveSearch(query: string): Promise<string> {
-  const apiKey = process.env.BRAVE_SEARCH_API_KEY
-  if (!apiKey) return ''
-
-  try {
-    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(
-      query
-    )}&count=5&text_decorations=false`
-
-    const resp = await fetch(url, {
-      headers: {
-        Accept: 'application/json',
-        'Accept-Encoding': 'gzip',
-        'X-Subscription-Token': apiKey,
-      },
-      // Hard 6-second timeout so a slow search never blocks the user
-      signal: AbortSignal.timeout(6000),
-    })
-
-    if (!resp.ok) return ''
-
-    const data = await resp.json()
-    const results: Array<{ title: string; url: string; description?: string }> =
-      data.web?.results ?? []
-
-    return results
-      .slice(0, 5)
-      .map(
-        (r) =>
-          `[${r.title}](${r.url})\n${r.description ?? '(no snippet)'}`
-      )
-      .join('\n\n')
-  } catch {
-    // Timeout or network error — degrade gracefully
-    return ''
-  }
 }
 
 // ── Phase C: synchronous action candidate extraction ──────────────────────
@@ -110,17 +70,13 @@ export async function POST(req: NextRequest) {
   const supabase = createClient()
 
   // 1. Authenticate
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   // 2. Parse + validate request body
-  let body: { question?: string }
+  let body: { question?: string; intent?: AskIntent }
   try {
     body = await req.json()
   } catch {
@@ -134,6 +90,8 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     )
   }
+
+  const intentHint = body.intent
 
   // 3. Load profile for tier + credit check
   const { data: profile, error: profileError } = await supabase
@@ -149,19 +107,17 @@ export async function POST(req: NextRequest) {
   const effectiveTier = getEffectiveTier(profile)
   const baseLimit = ASK_LIMITS[effectiveTier] ?? 0
 
-  // Explorer/trial gate
   if (baseLimit === 0) {
     return NextResponse.json(
       {
-        error:
-          'Ask Meridian is not available on your current plan. Upgrade to Explorer or higher to get started.',
+        error: 'Ask Meridian is not available on your current plan. Upgrade to Explorer or higher to get started.',
         upgrade_required: true,
       },
       { status: 403 }
     )
   }
 
-  // 4. Count this month's queries (RLS ensures user_id scope)
+  // 4. Count this month's queries
   const monthStart = new Date()
   monthStart.setDate(1)
   monthStart.setHours(0, 0, 0, 0)
@@ -173,16 +129,12 @@ export async function POST(req: NextRequest) {
 
   if (countError) {
     console.error('[ask] Usage count failed:', countError.message)
-    return NextResponse.json(
-      { error: 'Failed to check usage. Please try again.' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Failed to check usage. Please try again.' }, { status: 500 })
   }
 
   const used = monthlyCount ?? 0
 
-  // 5. Enforce limit — ask_credits are overflow for all tiers;
-  //    sweep_credits are a secondary fallback for Accelerator only.
+  // 5. Enforce monthly limit — ask_credits are overflow
   const askCredits = profile.ask_credits ?? 0
   let useAskCredit = false
   let useCredit = false
@@ -195,16 +147,13 @@ export async function POST(req: NextRequest) {
     } else {
       const upgradeHint =
         effectiveTier === 'explorer'
-          ? ' Upgrade to Command for 10/month.'
+          ? ' Upgrade to Accelerator for 10/month.'
           : effectiveTier === 'accelerator'
           ? ' Add ask query credits in Settings or upgrade to Command.'
           : ''
-
       return NextResponse.json(
         {
-          error: `You've used all ${baseLimit} Ask ${
-            baseLimit === 1 ? 'query' : 'queries'
-          } for this month.${upgradeHint}`,
+          error: `You've used all ${baseLimit} Ask ${baseLimit === 1 ? 'query' : 'queries'} for this month.${upgradeHint}`,
           limit_reached: true,
           used,
           limit: baseLimit,
@@ -214,7 +163,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 6. Load active objectives as context (no raw_response guard mirrors dashboard)
+  // 6. Load active objectives as context
   const { data: objectives, error: objError } = await supabase
     .from('objectives')
     .select('id, title, outcome, goal_description, status, target_date, objective_type, context, signal_keywords')
@@ -225,8 +174,6 @@ export async function POST(req: NextRequest) {
   if (objError) console.error('[ask:objectives] query error:', objError.message)
   const objectiveContext = objectives ?? []
 
-  // Sync keyword match for Phase C action surfacing — mirrors Phase A token logic.
-  // Only checks the 12 loaded objectives; Phase A async covers the full set.
   function syncMatchObjectives(q: string, objs: typeof objectiveContext): string[] {
     const ql = q.toLowerCase()
     return objs
@@ -242,25 +189,72 @@ export async function POST(req: NextRequest) {
   }
 
   const matchedObjectiveIds = syncMatchObjectives(question, objectiveContext)
-  console.log('[ask:sync-match] objectives loaded:', objectiveContext.length, 'matched:', matchedObjectiveIds)
 
-  // 7. Web search (optional, degrades gracefully)
-  const searchSnippet = await braveSearch(question)
-  const webSearchUsed = searchSnippet.length > 0
+  // 7. Classify intent
+  const resolvedIntent: AskIntent = intentHint ?? await classifyAskIntent(question)
 
-  // 8. Build Claude prompt
-  const objectivesSummary =
-    objectiveContext.length > 0
-      ? objectiveContext
-          .map((o) => {
-            const deadline = o.target_date ? ` · deadline ${o.target_date}` : ''
-            const type = o.objective_type ? ` [${o.objective_type}]` : ''
-            return `- ${o.title}${type}${deadline}`
-          })
-          .join('\n')
-      : 'No active objectives on file.'
+  // 8. Extra credit check: internal queries cost 2 credits in overflow mode
+  if (resolvedIntent === 'internal' && useAskCredit && askCredits < 2) {
+    return NextResponse.json(
+      { error: 'Goal questions cost 2 credits. Add more ask credits in Settings.', limit_reached: true },
+      { status: 402 }
+    )
+  }
 
-  const systemPrompt = `You are Meridian Arc, an objective intelligence platform built by Solvega Labs.
+  // 9. Execute the appropriate engine
+  let responseText: string
+  let conciergeResponse: ConciergeResponse | null = null
+  let webSearchUsed = false
+
+  if (resolvedIntent === 'internal') {
+    // Internal: Concierge engine (Sonnet + objective state)
+    const context = await buildConciergeContext(supabase, user.id)
+    const prompt = buildConciergePrompt(question, context)
+
+    try {
+      const message = await getAnthropicClient().messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: prompt }],
+      })
+      const raw = message.content[0].type === 'text' ? message.content[0].text : '{}'
+      try {
+        conciergeResponse = JSON.parse(raw.replace(/```json|```/g, '').trim()) as ConciergeResponse
+      } catch {
+        conciergeResponse = {
+          answer_prose: raw,
+          ranked_actions: [],
+          log_offer: false,
+          signals_to_watch: [],
+          needs_sweep: false,
+          needs_sweep_reason: null,
+        }
+      }
+      responseText = JSON.stringify(conciergeResponse)
+    } catch (aiError) {
+      console.error('[ask:internal] Anthropic API error:', aiError)
+      return NextResponse.json(
+        { error: 'Meridian is temporarily unavailable. Please try again in a moment.' },
+        { status: 502 }
+      )
+    }
+  } else {
+    // External: Brave Search + Sonnet
+    const searchSnippet = await executeBraveSearch(question)
+    webSearchUsed = searchSnippet.length > 0
+
+    const objectivesSummary =
+      objectiveContext.length > 0
+        ? objectiveContext
+            .map(o => {
+              const deadline = o.target_date ? ` · deadline ${o.target_date}` : ''
+              const type = o.objective_type ? ` [${o.objective_type}]` : ''
+              return `- ${o.title}${type}${deadline}`
+            })
+            .join('\n')
+        : 'No active objectives on file.'
+
+    const systemPrompt = `You are Meridian Arc, an objective intelligence platform built by Solvega Labs.
 Your job is to give the user a specific, grounded, actionable answer to their question.
 
 Guidelines:
@@ -270,38 +264,34 @@ Guidelines:
 - Keep the response concise and readable. Prose is preferred over bullet-point soup.
 - Do not hallucinate sources. If web data wasn't provided, say your answer is based on training knowledge through your cutoff.`
 
-  const contextBlock = [
-    webSearchUsed
-      ? `## Current web search results\n${searchSnippet}`
-      : '## Web search\nNot available for this query — answering from training knowledge.',
-    `## User's active objectives\n${objectivesSummary}`,
-    `## Question\n${question}`,
-  ].join('\n\n---\n\n')
+    const contextBlock = [
+      webSearchUsed
+        ? `## Current web search results\n${searchSnippet}`
+        : '## Web search\nNot available for this query — answering from training knowledge.',
+      `## User's active objectives\n${objectivesSummary}`,
+      `## Question\n${question}`,
+    ].join('\n\n---\n\n')
 
-  // 9. Claude API call — system prompt is fully static (no user data injected),
-  // so the entire block is marked for caching.
-  let responseText: string
-  try {
-    const message = await getAnthropicClient().messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      system: [
-        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
-      ] satisfies TextBlockParam[],
-      messages: [{ role: 'user', content: contextBlock }],
-    })
-
-    responseText =
-      message.content[0].type === 'text' ? message.content[0].text : ''
-  } catch (aiError: unknown) {
-    console.error('[ask] Anthropic API error:', aiError)
-    return NextResponse.json(
-      { error: 'Meridian is temporarily unavailable. Please try again in a moment.' },
-      { status: 502 }
-    )
+    try {
+      const message = await getAnthropicClient().messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        system: [
+          { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+        ] satisfies TextBlockParam[],
+        messages: [{ role: 'user', content: contextBlock }],
+      })
+      responseText = message.content[0].type === 'text' ? message.content[0].text : ''
+    } catch (aiError) {
+      console.error('[ask] Anthropic API error:', aiError)
+      return NextResponse.json(
+        { error: 'Meridian is temporarily unavailable. Please try again in a moment.' },
+        { status: 502 }
+      )
+    }
   }
 
-  // 10. Log to ask_queries (RLS write — user_id enforced by auth context)
+  // 10. Log to ask_queries
   const { data: insertedQuery, error: insertError } = await supabase
     .from('ask_queries')
     .insert({
@@ -310,28 +300,23 @@ Guidelines:
       response: responseText,
       objective_context: objectiveContext,
       web_search_used: webSearchUsed,
-      credits_used: 1,
-      extraction_status: 'pending',
+      credits_used: resolvedIntent === 'internal' ? 2 : 1,
+      extraction_status: resolvedIntent === 'internal' ? 'no_match' : 'pending',
     })
     .select('id')
     .single()
 
   if (insertError) {
-    // Non-fatal: response already generated — log and continue
     console.error('[ask] Failed to log query:', insertError.message)
   }
 
-  // 11. FF-018 Phase A + B — keyword extraction then Haiku response extraction.
-  // Runs after insert so we have the ask_query_id for provenance.
-  // Phase A runs first to get matched objective IDs; Phase B consumes them.
-  // Fire-and-forget via waitUntil: errors are non-fatal, user already has response.
-  if (insertedQuery?.id) {
+  // 11. Phase A+B extraction — external queries only
+  if (resolvedIntent === 'external' && insertedQuery?.id) {
     const queryId = insertedQuery.id
     waitUntil(
       (async () => {
         try {
-          // Phase A — keyword match question → signals
-          const { signals, matchedObjectiveIds } = await extractAskSignals(supabase, {
+          const { signals, matchedObjectiveIds: matched } = await extractAskSignals(supabase, {
             userId: user.id,
             askQueryId: queryId,
             question,
@@ -343,16 +328,13 @@ Guidelines:
             if (signalError) console.error('[ask:extract-a] signal insert failed:', signalError.message)
           }
 
-          // Phase B — Haiku extracts claims/actions/sentiment from the response.
-          // Also owns the final extraction_status write; if no objectives matched
-          // Phase A, Phase B skips and we write no_match here instead.
-          if (matchedObjectiveIds.length > 0) {
+          if (matched.length > 0) {
             await extractResponseSignals(supabase, {
               userId: user.id,
               askQueryId: queryId,
               question,
               response: responseText,
-              objectiveIds: matchedObjectiveIds,
+              objectiveIds: matched,
             })
           } else {
             await supabase
@@ -374,12 +356,13 @@ Guidelines:
     )
   }
 
-  // 13. Deduct credits if applicable
+  // 12. Deduct credits
+  const creditsToDeduct = resolvedIntent === 'internal' ? 2 : 1
   if (!insertError) {
     if (useAskCredit) {
       const { error: askCreditError } = await supabase
         .from('profiles')
-        .update({ ask_credits: Math.max(0, askCredits - 1) })
+        .update({ ask_credits: Math.max(0, askCredits - creditsToDeduct) })
         .eq('id', user.id)
       if (askCreditError) console.error('[ask] Failed to deduct ask credit:', askCreditError.message)
     } else if (useCredit) {
@@ -391,15 +374,16 @@ Guidelines:
     }
   }
 
-  // 14. Return response
-  const askCreditsRemaining = useAskCredit ? Math.max(0, askCredits - 1) : askCredits
+  // 13. Return response
+  const askCreditsRemaining = useAskCredit ? Math.max(0, askCredits - creditsToDeduct) : askCredits
 
   return NextResponse.json({
-    response: responseText,
+    response: conciergeResponse ?? responseText,
+    intent: resolvedIntent,
     web_search_used: webSearchUsed,
     ask_query_id: insertedQuery?.id ?? null,
-    suggested_actions: extractActionCandidates(responseText),
-    matched_objective_ids: matchedObjectiveIds,
+    suggested_actions: resolvedIntent === 'external' ? extractActionCandidates(responseText) : [],
+    matched_objective_ids: resolvedIntent === 'external' ? matchedObjectiveIds : [],
     usage: {
       used: used + 1,
       limit: baseLimit,

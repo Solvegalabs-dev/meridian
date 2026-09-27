@@ -20,6 +20,13 @@ export async function PATCH(
     notes?: string | null
     outcome?: string
     success_condition?: string | null
+    // Status transition fields
+    status?: string
+    closure_type?: string | null
+    paused_at?: string | null
+    archive_reason?: string | null
+    archive_date?: string | null
+    estimated_reactivate_date?: string | null
   }
 
   // Reject a past target_date (same guard as POST)
@@ -40,14 +47,24 @@ export async function PATCH(
 
   // Build update payload — only include fields that were actually sent
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if ('title' in body)              update.title = body.title
-  if ('target_date' in body)        update.target_date = body.target_date ?? null
-  if ('deadline_type' in body)      update.deadline_type = body.deadline_type
-  if ('reservation_price' in body)  update.reservation_price = body.reservation_price ?? null
-  if ('context' in body)            update.context = body.context ?? {}
-  if ('notes' in body)              update.notes = body.notes ?? null
-  if ('outcome' in body)            update.outcome = body.outcome
-  if ('success_condition' in body)  update.success_condition = body.success_condition ?? null
+  if ('title' in body)                     update.title = body.title
+  if ('target_date' in body)               update.target_date = body.target_date ?? null
+  if ('deadline_type' in body)             update.deadline_type = body.deadline_type
+  if ('reservation_price' in body)         update.reservation_price = body.reservation_price ?? null
+  if ('context' in body)                   update.context = body.context ?? {}
+  if ('notes' in body) {
+    update.notes = body.notes ?? null
+    // FF-061: notes edit counts as user activity — reset the FAC activity gate
+    update.last_user_action_at = new Date().toISOString()
+  }
+  if ('outcome' in body)                   update.outcome = body.outcome
+  if ('success_condition' in body)         update.success_condition = body.success_condition ?? null
+  if ('status' in body)                    update.status = body.status
+  if ('closure_type' in body)              update.closure_type = body.closure_type ?? null
+  if ('paused_at' in body)                 update.paused_at = body.paused_at ?? null
+  if ('archive_reason' in body)            update.archive_reason = body.archive_reason ?? null
+  if ('archive_date' in body)              update.archive_date = body.archive_date ?? null
+  if ('estimated_reactivate_date' in body) update.estimated_reactivate_date = body.estimated_reactivate_date ?? null
 
   // Build change-log rows for tracked fields (FF-032).
   // Only write a row when the value actually changed — trim before compare to

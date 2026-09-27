@@ -13,7 +13,14 @@ import { tierAtLeast } from '@/lib/tiers'
 import { autoLogPredictions, ObjectiveWithConfidenceDelta } from '@/lib/sweep/autoLogPredictions'
 import { getSignalClassWeights } from '@/lib/engine4/getSignalClassWeights'
 import { buildCoherencePackage, formatCoherencePackageForPrompt, type CoherencePackage } from '@/lib/sweep/buildCoherencePackage'
-import { generateStrikeBrief } from '@/lib/sweep/generateStrikeBrief'
+import { dispatchFACAgent, type FACReport } from '@/lib/fac/dispatchFACAgent'
+import { dispatchSubAgent, type SignalBrief } from '@/lib/sweep/subAgent/subAgentDispatcher'
+import { enrichDomainEvents } from '@/lib/sweep/domainEvents/domainEventEnrichment'
+import { detectDomain } from '@/lib/sweep/subAgent/domainDetector'
+import { runPatternDeviationEngine } from '@/lib/sweep/patternDeviation/patternDeviationEngine'
+import { getDomainProfile } from '@/lib/sweep/domainBaseline/domainProfileManager'
+import { bindObjectiveToAgents } from '@/lib/agents/agentContextResolver'
+import { generateStrikeBrief } from '@/lib/strikeBrief/strikeBriefGenerator'
 
 export interface SweepObjectiveResult {
   id: string
@@ -40,6 +47,7 @@ export interface RunSweepResult {
   tokensUsed: number
   costUsd: number
   error: string | null
+  facReports: FACReport[]
 }
 
 // Core sweep orchestration, extracted from app/api/sweep/route.ts so it can
@@ -73,7 +81,8 @@ function buildCompletedContext(
 async function generateInferenceBlock(
   objective: { id: string; obj_id: string; title: string; notes?: string | null; target_date?: string | null; context?: Record<string, unknown> | null },
   sweepResult: ObjectiveResult,
-  recentChange: { changed_field: string; changed_at: string } | null
+  recentChange: { changed_field: string; changed_at: string } | null,
+  facReports?: FACReport[]
 ): Promise<InferenceBlock | null> {
   try {
     const msg = await getAnthropicClient().messages.create({
@@ -84,7 +93,7 @@ async function generateInferenceBlock(
       ] satisfies TextBlockParam[],
       messages: [{
         role: 'user',
-        content: buildInferenceInput(objective, sweepResult, recentChange),
+        content: buildInferenceInput(objective, sweepResult, recentChange, facReports),
       }],
     })
 
@@ -145,6 +154,7 @@ export async function runSweepForUser(
     tokensUsed: 0,
     costUsd: 0,
     error: null,
+    facReports: [],
   }
 
   // Look up the user's email once — needed for the existing per-objective
@@ -155,7 +165,7 @@ export async function runSweepForUser(
   // 2. Load user profile (including calendar URL)
   const { data: profile } = await supabase
     .from('profiles')
-    .select('full_name, tone_pref, depth_pref, tier, account_type, sweep_count')
+    .select('full_name, tone_pref, depth_pref, tier, account_type, sweep_count, org_source')
     .eq('id', userId)
     .single()
 
@@ -329,6 +339,34 @@ export async function runSweepForUser(
 
     console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — outcome rows fetched (${latestOutcomeByObjId.size} objectives with recorded outcomes)`)
 
+    // 4g. Fetch user-authored scoring notes for MISS/PARTIAL predictions (FF-054).
+    // Only injected on non-user_action sweeps. Filters to accuracy_score <= 3 rows
+    // that contain a [Scoring note marker, then groups by objective_id.
+    const scoredPredNotesByObjId = new Map<string, { accuracy_score: number | null; notes: string }[]>()
+    if (triggerType !== 'user_action') {
+      const { data: scoredPredRaw } = await supabase
+        .from('predictions')
+        .select('objective_id, accuracy_score, notes')
+        .eq('user_id', userId)
+        .in('objective_id', objectives.map(o => o.id))
+        .lte('accuracy_score', 3)
+        .not('accuracy_score', 'is', null)
+        .not('notes', 'is', null)
+
+      for (const row of scoredPredRaw ?? []) {
+        const noteStr = row.notes as string
+        if (!noteStr.includes('[Scoring note')) continue
+        const objId = row.objective_id as string
+        if (!scoredPredNotesByObjId.has(objId)) scoredPredNotesByObjId.set(objId, [])
+        scoredPredNotesByObjId.get(objId)!.push({
+          accuracy_score: row.accuracy_score as number | null,
+          notes: noteStr,
+        })
+      }
+    }
+
+    console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — scoring notes fetched (${scoredPredNotesByObjId.size} objectives with miss directives)`)
+
     // 5. Fetch NewsAPI signals for each objective — in parallel to avoid
     // sequential latency that scales linearly with objective count.
     const newsSignalsMap: Record<string, Awaited<ReturnType<typeof fetchNewsSignals>>> = {}
@@ -358,6 +396,150 @@ export async function runSweepForUser(
 
     console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — market comps fetched (${Object.keys(compsMap).length} resale objectives)`)
 
+    // 5c-pre. FF-064: Sub-agent dispatch — query external world state per objective
+    // before coherence package assembly. Runs in parallel; individual failures are
+    // always non-fatal (sub-agent is best-effort, sweep must never depend on it).
+    const signalBriefMap: Record<string, SignalBrief | null> = {}
+    await Promise.allSettled(
+      objectives.map(async obj => {
+        let signalBrief: SignalBrief | null = null
+        try {
+          signalBrief = await dispatchSubAgent({
+            id: obj.id,
+            userId,
+            title: obj.title,
+            category: (obj as { category?: string }).category ?? '',
+            notes: (obj as { notes?: string | null }).notes ?? undefined,
+          })
+        } catch (err) {
+          console.error(`[FF-064] Top-level dispatch failed for ${obj.id} — sweep continues without Layer 7`, err)
+          signalBrief = null
+        }
+        signalBriefMap[obj.id] = signalBrief
+      })
+    )
+
+    const subAgentCount = Object.values(signalBriefMap).filter(Boolean).length
+    console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — FF-064 sub-agent dispatch complete (${subAgentCount}/${objectives.length} objectives returned signal briefs)`)
+
+    // 5c-enrich. FF-066: Domain event enrichment — writes historical domain events
+    // to enterprise_macro_events so Engine 8 picks them up. Runs in parallel,
+    // always non-fatal, skips if events were written within the last 30 days.
+    await Promise.all(
+      objectives.map(async (obj) => {
+        const domain = detectDomain({
+          title: obj.title,
+          category: (obj as { category?: string }).category ?? '',
+          notes: (obj as { notes?: string | null }).notes ?? undefined,
+        })
+        if (domain !== 'unknown') {
+          await enrichDomainEvents(obj.id, domain).catch(err =>
+            console.error(`[FF-066] Enrichment failed for ${obj.id}:`, err)
+          )
+        }
+      })
+    )
+
+    // 5c-pattern. FF-067: Pattern deviation engine — scores each historical year
+    // against current conditions and persists to pattern_matches. Runs after
+    // enrichment so ELK_HUNT events are available for fingerprinting. Non-fatal.
+    const patternResults = await Promise.all(
+      objectives.map(async (obj) => {
+        const domain = detectDomain({
+          title: obj.title,
+          category: (obj as { category?: string }).category ?? '',
+          notes: (obj as { notes?: string | null }).notes ?? undefined,
+        })
+        if (domain === 'unknown') return { objectiveId: obj.id, result: null }
+        const profile = await getDomainProfile(obj.id, domain).catch(() => null)
+        const geoScope = profile?.geographicScope ?? { states: ['UT'], counties: [] }
+        const result = await runPatternDeviationEngine(
+          obj.id, userId, domain, null, geoScope
+        ).catch(err => {
+          console.error(`[FF-067] Pattern deviation failed for ${obj.id}:`, err)
+          return null
+        })
+        return { objectiveId: obj.id, result }
+      })
+    )
+
+    const patternMap = new Map(patternResults.map(r => [r.objectiveId, r.result]))
+    const patternCount = patternResults.filter(r => r.result !== null).length
+    console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — FF-067 pattern deviation complete (${patternCount}/${objectives.length} objectives matched)`)
+
+    // FF-072: Bind agents to objectives so the swarm cron has context per-objective.
+    // Runs in parallel, failures silently skipped — does not block sweep.
+    await Promise.allSettled(
+      objectives.map(async obj => {
+        const domain = detectDomain({ title: obj.title, category: obj.category as string, notes: (obj.notes as string | undefined) ?? undefined })
+        if (domain === 'unknown') return
+        await bindObjectiveToAgents(obj.id, userId, domain).catch(err =>
+          console.error(`[sweep:agentBind] bindObjectiveToAgents failed for ${obj.id}:`, err)
+        )
+      })
+    )
+    console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — FF-072 agent binding complete`)
+
+    // FF-072/FF-076: Generate strike brief for objectives in Strike Brief-enabled domains.
+    // Mirrors the 0430 MT cron so StrikeBriefCard has data when a manual sweep runs
+    // outside cron hours. generateStrikeBrief returns a cached brief if one already
+    // exists for this time window today, so duplicate work is avoided. Non-fatal.
+    //
+    // Strike Brief ships per-vertical — add domains here as each vertical launches.
+    const STRIKE_BRIEF_DOMAINS = new Set(['elk_hunt', 'fishing'])
+    await Promise.allSettled(
+      objectives.map(async obj => {
+        const domain = detectDomain({ title: obj.title, category: obj.category as string, notes: (obj.notes as string | undefined) ?? undefined })
+        if (!STRIKE_BRIEF_DOMAINS.has(domain)) return
+        try {
+          await generateStrikeBrief(obj.id, userId)
+        } catch (err) {
+          console.error(`[sweep:strikeBrief] generateStrikeBrief failed for ${obj.id}:`, err)
+        }
+      })
+    )
+    console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — strike brief generation complete`)
+
+    // Also generate briefs for Strike objective_profiles — these are in objective_profiles
+    // only (not in the objectives table), so the domain-detected loop above skips them.
+    // User_id comes from objective_profiles, not the sweep's userId, so stale objectives
+    // rows with wrong user_ids cannot poison the brief authorship.
+    const { data: strikeProfiles } = await supabase
+      .from('objective_profiles')
+      .select('objective_id, user_id, domain')
+      .eq('user_id', userId)
+      .eq('org_source', 'strike')
+      .eq('status', 'active')
+      .not('objective_id', 'is', null)
+
+    console.log('[sweep:strikeBrief] Strike profiles found:', strikeProfiles?.length ?? 0, JSON.stringify(strikeProfiles?.map(sp => sp.objective_id)))
+
+    if (strikeProfiles && strikeProfiles.length > 0) {
+      // FF-088: bind agents to Strike objectives (hunting + fishing) before brief generation
+      await Promise.allSettled(
+        strikeProfiles.map(async (sp) => {
+          const spDomain = (sp.domain as string | null) ?? 'elk_hunt'
+          await bindObjectiveToAgents(sp.objective_id as string, sp.user_id as string, spDomain).catch(err =>
+            console.error(`[sweep:agentBind] bindObjectiveToAgents failed for Strike profile ${sp.objective_id}:`, err)
+          )
+        })
+      )
+      console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — FF-088 agent binding for Strike profiles complete`)
+
+      await Promise.allSettled(
+        strikeProfiles.map(async (sp) => {
+          console.log('[sweep:strikeBrief] Calling generateStrikeBrief for:', sp.objective_id, sp.user_id)
+          try {
+            await generateStrikeBrief(sp.objective_id as string, sp.user_id as string)
+            console.log('[sweep:strikeBrief] Strike brief generated for:', sp.objective_id)
+          } catch (err) {
+            console.error('[sweep:strikeBrief] generateStrikeBrief failed for:', sp.objective_id, err)
+          }
+        })
+      )
+      console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — strike brief for ${strikeProfiles.length} Strike objective_profiles complete`)
+    }
+
     // 5c. Build signal coherence packages for objectives with active watch sources.
     // Runs in parallel — individual failures are caught per-objective and do not
     // abort the sweep (Promise.allSettled semantics preserved).
@@ -365,9 +547,9 @@ export async function runSweepForUser(
     await Promise.allSettled(
       objectives.map(async obj => {
         try {
-          coherenceMap[obj.id] = await buildCoherencePackage(supabase, obj.id)
+          coherenceMap[obj.id] = await buildCoherencePackage(supabase, obj.id, signalBriefMap[obj.id] ?? null, patternMap.get(obj.id) ?? null)
         } catch (err) {
-          console.error(`[sweep:coherence] buildCoherencePackage failed for objective ${obj.id} (${obj.obj_id}):`, err)
+          console.error(`[sweep:coherence] buildCoherencePackage failed for objective ${obj.id} (${(obj as { obj_id?: string }).obj_id ?? ''}):`, err)
           coherenceMap[obj.id] = null
         }
       })
@@ -412,7 +594,7 @@ export async function runSweepForUser(
       const episodeHistory = episodeHistoryByObjId.get(obj.id) ?? []
       const signalAbsenceCount = episodeHistory.filter(ep => ep.signal_count === 0).length
 
-      return { objective: obj, confidenceHistory: history, recentSignals, comps: compsMap[obj.id] ?? null, completedActionsContext: completedActionsContext || undefined, askContext: askContext || undefined, episodeHistory, signalAbsenceCount, recentChange: latestChangeByObjId.get(obj.id) ?? null, outcomeRow: latestOutcomeByObjId.get(obj.id) ?? null, coherencePackage: coherenceMap[obj.id] ?? null }
+      return { objective: obj, confidenceHistory: history, recentSignals, comps: compsMap[obj.id] ?? null, completedActionsContext: completedActionsContext || undefined, askContext: askContext || undefined, episodeHistory, signalAbsenceCount, recentChange: latestChangeByObjId.get(obj.id) ?? null, outcomeRow: latestOutcomeByObjId.get(obj.id) ?? null, coherencePackage: coherenceMap[obj.id] ?? null, scoredPredictionNotes: scoredPredNotesByObjId.get(obj.id) ?? null }
     })
 
     // Inject upcoming calendar events for Explorer+ users who have a synced connection.
@@ -591,6 +773,60 @@ export async function runSweepForUser(
       await supabase.from('sweeps').update({ signal_class_weights: mergedWeights }).eq('id', sweep.id)
     }
 
+    // FF-056: FAC Engine — Beyond Real-Time Intelligence
+    // Dispatch after sweep synthesis, before inference block assembly.
+    // Non-fatal: sweep continues even if FAC dispatch fails for any objective.
+    const facReportsByObjId = new Map<string, FACReport[]>()
+    const orgSource = (profile as { org_source?: string | null } | null)?.org_source ?? 'arc'
+
+    // Fetch open predictions for all objectives in one query (actual column names: confidence_pct, horizon_date)
+    const { data: openPredsRaw } = await supabase
+      .from('predictions')
+      .select('objective_id, statement, confidence_pct, horizon_date')
+      .eq('user_id', userId)
+      .in('objective_id', objectives.map(o => o.id))
+      .is('accuracy_score', null)
+      .not('horizon_date', 'is', null)
+
+    const openPredsByObjId = new Map<string, Array<{ statement: string; confidence: number; horizon: string }>>()
+    for (const row of openPredsRaw ?? []) {
+      const objId = row.objective_id as string
+      if (!openPredsByObjId.has(objId)) openPredsByObjId.set(objId, [])
+      openPredsByObjId.get(objId)!.push({
+        statement: row.statement as string,
+        confidence: row.confidence_pct as number,
+        horizon: row.horizon_date as string,
+      })
+    }
+
+    await Promise.allSettled(
+      objectives
+        .filter(obj => parsedResultMap.has(obj.id))
+        .map(async obj => {
+          try {
+            const reports = await dispatchFACAgent({
+              objective_id: obj.id,
+              org_source: orgSource,
+              title: obj.title,
+              description: (obj as { goal_description?: string | null }).goal_description ?? undefined,
+              current_confidence: parsedResultMap.get(obj.id)?.confidence ?? (obj.confidence ?? 50),
+              success_condition: (obj as { success_condition?: string | null }).success_condition ?? undefined,
+              vertical: 'arc',
+              open_predictions: openPredsByObjId.get(obj.id) ?? [],
+              sweep_run_id: sweep.id,
+              last_fac_dispatch_at: (obj as { last_fac_dispatch_at?: string | null }).last_fac_dispatch_at ?? null,
+              last_user_action_at: (obj as { last_user_action_at?: string | null }).last_user_action_at ?? null,
+            })
+            if (reports.length > 0) facReportsByObjId.set(obj.id, reports)
+          } catch (err) {
+            console.error(`[FAC] Dispatch failed for objective ${obj.id} (${(obj as { obj_id?: string }).obj_id ?? ''}) — sweep continues without FAC:`, err)
+          }
+        })
+    )
+
+    const allFacReports = Array.from(facReportsByObjId.values()).flat()
+    console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — FAC Engine complete: ${allFacReports.length} forward signals (${facReportsByObjId.size} objectives)`)
+
     // FF-016 Phase 2 — Per-objective Haiku inference pass.
     // Runs after main Sonnet sweep so each call receives the sweep result as context.
     // Same BATCH_SIZE=3 + Promise.allSettled pattern as the main sweep.
@@ -619,7 +855,8 @@ export async function runSweepForUser(
               context: (objective as { context?: Record<string, unknown> | null }).context ?? null,
             },
             sweepResult,
-            recentChange
+            recentChange,
+            facReportsByObjId.get(objId)
           )
           return { objId, inferenceBlock }
         })
@@ -983,29 +1220,6 @@ export async function runSweepForUser(
 
     console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — confidence scores + episodes written for ${objResults.length}/${objectives.length} objectives`)
 
-    // Strike Brief generation — runs after episodes so the brief reflects the
-    // current sweep's confidence and actions. Non-fatal: a brief failure never
-    // blocks the sweep from completing. Skips objectives with no bound agents.
-    try {
-      const briefResults = await Promise.allSettled(
-        objectives.map(obj =>
-          generateStrikeBrief(supabase, userId, {
-            id: obj.id,
-            obj_id: (obj as { obj_id?: string }).obj_id ?? '',
-            title: obj.title,
-            category: obj.category ?? null,
-            context: (obj as { context?: Record<string, unknown> | null }).context ?? null,
-            target_date: obj.target_date ?? null,
-          })
-        )
-      )
-      const briefsGenerated = briefResults.filter(r => r.status === 'fulfilled' && !r.value.skipped).length
-      const briefsSkipped = briefResults.filter(r => r.status === 'fulfilled' && r.value.skipped).length
-      console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — strike briefs: ${briefsGenerated} generated, ${briefsSkipped} skipped`)
-    } catch (err) {
-      console.error(`[strike-brief] Unexpected error in strike brief generation:`, err)
-    }
-
     // FF-021: Auto-log predictions for objectives with confidence delta >= threshold.
     // Wrapped in try/catch — prediction logging failure must NOT break the sweep.
     try {
@@ -1067,6 +1281,7 @@ export async function runSweepForUser(
       tokensUsed,
       costUsd,
       error: sweepErrorMsg,
+      facReports: allFacReports,
     }
 
   } catch (err) {

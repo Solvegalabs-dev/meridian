@@ -50,6 +50,7 @@ export async function processSingleJobAccount(
         summary: result.summary,
         topPriorityAction: result.topPriorityAction,
         objectives: result.objectives,
+        facReports: result.facReports,
       })
       await supabase.from('bulk_sweep_job_accounts')
         .update({ email_status: 'sent', email_sent_at: new Date().toISOString() })
@@ -129,6 +130,7 @@ export async function executeBulkSweepJob(jobId: string): Promise<void> {
           summary: result.summary,
           topPriorityAction: result.topPriorityAction,
           objectives: result.objectives,
+          facReports: result.facReports,
         })
         await supabase.from('bulk_sweep_job_accounts')
           .update({ email_status: 'sent', email_sent_at: new Date().toISOString() })

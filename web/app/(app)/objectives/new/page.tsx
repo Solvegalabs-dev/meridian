@@ -4,10 +4,10 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Link2, Copy, X } from 'lucide-react'
 import { getCategoriesForAccount } from '@/lib/utils/categories'
 
 type ApiError = { error: string; max?: number; target_date?: string }
@@ -76,11 +76,26 @@ function getPlaceholdersByContext(context: string | null): Placeholders {
 
 export default function NewObjectivePage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const supabase = createClient()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [accountType, setAccountType] = useState<string | null>(null)
   const [onboardingContext, setOnboardingContext] = useState<string | null>(null)
+  const [cloneBannerDismissed, setCloneBannerDismissed] = useState(false)
+
+  // Ancestor chain params (set when launched from CloseModal "Yes — start the next goal")
+  const parentObjectiveId = searchParams.get('parent_objective_id')
+  const outcomeId         = searchParams.get('outcome_id')
+  const preTitle          = searchParams.get('pre_title') ?? ''
+  const preCategory       = searchParams.get('pre_category') ?? ''
+  const preContext        = searchParams.get('pre_context')
+
+  // Clone params (set when launched from ArchivedGoalRow "Clone this goal")
+  const cloned          = searchParams.get('cloned')
+  const preOutcome      = searchParams.get('pre_outcome') ?? ''
+  const preNotes        = searchParams.get('pre_notes') ?? ''
+  const preTargetDate   = searchParams.get('pre_target_date') ?? ''
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -98,7 +113,13 @@ export default function NewObjectivePage() {
 
   const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
-    defaultValues: { category: categories[0] },
+    defaultValues: {
+      category:    preCategory || categories[0],
+      title:       preTitle || '',
+      outcome:     preOutcome || '',
+      notes:       preNotes || '',
+      target_date: preTargetDate || '',
+    },
   })
 
   // AI clarifying questions, assessed once after the form is first submitted.
@@ -142,18 +163,29 @@ export default function NewObjectivePage() {
     // Append key_risk to notes context so sweep engine sees it
     const notesWithRisk = [data.notes, data.key_risk ? `Key risk: ${data.key_risk}` : ''].filter(Boolean).join('\n\n')
 
+    // Merge ancestor context into goal_context if available
+    let mergedContext = goalContext
+    if (preContext) {
+      try {
+        const ancestorCtx = JSON.parse(decodeURIComponent(preContext)) as Record<string, unknown>
+        const ancestorStr = `Ancestor context: ${JSON.stringify(ancestorCtx)}`
+        mergedContext = mergedContext ? `${mergedContext}\n\n${ancestorStr}` : ancestorStr
+      } catch { /* ignore malformed context */ }
+    }
+
     const res = await fetch('/api/objectives', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        title:             data.title,
-        category:          data.category,
-        outcome:           data.outcome,
-        success_condition: data.success_condition || null,
-        target_date:       data.target_date || null,
-        notes:             notesWithRisk || null,
-        goal_description:  data.outcome,
-        goal_context:      goalContext,
+        title:               data.title,
+        category:            data.category,
+        outcome:             data.outcome,
+        success_condition:   data.success_condition || null,
+        target_date:         data.target_date || null,
+        notes:               notesWithRisk || null,
+        goal_description:    data.outcome,
+        goal_context:        mergedContext,
+        parent_objective_id: parentObjectiveId || null,
       }),
     })
 
@@ -170,7 +202,20 @@ export default function NewObjectivePage() {
       return
     }
 
-    router.push('/objectives')
+    const { id: newObjectiveId } = await res.json() as { id: string }
+
+    // Backfill spawned_objective_id on the parent outcome row (non-blocking)
+    if (outcomeId && newObjectiveId) {
+      await fetch(`/api/outcomes/${outcomeId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spawned_objective_id: newObjectiveId }),
+      }).catch(() => { /* non-fatal */ })
+    }
+
+    // Redirect to new objective detail if spawned from ancestor chain; otherwise list
+    const redirectTo = (parentObjectiveId && newObjectiveId) ? `/objectives/${newObjectiveId}` : '/objectives'
+    router.push(redirectTo)
     router.refresh()
   }
 
@@ -206,12 +251,42 @@ export default function NewObjectivePage() {
         </div>
       </div>
 
+      {/* Ancestor chain banner */}
+      {parentObjectiveId && preTitle && (
+        <div className="mb-4 px-4 py-3 rounded-xl flex items-start gap-2.5 text-[13px]"
+          style={{ backgroundColor: 'rgba(201,162,39,.1)', border: '1px solid rgba(201,162,39,.3)', color: 'var(--ov-text-hi)' }}>
+          <Link2 size={14} style={{ color: 'var(--ov-amber)', flexShrink: 0, marginTop: '2px' }} />
+          <div>
+            <p style={{ fontWeight: 600, color: 'var(--ov-amber)', fontSize: '12px', marginBottom: '2px' }}>Continuing from a closed goal</p>
+            <p style={{ color: 'var(--ov-text-mid)', fontSize: '12px' }}>{decodeURIComponent(preTitle)}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Clone banner */}
+      {cloned === '1' && !cloneBannerDismissed && (
+        <div className="mb-4 px-4 py-3 rounded-xl flex items-start justify-between gap-2.5"
+          style={{ backgroundColor: 'rgba(59,130,246,.08)', border: '1px solid rgba(59,130,246,.25)' }}>
+          <div className="flex items-start gap-2.5">
+            <Copy size={14} style={{ color: 'var(--blue)', flexShrink: 0, marginTop: '2px' }} />
+            <p style={{ fontSize: '12px', color: 'var(--text2)' }}>
+              Cloned from an archived goal — review and update before saving.
+            </p>
+          </div>
+          <button onClick={() => setCloneBannerDismissed(true)} style={{ color: 'var(--text3)', flexShrink: 0, padding: '0 2px' }}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {error?.startsWith('limit:') && (
         <div className="mb-4 p-4 rounded-xl bg-amber-50 border border-amber-200 text-[13px]">
           <p className="font-medium text-amber-900 mb-1">
-            You&apos;ve reached your {error.split(':')[1]}-goal limit.
+            You&apos;ve reached your limit of {error.split(':')[1]} active goals.
           </p>
-          <p className="text-amber-700 mb-3">Upgrade your plan to track more goals.</p>
+          <p className="text-amber-700 mb-3">
+            Closed and abandoned goals don&apos;t count against your limit. Close an active goal to make room, or upgrade your plan for more.
+          </p>
           <Link
             href="/settings#billing"
             className="inline-block px-4 py-2 rounded-lg bg-amber-600 text-white text-[12px] font-medium hover:bg-amber-700 transition-colors"

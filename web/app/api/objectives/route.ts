@@ -37,22 +37,26 @@ export async function POST(request: NextRequest) {
     deadline_type?: 'hard' | 'soft'
     reservation_price?: number
     context?: Record<string, unknown>
+    parent_objective_id?: string | null
   }
 
   const [{ data: profile }, { data: existingObjs }] = await Promise.all([
     supabase.from('profiles').select('tier, account_type').eq('id', user.id).single(),
-    // Fetch obj_ids (not just count) so we can derive the next sequence number
-    // from the actual max assigned, not from row count. Count-based sequencing
-    // produces duplicates when any objective has been hard-deleted from the DB.
-    supabase.from('objectives').select('obj_id').eq('user_id', user.id),
+    // Fetch obj_id + status for all objectives:
+    //   - obj_id drives OBJ-XX sequence number (must include closed/abandoned to avoid gaps)
+    //   - status lets us count only active objectives against the tier limit
+    supabase.from('objectives').select('obj_id, status').eq('user_id', user.id),
   ])
 
   const tier = (profile?.tier ?? 'trial') as Parameters<typeof getMaxObjectives>[0]
   const accountType = (profile?.account_type ?? 'personal') as string
   const max = getMaxObjectives(tier, accountType)
-  const currentCount = existingObjs?.length ?? 0
+  // Only active objectives count against the limit. Closed/abandoned/archived goals
+  // are excluded so users are not penalized for completing or closing old goals.
+  const activeCount = (existingObjs ?? []).filter(o => o.status === 'active').length
+  const totalCount = existingObjs?.length ?? 0
 
-  if (max !== null && currentCount >= max) {
+  if (max !== null && activeCount >= max) {
     return NextResponse.json({ error: 'objective_limit_reached', max }, { status: 403 })
   }
 
@@ -93,9 +97,10 @@ export async function POST(request: NextRequest) {
       deadline_type: body.deadline_type ?? 'hard',
       reservation_price: body.reservation_price ?? null,
       context: body.context ?? {},
+      parent_objective_id: body.parent_objective_id ?? null,
       status: 'active',
       confidence: 50,
-      sort_order: currentCount + 1,
+      sort_order: totalCount + 1,
     })
     .select()
     .single()
@@ -123,5 +128,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ objective: data })
+  return NextResponse.json({ id: data?.id, objective: data })
 }

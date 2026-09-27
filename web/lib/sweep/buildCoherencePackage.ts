@@ -12,6 +12,27 @@ export interface WatchSourceEntry {
   target_signal: string | null
 }
 
+export interface Layer7ExternalSignals {
+  available: boolean
+  domain: string
+  keyFindings: string[]
+  patternObservation: string
+  confidenceTier: string
+  rawSummary: string
+  queriesRun: number
+  executedAt: string
+}
+
+export interface Layer8PatternDeviation {
+  available: boolean
+  topMatchYear: number | null
+  topMatchScore: number | null
+  patternLabel: string | null
+  patternSummary: string
+  historicalOutcome: string | null
+  outcomeConfidence: number
+}
+
 export interface CoherencePackage {
   objectiveId: string
   title: string
@@ -24,11 +45,15 @@ export interface CoherencePackage {
   completedActions: { description: string; actionDate: string }[]
   predictions: { statement: string; confidencePct: number; horizonDate: string | null; status: string }[]
   episodes: { episodeNumber: number; narrative: string | null; createdAt: string }[]
+  layer7ExternalSignals: Layer7ExternalSignals
+  layer8PatternDeviation: Layer8PatternDeviation
 }
 
 export async function buildCoherencePackage(
   supabase: SupabaseClient,
-  objectiveId: string
+  objectiveId: string,
+  signalBrief?: { domain: string; keyFindings: string[]; patternObservation: string; confidenceTier: string; rawSummary: string; queriesRun: number; executedAt: string } | null,
+  patternResult?: { topMatch: { year: number; score: number; patternLabel: string; historicalOutcome: string | null; outcomeConfidence: number } | null; patternSummary: string } | null
 ): Promise<CoherencePackage | null> {
   // Fetch objective + watch sources in parallel
   const [objResult, watchResult] = await Promise.all([
@@ -45,12 +70,9 @@ export async function buildCoherencePackage(
       .not('url_resolved', 'is', null),
   ])
 
-  console.log(`[coherence] objective=${objectiveId} watch_sources_count=${watchResult.data?.length ?? 0} error=${watchResult.error?.message ?? 'none'}`)
-
   const watchSources: WatchSourceEntry[] = (watchResult.data ?? []) as WatchSourceEntry[]
 
-  // No watch sources → no coherence package needed
-  if (watchSources.length === 0) return null
+  console.log(`[coherence] objective=${objectiveId} watch_sources_count=${watchSources.length} error=${watchResult.error?.message ?? 'none'}`)
 
   const obj = objResult.data
   if (!obj) return null
@@ -108,6 +130,42 @@ export async function buildCoherencePackage(
       narrative: (e.narrative as string | null) ?? null,
       createdAt: e.created_at as string,
     })),
+    layer7ExternalSignals: signalBrief ? {
+      available: true,
+      domain: signalBrief.domain,
+      keyFindings: signalBrief.keyFindings,
+      patternObservation: signalBrief.patternObservation,
+      confidenceTier: signalBrief.confidenceTier,
+      rawSummary: signalBrief.rawSummary,
+      queriesRun: signalBrief.queriesRun,
+      executedAt: signalBrief.executedAt,
+    } : {
+      available: false,
+      domain: 'none',
+      keyFindings: [],
+      patternObservation: '',
+      confidenceTier: 'T4',
+      rawSummary: '',
+      queriesRun: 0,
+      executedAt: '',
+    },
+    layer8PatternDeviation: patternResult ? {
+      available: true,
+      topMatchYear: patternResult.topMatch?.year ?? null,
+      topMatchScore: patternResult.topMatch?.score ?? null,
+      patternLabel: patternResult.topMatch?.patternLabel ?? null,
+      patternSummary: patternResult.patternSummary,
+      historicalOutcome: patternResult.topMatch?.historicalOutcome ?? null,
+      outcomeConfidence: patternResult.topMatch?.outcomeConfidence ?? 0,
+    } : {
+      available: false,
+      topMatchYear: null,
+      topMatchScore: null,
+      patternLabel: null,
+      patternSummary: '',
+      historicalOutcome: null,
+      outcomeConfidence: 0,
+    },
   }
 }
 
@@ -121,12 +179,14 @@ export function formatCoherencePackageForPrompt(pkg: CoherencePackage): string {
   if (pkg.outcome) lines.push(`TARGET SIGNAL: ${pkg.outcome}`)
   lines.push('')
 
-  lines.push('WATCH SOURCES (primary targeting — check these first):')
-  for (const ws of pkg.watchSources) {
-    lines.push(`  - [${ws.watch_type}] ${ws.url_provided}: ${ws.url_resolved}`)
-    if (ws.target_signal) lines.push(`    Looking for: ${ws.target_signal}`)
+  if (pkg.watchSources.length > 0) {
+    lines.push('WATCH SOURCES (primary targeting — check these first):')
+    for (const ws of pkg.watchSources) {
+      lines.push(`  - [${ws.watch_type}] ${ws.url_provided}: ${ws.url_resolved}`)
+      if (ws.target_signal) lines.push(`    Looking for: ${ws.target_signal}`)
+    }
+    lines.push('')
   }
-  lines.push('')
 
   if (pkg.predictions.length > 0) {
     lines.push('PREDICTION TRAJECTORY:')
@@ -157,6 +217,54 @@ export function formatCoherencePackageForPrompt(pkg: CoherencePackage): string {
       const summary = e.narrative ? e.narrative.slice(0, 300) : 'No narrative'
       lines.push(`  Episode ${e.episodeNumber} (${e.createdAt.split('T')[0]}): ${summary}`)
     }
+    lines.push('')
+  }
+
+  const l7 = pkg.layer7ExternalSignals
+  if (l7?.available) {
+    lines.push('=== LAYER 7: EXTERNAL SIGNAL BRIEF ===')
+    lines.push(`Domain: ${l7.domain}`)
+    lines.push(`Queries executed: ${l7.queriesRun}`)
+    lines.push(`Confidence tier: ${l7.confidenceTier}`)
+    lines.push('')
+    lines.push('Key findings from external world:')
+    l7.keyFindings.forEach((f, i) => lines.push(`${i + 1}. ${f}`))
+    lines.push('')
+    lines.push(`Pattern observation: ${l7.patternObservation}`)
+    lines.push('')
+    lines.push(`Full external signal summary: ${l7.rawSummary}`)
+    lines.push('')
+    lines.push('INTELLIGENCE INTEGRITY STANDARD:')
+    lines.push('- T1 findings (government/agency structured data) → state as confirmed fact with source')
+    lines.push('- T2 findings (verified field observation) → state with high confidence, cite source')
+    lines.push('- T3 findings (reported/anecdotal) → flag as unverified lead')
+    lines.push('- T4 findings (modeled/inferred) → state as pattern inference, field verification required')
+    lines.push('- NEVER state a location as confirmed without T1 or T2 source')
+    lines.push('=== END LAYER 7 ===')
+    lines.push('')
+  } else {
+    lines.push('=== LAYER 7: EXTERNAL SIGNAL BRIEF ===')
+    lines.push('No external signals available for this objective domain.')
+    lines.push('=== END LAYER 7 ===')
+    lines.push('')
+  }
+
+  const l8 = pkg.layer8PatternDeviation
+  if (l8?.available) {
+    lines.push('=== LAYER 8: HISTORICAL PATTERN MATCH ===')
+    lines.push(`Top historical match: ${l8.topMatchYear} (${l8.topMatchScore}% similarity)`)
+    lines.push(`Pattern label: ${l8.patternLabel}`)
+    lines.push(`Pattern summary: ${l8.patternSummary}`)
+    lines.push(`Historical outcome: ${l8.historicalOutcome || 'No outcome data available'}`)
+    lines.push(`Outcome confidence: ${l8.outcomeConfidence}%`)
+    lines.push('')
+    lines.push('INTELLIGENCE DIRECTIVE: When Layer 8 shows a strong match (≥60%) with a known historical outcome, lead the synthesis with the pattern match and its implications. State explicitly: "Current conditions match [YEAR] at [SCORE]% similarity. In [YEAR], [outcome]." This is the highest-value intelligence signal available.')
+    lines.push('=== END LAYER 8 ===')
+    lines.push('')
+  } else {
+    lines.push('=== LAYER 8: HISTORICAL PATTERN MATCH ===')
+    lines.push('No historical pattern data available for this domain.')
+    lines.push('=== END LAYER 8 ===')
     lines.push('')
   }
 

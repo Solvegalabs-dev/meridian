@@ -3,6 +3,8 @@ export const dynamic = 'force-dynamic'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import AppShell from '@/components/layout/AppShell'
+import { VoiceInit } from '@/components/voice/VoiceInit'
+import { userVoiceTier } from '@/lib/voice/voiceTier'
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const supabase = createClient()
@@ -16,7 +18,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('onboarded_at, account_type, last_sweep_at, tutorial_views_count')
+    .select('onboarded_at, account_type, last_sweep_at, tutorial_views_count, tier, voice_addon, voice_mode, voice_type, voice_rate, voice_volume, voice_onboarded, last_brief_heard_at')
     .eq('id', user.id)
     .single()
   if (!profile?.onboarded_at) redirect('/onboarding/sweep')
@@ -43,14 +45,44 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     if (next > new Date()) nextSweepAt = next.toISOString()
   }
 
+  const voiceProfile = profile as {
+    tier?: string | null
+    voice_addon?: boolean | null
+    voice_mode?: boolean | null
+    voice_type?: string | null
+    voice_rate?: number | null
+    voice_volume?: number | null
+    voice_onboarded?: boolean | null
+    last_brief_heard_at?: string | null
+  } | null
+  const voiceTier = userVoiceTier({
+    pricing_tier: voiceProfile?.tier ?? null,
+    account_type: profile?.account_type ?? null,
+    voice_addon: voiceProfile?.voice_addon ?? false,
+  })
+
   return (
-    <AppShell
-      userEmail={user.email}
-      lastSweepAt={lastSweep?.completed_at ?? null}
-      nextSweepAt={nextSweepAt}
-      tutorialViewsCount={profile?.tutorial_views_count ?? 0}
-    >
-      {children}
-    </AppShell>
+    <>
+      <AppShell
+        userEmail={user.email}
+        lastSweepAt={lastSweep?.completed_at ?? null}
+        nextSweepAt={nextSweepAt}
+        tutorialViewsCount={profile?.tutorial_views_count ?? 0}
+      >
+        {children}
+      </AppShell>
+      <VoiceInit
+        voiceTier={voiceTier}
+        voiceMode={voiceProfile?.voice_mode ?? false}
+        tier={voiceProfile?.tier}
+        accountType={profile?.account_type}
+        voiceAddon={voiceProfile?.voice_addon ?? false}
+        voiceType={voiceProfile?.voice_type ?? null}
+        voiceRate={voiceProfile?.voice_rate ?? 1.0}
+        voiceVolume={voiceProfile?.voice_volume ?? 1.0}
+        voiceOnboarded={voiceProfile?.voice_onboarded ?? false}
+        lastBriefHeardAt={voiceProfile?.last_brief_heard_at ?? null}
+      />
+    </>
   )
 }

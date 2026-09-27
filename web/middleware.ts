@@ -26,7 +26,15 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   const { pathname } = request.nextUrl
 
+  // Vercel's apex-to-www edge redirect (308) strips the Authorization header
+  // before middleware sees the request on www. Detect valid cron tokens here so
+  // these routes are never redirected to login — the route handler re-validates.
+  const isCronAuth =
+    !!process.env.CRON_SECRET &&
+    request.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
+
   const isPublicPath =
+    isCronAuth ||
     pathname === '/' ||
     pathname.startsWith('/home') ||
     pathname.startsWith('/alpha') ||
@@ -38,10 +46,16 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/api/admin/sweeps/process-scheduled') ||
     pathname.startsWith('/api/enterprise/ingest') ||
     pathname.startsWith('/api/enterprise/sweep') ||
+    pathname.startsWith('/api/enterprise/learning/') ||
+    pathname.startsWith('/api/enterprise/lite-sweep-cron') ||
     pathname.startsWith('/api/invites/validate') ||
     pathname.startsWith('/api/support/contact') ||
     pathname.startsWith('/api/support/digest') ||
     pathname.startsWith('/api/cron/score-horizons') ||
+    pathname.startsWith('/api/cron/agent-swarm') ||
+    pathname.startsWith('/api/cron/strike-brief-push') ||
+    pathname.startsWith('/api/objectives/create') ||
+    pathname.startsWith('/api/mip/') ||
     pathname.startsWith('/reset-password') ||
     pathname.startsWith('/forgot-password') ||
     pathname.startsWith('/legal') ||
@@ -76,6 +90,7 @@ export async function middleware(request: NextRequest) {
     }
   }
 
+  supabaseResponse.headers.set('x-pathname', pathname)
   return supabaseResponse
 }
 

@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import PredictionsClient from './PredictionsClient'
+import { getUserTrackRecord } from '@/lib/predictions/trackRecord'
 
 export const dynamic = 'force-dynamic'
 
@@ -9,7 +10,7 @@ export default async function PredictionsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const [{ data: predictions }, { data: objectives }] = await Promise.all([
+  const [{ data: predictions }, { data: objectives }, trackRecord] = await Promise.all([
     supabase
       .from('predictions')
       .select('*, objectives(obj_id, title), prediction_scores(accuracy_score, actual_outcome, scored_at)')
@@ -21,12 +22,14 @@ export default async function PredictionsPage() {
       .eq('user_id', user.id)
       .eq('status', 'active')
       .order('sort_order'),
+    getUserTrackRecord(user.id),
   ])
 
   return (
     <PredictionsClient
       initialPredictions={predictions ?? []}
       objectives={objectives ?? []}
+      trackRecord={trackRecord}
     />
   )
 }

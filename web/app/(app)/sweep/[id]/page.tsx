@@ -207,7 +207,7 @@ export default async function SweepResultPage({ params }: { params: { id: string
       </div>
 
       <AskMeridianBar
-        placeholder="Ask Meridian Arc about any of this…"
+        placeholder="Ask Meridian about any of this…"
         context={raw?.sweep_summary}
       />
     </div>

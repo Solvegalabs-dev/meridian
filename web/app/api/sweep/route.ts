@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { runSweepForUser } from '@/lib/sweep/runSweepForUser'
 import { checkWatchSources } from '@/lib/watchlist/checkWatchSources'
+import { generateVoiceBrief } from '@/lib/voice/generateVoiceBrief'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 600 // Vercel Pro — 12000 token budget at ~267s leaves 333s runway
@@ -58,6 +59,13 @@ export async function POST(request: NextRequest) {
     .from('profiles')
     .update({ last_sweep_at: new Date().toISOString() })
     .eq('id', user.id)
+
+  // Generate voice brief post-sweep — non-fatal
+  try {
+    await generateVoiceBrief(service, user.id, result.sweepId!)
+  } catch (err) {
+    console.error('[voice:brief] generateVoiceBrief failed:', err)
+  }
 
   // Check watch sources post-sweep — non-fatal
   try {

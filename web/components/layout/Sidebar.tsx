@@ -20,7 +20,7 @@ const navItems = [
   { href: '/sweep/latest', label: "This week's brief", icon: Newspaper, activeMatch: '/sweep' },
   { href: '/objectives', label: 'Your goals', icon: Target },
   { href: '/predictions', label: 'Predictions', icon: TrendingUp },
-  { href: '/ask', label: 'Ask Meridian Arc', icon: MessageCircle },
+  { href: '/ask', label: 'Ask Meridian', icon: MessageCircle },
   { href: '/enterprise', label: 'Enterprise', icon: Building2 },
   { href: '/settings', label: 'Settings', icon: Settings },
 ]

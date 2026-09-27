@@ -1,21 +1,28 @@
 'use client'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, Suspense } from 'react'
+import Image from 'next/image'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { ObjectivesPanel } from '@/components/enterprise/ObjectivesPanel'
 import { ObjectiveCard } from '@/components/enterprise/ObjectiveCard'
 import { PortfolioMetricsPanel } from '@/components/enterprise/PortfolioMetricsPanel'
+import { REPortfolioMetricsPanel } from '@/components/enterprise/REPortfolioMetricsPanel'
 import { AskMeridianFusion } from '@/components/enterprise/AskMeridianFusion'
 import { RecentlyViewedAccounts } from '@/components/enterprise/RecentlyViewedAccounts'
-import { getObjectivesWithResults, getMacroEventLinkMap, getPortfolioMetrics } from '@/lib/enterprise/objectives-queries'
+import { getObjectivesWithResults, getMacroEventLinkMap, getPortfolioMetrics, getREPortfolioMetrics } from '@/lib/enterprise/objectives-queries'
 import { updateObjectiveState, runEnterpriseSweep, updateSignalPreferences } from './actions'
-import type { ObjectiveWithResult, ObjectiveState, MacroEventLink, PortfolioMetricsData } from '@/lib/enterprise/objectives-queries'
+import type { ObjectiveWithResult, ObjectiveState, MacroEventLink, PortfolioMetricsData, REPortfolioMetricsData } from '@/lib/enterprise/objectives-queries'
+import { InstitutionSwitcher } from '@/components/enterprise/InstitutionSwitcher'
+import { ManageObjectivesPanel } from '@/components/enterprise/ManageObjectivesPanel'
 
 interface Props {
   institutionId: string
   institutionName: string
   logoUrl?: string | null
+  institutions: Array<{ id: string; name: string }>
+  verticalType?: string
 }
 
 type DriftDirection = 'CRITICAL' | 'ALERT' | 'CAUTION' | 'STABLE'
@@ -56,6 +63,16 @@ const SIGNAL_CATEGORIES = [
   { key: 'cu_news',           label: 'Credit Union News',  examples: 'Industry publications, regulatory changes, member trends',                     defaultOn: false },
   { key: 'geopolitical',      label: 'Geopolitical',       examples: 'Supply chain disruptions, conflict signals, sanctions',                        defaultOn: false },
   { key: 'housing_market',    label: 'Housing Market',     examples: 'Mortgage rates, housing starts (affects consumer balance sheets)',             defaultOn: false },
+]
+
+const RE_SIGNAL_CATEGORIES = [
+  { key: 'interest_rate',        label: 'Mortgage Rates',         examples: '30yr fixed, 15yr fixed, ARM rates, Fed rate decisions',                       defaultOn: true  },
+  { key: 'housing_real_estate',  label: 'Housing Market',         examples: 'Housing inventory, days on market, median sale price, new listings',           defaultOn: true  },
+  { key: 'regional_employment',  label: 'Regional Employment',    examples: 'Local unemployment, job openings, sector hiring in target markets',             defaultOn: true  },
+  { key: 'inflation',            label: 'Inflation',              examples: 'CPI, PCE, purchasing power impact on buyers',                                   defaultOn: true  },
+  { key: 'migration_population', label: 'Migration & Population', examples: 'Inbound migration trends, population growth, buyer demand signals',             defaultOn: true  },
+  { key: 'energy_commodity',     label: 'Energy & Commodity',     examples: 'Construction materials, fuel costs affecting affordability and carrying costs', defaultOn: false },
+  { key: 'regulatory_judicial',  label: 'Regulatory',            examples: 'Zoning changes, lending rule changes, title/escrow regulations',                defaultOn: false },
 ]
 
 const DRIFT_COLORS: Record<DriftDirection, string> = {
@@ -214,10 +231,10 @@ function parseSignalDisplay(s: Signal): { label: string; value: string; delta: s
 function FusionCard({ signal }: { signal: Signal }) {
   const { label, value, delta, isNeg } = parseSignalDisplay(signal)
   return (
-    <div style={{ background: '#EAF0FB', borderRadius: 8, padding: '12px 14px' }}>
-      <div style={{ fontSize: 11, color: '#2D6BE4', fontWeight: 600, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 13, color: '#1A1A2E', fontWeight: 600 }}>{value}</div>
-      <div style={{ fontSize: 10, marginTop: 3, color: isNeg ? '#D35400' : '#1E8449' }}>{delta}</div>
+    <div style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '12px 14px' }}>
+      <div style={{ fontSize: 11, color: '#8AB4D4', fontWeight: 600, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 13, color: '#ffffff', fontWeight: 600 }}>{value}</div>
+      <div style={{ fontSize: 10, marginTop: 3, color: isNeg ? '#f87171' : '#34d399' }}>{delta}</div>
     </div>
   )
 }
@@ -227,10 +244,12 @@ function CustomizeModal({
   prefs,
   onSave,
   onClose,
+  categories,
 }: {
   prefs: Record<string, boolean>
   onSave: (p: Record<string, boolean>) => void
   onClose: () => void
+  categories: typeof SIGNAL_CATEGORIES
 }) {
   const [local, setLocal] = useState<Record<string, boolean>>(prefs)
 
@@ -248,7 +267,7 @@ function CustomizeModal({
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-xl leading-none">×</button>
         </div>
         <div className="px-5 py-4 space-y-3 max-h-80 overflow-y-auto">
-          {SIGNAL_CATEGORIES.map(cat => (
+          {categories.map(cat => (
             <label key={cat.key} className="flex items-start gap-3 cursor-pointer group">
               <input
                 type="checkbox"
@@ -278,8 +297,14 @@ function CustomizeModal({
   )
 }
 
-export default function EnterprisePortalClient({ institutionId, institutionName, logoUrl }: Props) {
+export default function EnterprisePortalClient({ institutionId, institutionName, logoUrl, institutions, verticalType = 'auto_finance' }: Props) {
+  const isRE = verticalType === 'real_estate'
+  const activeCategories = isRE ? RE_SIGNAL_CATEGORIES : SIGNAL_CATEGORIES
+
   const supabase = createClient()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const iid = searchParams.get('iid')
   const [sweep, setSweep] = useState<Sweep | null>(null)
   const [sweepHistory, setSweepHistory] = useState<Sweep[]>([])
   const [liveCounts, setLiveCounts] = useState<Record<DriftDirection, number>>({ CRITICAL: 0, ALERT: 0, CAUTION: 0, STABLE: 0 })
@@ -288,8 +313,9 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
   const [objectives, setObjectives] = useState<ObjectiveWithResult[]>([])
   const [linkMap, setLinkMap] = useState<Map<string, MacroEventLink>>(new Map())
   const [portfolioMetrics, setPortfolioMetrics] = useState<PortfolioMetricsData | null>(null)
+  const [rePortfolioMetrics, setREPortfolioMetrics] = useState<REPortfolioMetricsData | null>(null)
   const [signalPrefs, setSignalPrefs] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(SIGNAL_CATEGORIES.map(c => [c.key, c.defaultOn]))
+    Object.fromEntries(activeCategories.map(c => [c.key, c.defaultOn]))
   )
   const [loading, setLoading] = useState(true)
   const [sweeping, setSweeping] = useState(false)
@@ -298,6 +324,9 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
   const [portfolioTab, setPortfolioTab] = useState<'Overview' | 'Regions' | 'Cohorts'>('Overview')
   const [showCustomize, setShowCustomize] = useState(false)
   const [changingObjectiveId, setChangingObjectiveId] = useState<string | null>(null)
+  // FF-050
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [showManagePanel, setShowManagePanel] = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -324,12 +353,15 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
         .limit(13)
       setSweepHistory([...(hist ?? [])].reverse())
 
-      // Live tier counts from enterprise_case_history (primary source — sweep counts are stale)
+      // Live tier counts: fetch cases directly (no agent join — agent_id is null
+      // on demo cases and the broker_agents join would filter them out), then
+      // read the latest drift_tier per case from enterprise_case_history.
       const { data: casesRaw } = await supabase
         .from('enterprise_cases')
         .select('id, region')
         .eq('institution_id', institutionId)
         .eq('in_scope', true)
+
       const casesList = casesRaw ?? []
       const caseIds = casesList.map((c: any) => c.id as string)
 
@@ -349,9 +381,9 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
       const counts: Record<DriftDirection, number> = { CRITICAL: 0, ALERT: 0, CAUTION: 0, STABLE: 0 }
       const enriched = casesList.map((c: any) => {
         const h = histMap.get(c.id)
-        const tier = (h?.drift_tier ?? 'STABLE') as DriftDirection
+        const tier = ((h?.drift_tier as string) ?? 'STABLE') as DriftDirection
         counts[tier]++
-        return { id: c.id as string, region: (c.region as string) ?? 'Unknown', drift_tier: tier, drift_score: (h?.drift_score ?? 0) as number }
+        return { id: c.id as string, region: (c.region as string) ?? 'Unknown', drift_tier: tier, drift_score: (h?.drift_score as number) ?? 0 }
       })
       setLiveCounts(counts)
       setPortalCases(enriched)
@@ -363,6 +395,7 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
         .from('market_signals')
         .select('signal_id, source, direction_score, direction, magnitude, event_text, effective_date')
         .gte('effective_date', since.toISOString().split('T')[0])
+        .overlaps('sector_tags', [verticalType, 'all'])
         .order('direction_score', { ascending: true })
         .limit(200)
 
@@ -392,9 +425,14 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
       const lm = await getMacroEventLinkMap(supabase)
       setLinkMap(lm)
 
-      // Portfolio health metrics panel
-      const pm = await getPortfolioMetrics(supabase, institutionId)
-      setPortfolioMetrics(pm)
+      // Portfolio health metrics panel — vertical-aware
+      if (isRE) {
+        const rpm = await getREPortfolioMetrics(supabase, institutionId)
+        setREPortfolioMetrics(rpm)
+      } else {
+        const pm = await getPortfolioMetrics(supabase, institutionId)
+        setPortfolioMetrics(pm)
+      }
 
       // Institution signal preferences from config
       const { data: inst } = await supabase
@@ -407,12 +445,24 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
         setSignalPrefs(prev => ({ ...prev, ...savedPrefs }))
       }
 
+      // FF-050: admin check — drives "Manage Objectives" button visibility
+      const { data: { user: currentUser } } = await supabase.auth.getUser()
+      if (currentUser) {
+        const { data: member } = await supabase
+          .from('enterprise_members')
+          .select('role')
+          .eq('institution_id', institutionId)
+          .eq('user_id', currentUser.id)
+          .single()
+        setIsAdmin((member as { role?: string } | null)?.role === 'admin')
+      }
+
     } catch (e: any) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [institutionId, supabase])
+  }, [institutionId, supabase, isRE, verticalType])
 
   useEffect(() => { loadAll() }, [loadAll])
 
@@ -421,7 +471,7 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
     setError(null)
     try {
       const result = await runEnterpriseSweep(institutionId)
-      if (!result.ok) throw new Error(result.error ?? 'Sweep failed')
+      if (!result?.ok) throw new Error(result?.error ?? 'Sweep failed')
       await loadAll()
     } catch (e: any) {
       setError(e.message)
@@ -472,7 +522,8 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
   const objTitleMap = new Map(objectives.map(o => [o.obj_id, o.title]))
 
   // Meridian Fusion Insight — AI-generated narrative stored by sweep engine (B1)
-  const fusionInsight = portfolioMetrics?.portfolioSummary || null
+  // For RE: suppress auto-finance summary until an RE-aware sweep has run
+  const fusionInsight = isRE ? null : (portfolioMetrics?.portfolioSummary ?? null)
 
   if (loading) return (
     <div className="flex items-center justify-center min-h-[60vh]">
@@ -500,14 +551,24 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
           prefs={signalPrefs}
           onSave={handleSavePrefs}
           onClose={() => setShowCustomize(false)}
+          categories={activeCategories}
         />
       )}
+
+      {/* FF-050: Manage Objectives slide-over */}
+      <ManageObjectivesPanel
+        open={showManagePanel}
+        onClose={() => setShowManagePanel(false)}
+        institutionId={institutionId}
+        verticalType={verticalType}
+        onObjectivesChanged={loadAll}
+      />
 
       {/* HEADER — institution branding */}
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
           {logoUrl ? (
-            <img src={logoUrl} alt={institutionName} className="h-10 w-auto object-contain flex-shrink-0" />
+            <Image src={logoUrl} alt={institutionName} width={80} height={40} className="h-10 w-auto object-contain flex-shrink-0" unoptimized />
           ) : (
             <div className="w-10 h-10 rounded-full bg-yellow-600 flex items-center justify-center flex-shrink-0 text-white font-black text-lg">
               {institutionName.charAt(0).toUpperCase()}
@@ -522,7 +583,17 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={loadAll}
+          <Suspense fallback={null}><InstitutionSwitcher institutions={institutions} /></Suspense>
+          {/* FF-050: Manage Objectives — admin only */}
+          {isAdmin && (
+            <button
+              onClick={() => setShowManagePanel(true)}
+              className="text-sm font-medium text-gray-300 hover:text-white border border-gray-700 hover:border-gray-500 rounded-lg px-3 py-1.5 transition"
+            >
+              Manage Objectives
+            </button>
+          )}
+          <button onClick={() => { router.refresh(); loadAll() }}
             className="text-sm text-gray-400 hover:text-white border border-gray-700 rounded-lg px-3 py-1.5 transition">
             Refresh
           </button>
@@ -682,10 +753,11 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
         {/* RIGHT column */}
         <div className="flex flex-col gap-4">
 
-          {/* Portfolio Health Metrics — top of right column */}
-          {portfolioMetrics && (
-            <PortfolioMetricsPanel data={portfolioMetrics} />
-          )}
+          {/* Portfolio Health Metrics — vertical-aware */}
+          {isRE
+            ? rePortfolioMetrics && <REPortfolioMetricsPanel data={rePortfolioMetrics} />
+            : portfolioMetrics && <PortfolioMetricsPanel data={portfolioMetrics} />
+          }
 
           {/* Monitoring Lite */}
           {liteObjs.length > 0 && (
@@ -710,12 +782,12 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
           )}
 
           {/* Live Fusion Data with Customize link */}
-          <div className="rounded-xl overflow-hidden" style={{ background: '#fff', border: '1px solid #DDE3EE' }}>
-            <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid #DDE3EE' }}>
+          <div className="rounded-xl overflow-hidden" style={{ background: '#0D1B3E', border: '1px solid rgba(46,124,184,0.2)' }}>
+            <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
               <div>
-                <div className="font-semibold text-sm" style={{ color: '#1B2A4A' }}>Live Fusion Data</div>
-                <div className="text-xs mt-0.5" style={{ color: '#6B7280' }}>
-                  {keySignals.length} active signal stream{keySignals.length !== 1 ? 's' : ''} · FRED · EIA · BLS · GDELT
+                <div className="font-semibold text-sm" style={{ color: '#ffffff' }}>Live Fusion Data</div>
+                <div className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                  {`${keySignals.length} active signal stream${keySignals.length !== 1 ? 's' : ''} · ${isRE ? 'Freddie Mac · NAR · FRED · MBA' : 'FRED · EIA · BLS · GDELT'}`}
                 </div>
               </div>
               <button
@@ -727,12 +799,14 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
               </button>
             </div>
             <div style={{ padding: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              {keySignals.map(s => <FusionCard key={s.signal_id} signal={s} />)}
-              {keySignals.length === 0 && (
-                <div style={{ gridColumn: '1/-1', padding: '24px 0', textAlign: 'center', color: '#6B7280', fontSize: 13 }}>
-                  Signals ingest weekly — check back Monday
-                </div>
-              )}
+              <>
+                {keySignals.map(s => <FusionCard key={s.signal_id} signal={s} />)}
+                {keySignals.length === 0 && (
+                  <div style={{ gridColumn: '1/-1', padding: '24px 0', textAlign: 'center', color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>
+                    {isRE ? 'Mortgage rates, housing inventory & DOM signals will appear after the first RE sweep' : 'Signals ingest weekly — check back Monday'}
+                  </div>
+                )}
+              </>
             </div>
           </div>
 
@@ -750,7 +824,7 @@ export default function EnterprisePortalClient({ institutionId, institutionName,
             Per-account risk flags · Fusion signal breakdown · Recommended actions
           </div>
         </div>
-        <a href="/enterprise/report"
+        <a href={`/enterprise/report${iid ? `?iid=${iid}` : ''}`}
           className="text-sm font-semibold text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1">
           View Full Report →
         </a>

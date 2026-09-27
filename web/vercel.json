@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/admin/sweeps/process-scheduled",
-      "schedule": "35 12 * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/support/digest",
@@ -11,6 +11,22 @@
     {
       "path": "/api/cron/score-horizons",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/enterprise/lite-sweep-cron",
+      "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/cron/agent-swarm",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/strike-brief-push",
+      "schedule": "30 10 * * *"
+    },
+    {
+      "path": "/api/cron/swarm-health",
+      "schedule": "0 */6 * * *"
     }
   ]
 }

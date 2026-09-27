@@ -32,6 +32,7 @@ export type ObjectiveWithResult = {
   lite_sweep_cadence_days: number | null
   last_focus_sweep_at: string | null
   last_lite_sweep_at: string | null
+  escalated_at: string | null
   latest_result: ObjectiveResult | null
 }
 
@@ -45,6 +46,7 @@ type RawObjective = {
   lite_sweep_cadence_days: number | null
   last_focus_sweep_at: string | null
   last_lite_sweep_at: string | null
+  escalated_at: string | null
   enterprise_objective_results: ObjectiveResult[]
 }
 
@@ -64,7 +66,7 @@ export async function getObjectivesWithResults(
     .select(`
       id, obj_id, title, statement, objective_state,
       objective_order, lite_sweep_cadence_days,
-      last_focus_sweep_at, last_lite_sweep_at,
+      last_focus_sweep_at, last_lite_sweep_at, escalated_at,
       enterprise_objective_results (
         id, sweep_type, confidence_score, alert_triggered, alert_reason,
         affecting_it, implies, signals, what_to_do,
@@ -295,5 +297,121 @@ export async function getPortfolioMetrics(
     sparklines,
     vintageHeatmap,
     driftHistory,
+  }
+}
+
+// ─── Real Estate Portfolio Metrics ────────────────────────────────────────────
+
+export type REPortfolioMetricsData = {
+  totalCases: number
+  activeListings: number
+  activeBuyers: number
+  avgDOM: number | null
+  domOver45: number
+  domOver60: number
+  rateLockUnder14: number
+  rateLockUnder30: number
+  rateLockExpired: number
+  priceBandDistribution: Array<{ band: string; count: number }>
+  avgListPrice: number | null
+  portfolioSummary: string | null
+  computedAt: string | null
+}
+
+export async function getREPortfolioMetrics(
+  supabase: SupabaseClient,
+  institutionId: string
+): Promise<REPortfolioMetricsData | null> {
+  const [casesRes, metricsRes] = await Promise.all([
+    supabase
+      .from('enterprise_cases')
+      .select('loan_data')
+      .eq('institution_id', institutionId)
+      .eq('in_scope', true),
+    supabase
+      .from('enterprise_portfolio_metrics')
+      .select('portfolio_summary, computed_at')
+      .eq('institution_id', institutionId)
+      .order('computed_at', { ascending: false })
+      .limit(1)
+      .single(),
+  ])
+
+  const cases = casesRes.data ?? []
+  if (cases.length === 0) return null
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  let activeListings = 0
+  let activeBuyers = 0
+  let domSum = 0
+  let domCount = 0
+  let domOver45 = 0
+  let domOver60 = 0
+  let rateLockUnder14 = 0
+  let rateLockUnder30 = 0
+  let rateLockExpired = 0
+  let priceSum = 0
+  let priceCount = 0
+  const bandCounts = new Map<string, number>()
+
+  for (const c of cases) {
+    const ld = (c.loan_data ?? {}) as Record<string, unknown>
+    // Infer case type: explicit field takes priority; fall back to field-presence heuristic
+    // (BrokerOne seed data omits case_type but has distinct fields per type)
+    const caseType = (ld.case_type as string | undefined)
+      ?? (ld.days_on_market !== undefined || ld.list_price !== undefined ? 'listing'
+        : ld.rate_lock_expires !== undefined ? 'buyer'
+        : undefined)
+
+    if (caseType === 'listing') {
+      activeListings++
+      const domRaw = ld.days_on_market
+      const dom = typeof domRaw === 'number' ? domRaw : typeof domRaw === 'string' ? Number(domRaw) : undefined
+      if (dom !== undefined && !isNaN(dom)) {
+        domSum += dom
+        domCount++
+        if (dom >= 45) domOver45++
+        if (dom >= 60) domOver60++
+      }
+      const priceRaw = ld.list_price
+      const price = typeof priceRaw === 'number' ? priceRaw : typeof priceRaw === 'string' ? Number(priceRaw) : undefined
+      if (price !== undefined && !isNaN(price)) { priceSum += price; priceCount++ }
+      const band = ld.price_band as string | undefined
+      if (band) bandCounts.set(band, (bandCounts.get(band) ?? 0) + 1)
+    } else if (caseType === 'buyer') {
+      activeBuyers++
+      const rateLock = ld.rate_lock_expires as string | undefined
+      if (rateLock) {
+        const expiry = new Date(rateLock)
+        expiry.setHours(0, 0, 0, 0)
+        const daysUntil = Math.round((expiry.getTime() - today.getTime()) / 86400000)
+        if (daysUntil < 0) rateLockExpired++
+        else if (daysUntil < 14) rateLockUnder14++
+        else if (daysUntil < 30) rateLockUnder30++
+      }
+    }
+  }
+
+  const BAND_ORDER = ['entry', 'entry-mid', 'mid', 'upper-mid', 'luxury']
+  const priceBandDistribution = BAND_ORDER
+    .filter(b => bandCounts.has(b))
+    .map(b => ({ band: b, count: bandCounts.get(b)! }))
+
+  return {
+    totalCases: cases.length,
+    activeListings,
+    activeBuyers,
+    avgDOM: domCount > 0 ? Math.round(domSum / domCount) : null,
+    domOver45,
+    domOver60,
+    rateLockUnder14,
+    rateLockUnder30,
+    rateLockExpired,
+    priceBandDistribution,
+    avgListPrice: priceCount > 0 ? Math.round(priceSum / priceCount) : null,
+    portfolioSummary: (metricsRes.data?.portfolio_summary as string | null) ?? null,
+    computedAt: (metricsRes.data?.computed_at as string | null) ?? null,
   }
 }
