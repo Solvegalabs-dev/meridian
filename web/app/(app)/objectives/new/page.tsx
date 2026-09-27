@@ -213,7 +213,7 @@ export default function NewObjectivePage() {
           </p>
           <p className="text-amber-700 mb-3">Upgrade your plan to track more goals.</p>
           <Link
-            href="/onboarding/plan?upgrade=true"
+            href="/settings#billing"
             className="inline-block px-4 py-2 rounded-lg bg-amber-600 text-white text-[12px] font-medium hover:bg-amber-700 transition-colors"
           >
             Upgrade plan →

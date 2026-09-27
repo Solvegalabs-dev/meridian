@@ -13,6 +13,7 @@ import { tierAtLeast } from '@/lib/tiers'
 import { autoLogPredictions, ObjectiveWithConfidenceDelta } from '@/lib/sweep/autoLogPredictions'
 import { getSignalClassWeights } from '@/lib/engine4/getSignalClassWeights'
 import { buildCoherencePackage, formatCoherencePackageForPrompt, type CoherencePackage } from '@/lib/sweep/buildCoherencePackage'
+import { generateStrikeBrief } from '@/lib/sweep/generateStrikeBrief'
 
 export interface SweepObjectiveResult {
   id: string
@@ -981,6 +982,29 @@ export async function runSweepForUser(
     }
 
     console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — confidence scores + episodes written for ${objResults.length}/${objectives.length} objectives`)
+
+    // Strike Brief generation — runs after episodes so the brief reflects the
+    // current sweep's confidence and actions. Non-fatal: a brief failure never
+    // blocks the sweep from completing. Skips objectives with no bound agents.
+    try {
+      const briefResults = await Promise.allSettled(
+        objectives.map(obj =>
+          generateStrikeBrief(supabase, userId, {
+            id: obj.id,
+            obj_id: (obj as { obj_id?: string }).obj_id ?? '',
+            title: obj.title,
+            category: obj.category ?? null,
+            context: (obj as { context?: Record<string, unknown> | null }).context ?? null,
+            target_date: obj.target_date ?? null,
+          })
+        )
+      )
+      const briefsGenerated = briefResults.filter(r => r.status === 'fulfilled' && !r.value.skipped).length
+      const briefsSkipped = briefResults.filter(r => r.status === 'fulfilled' && r.value.skipped).length
+      console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — strike briefs: ${briefsGenerated} generated, ${briefsSkipped} skipped`)
+    } catch (err) {
+      console.error(`[strike-brief] Unexpected error in strike brief generation:`, err)
+    }
 
     // FF-021: Auto-log predictions for objectives with confidence delta >= threshold.
     // Wrapped in try/catch — prediction logging failure must NOT break the sweep.

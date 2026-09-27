@@ -369,7 +369,7 @@ export default function SettingsClient({ email, profile }: Props) {
           const trialActive  = tier === 'trial' && trialEndsAt && trialEndsAt >= new Date()
 
           return (
-            <div className="bg-white rounded-2xl border border-[var(--border)] p-6">
+            <div id="billing" className="bg-white rounded-2xl border border-[var(--border)] p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-[13px] font-semibold text-[var(--text)] uppercase tracking-wider">Plan &amp; Billing</h2>
                 {!isAlphaBeta && (
