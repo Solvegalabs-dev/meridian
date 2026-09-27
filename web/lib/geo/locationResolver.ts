@@ -1,8 +1,9 @@
 // FF-089 — Geographic Intelligence Engine: full location resolver
 // Extends resolveNWSGridpoint() with state/county, nearby USGS stream gauges,
-// nearby SNOTEL stations and elevation. Every source is non-fatal — a failed
+// nearby SNOTEL stations, elevation and hunt unit. Every source is non-fatal — a failed
 // lookup yields null (or []) for its fields and never blocks the caller.
 import { resolveNWSGridpoint } from '@/lib/geo/nwsGridpoint'
+import { findHuntUnit } from '@/lib/geo/unitResolver'
 
 export type FullGeography = {
   nws_grid_office: string | null
@@ -14,6 +15,7 @@ export type FullGeography = {
   usgs_gauge_ids: string[]          // active stream gauges within 50 mi, nearest first
   snotel_station_ids: string[]      // active SNOTEL station IDs within 50 mi, nearest first
   elevation_ft_avg: number | null   // USGS 3DEP point elevation, NWS grid elevation fallback
+  hunt_unit_id: string | null       // hunt_unit_registry unit containing the point (needs NWS state)
 }
 
 const NWS_HEADERS = { 'User-Agent': 'Meridian/1.0 (ghostnet5x5@gmail.com)' }
@@ -115,9 +117,11 @@ export async function resolveFullGeography(lat: number, lon: number): Promise<Fu
   ])
 
   const countyZoneId = grid?.countyZoneId ?? null
-  const [county, gridElevation] = await Promise.all([
+  const state = countyZoneId && /^[A-Z]{2}C\d+$/.test(countyZoneId) ? countyZoneId.slice(0, 2) : null
+  const [county, gridElevation, hunt_unit_id] = await Promise.all([
     countyZoneId ? resolveCountyName(countyZoneId) : Promise.resolve(null),
     epqsElevation == null && grid?.gridDataUrl ? resolveGridElevation(grid.gridDataUrl) : Promise.resolve(null),
+    state ? findHuntUnit(lat, lon, state) : Promise.resolve(null),
   ])
 
   const result: FullGeography = {
@@ -125,11 +129,12 @@ export async function resolveFullGeography(lat: number, lon: number): Promise<Fu
     nws_grid_x: grid?.gridX ?? null,
     nws_grid_y: grid?.gridY ?? null,
     nws_zone_id: grid?.zoneId || null,
-    state: countyZoneId && /^[A-Z]{2}C\d+$/.test(countyZoneId) ? countyZoneId.slice(0, 2) : null,
+    state,
     county,
     usgs_gauge_ids,
     snotel_station_ids,
     elevation_ft_avg: epqsElevation ?? gridElevation,
+    hunt_unit_id,
   }
 
   const anyResolved = result.nws_grid_office != null || result.elevation_ft_avg != null
