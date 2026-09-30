@@ -3,9 +3,31 @@
 // and calibrates movement windows against current drought + temperature +
 // FF-080 thermal belt conditions. Pure read — no Movebank network calls, safe
 // to call on every brief build.
+//
+// Split into findCollarPattern (DB lookup) + calibrateCollarPattern (pure
+// calc) so a caller can skip fetching current conditions (drought lookup)
+// entirely when there's no pattern to calibrate against — a brief for an
+// objective with no collar data should pay zero extra cost (Fix 6a).
 
 import { createServiceClient } from '@/lib/supabase/server';
 import { encodeGeohash, geohashPrecisionSteps } from '@/lib/geo/geohash';
+import { resolveMovebankTaxon } from './movebankCollarFetch';
+
+export type DroughtLevel = 'none' | 'D0' | 'D1' | 'D2' | 'D3' | 'D4' | 'unknown';
+
+export type CollarPatternRow = {
+  peak_movement_windows: Array<{ window_start_hour: number; window_end_hour: number; confidence: number; label: string }> | null;
+  median_bedding_ft: number | null;
+  bedding_p25_ft: number | null;
+  bedding_p75_ft: number | null;
+  drought_modifiers: Record<string, { window_shift_hours: number; elevation_shift_ft: number }> | null;
+  temp_suppression_f: number | null;
+  aligns_ff080: boolean | null;
+  confidence_tier: number | null;
+  local_tz: string | null;
+  years_coverage: string | null;
+  data_owner_credit: string | null;
+};
 
 export type CollarCalibrationOutput = {
   calibrated_windows: Array<{
@@ -22,6 +44,7 @@ export type CollarCalibrationOutput = {
   } | null;
   data_credit: string;
   confidence_tier: number;
+  local_tz: string | null;
   pattern_found: boolean;
 };
 
@@ -30,9 +53,14 @@ const EMPTY_OUTPUT: CollarCalibrationOutput = {
   bedding_zone: null,
   data_credit: '',
   confidence_tier: 0,
+  local_tz: null,
   pattern_found: false,
 };
 
+const PATTERN_COLUMNS = 'peak_movement_windows, median_bedding_ft, bedding_p25_ft, bedding_p75_ft, drought_modifiers, temp_suppression_f, aligns_ff080, confidence_tier, local_tz, years_coverage, data_owner_credit';
+
+// Windows are stored as local hours (Fix 2) — formatted directly, no further
+// timezone conversion needed here.
 function formatWindow(startHour: number, endHour: number): string {
   const fmt = (h: number) => `${String(((h % 24) + 24) % 24).padStart(2, '0')}00`;
   return `${fmt(startHour)}–${fmt(endHour)}`;
@@ -44,48 +72,63 @@ function priorityFromConfidence(confidence: number): 'high' | 'medium' | 'low' {
   return 'low';
 }
 
-export async function applyCollarCalibration(
-  taxonomyKeyOrSpeciesKey: string,
+// Signal chip values are display strings like "54°F" or "72" — Number()
+// returns NaN on the former, silently dropping temperature suppression
+// (Fix 6e). Pull the first signed number instead.
+export function parseTempF(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = value.match(/-?\d+(\.\d+)?/);
+  if (!match) return undefined;
+  const n = Number(match[0]);
+  return isNaN(n) ? undefined : n;
+}
+
+// DB lookup only — no drought/temperature conditions are fetched here.
+// Callers should only pay for extractCurrentConditions() when this returns
+// non-null (Fix 6a).
+export async function findCollarPattern(
+  taxonomyKey: string,
   lat: number,
   lon: number,
-  currentMonth: number,
-  conditionModifiers: { droughtLevel?: 'none' | 'D0' | 'D1' | 'D2' | 'D3' | 'D4' | 'unknown'; currentTempF?: number } = {}
-): Promise<CollarCalibrationOutput> {
+  seasonMonth: number
+): Promise<CollarPatternRow | null> {
+  const taxon = resolveMovebankTaxon(taxonomyKey);
+  if (!taxon) return null;
+
   const supabase = createServiceClient();
   const geoHash = encodeGeohash(lat, lon, 5);
   const steps = geohashPrecisionSteps(geoHash, 5, 3);
 
-  // species_taxon_key in collar_pattern_library is coarser than a full
-  // taxonomy_key (e.g. 'elk.bull' not 'elk.bull.archery.HD316') — try the
-  // fully-qualified key first, then fall back to its first two segments.
-  const speciesCandidates = [taxonomyKeyOrSpeciesKey, taxonomyKeyOrSpeciesKey.split('.').slice(0, 2).join('.')];
-
-  let row: Record<string, unknown> | null = null;
-  for (const speciesKey of Array.from(new Set(speciesCandidates))) {
-    for (const hashStep of steps) {
-      const { data } = await supabase
-        .from('collar_pattern_library')
-        .select('*')
-        .eq('species_taxon_key', speciesKey)
-        .like('geo_hash', `${hashStep}%`)
-        .eq('season_month', currentMonth)
-        .limit(1)
-        .maybeSingle();
-      if (data) { row = data; break; }
-    }
-    if (row) break;
+  for (const hashStep of steps) {
+    const { data } = await supabase
+      .from('collar_pattern_library')
+      .select(PATTERN_COLUMNS)
+      .eq('species_taxon_key', taxon.speciesTaxonKey)
+      .like('geo_hash', `${hashStep}%`)
+      .eq('season_month', seasonMonth)
+      .limit(1)
+      .maybeSingle();
+    if (data) return data as CollarPatternRow;
   }
 
-  if (!row) return EMPTY_OUTPUT;
+  return null;
+}
 
-  type Window = { window_start_hour: number; window_end_hour: number; confidence: number; label: string };
-  const peakWindows = (row.peak_movement_windows as Window[] | null) ?? [];
-
+// Pure calculation — no DB access. Drought modifier is looked up against
+// the CURRENT level at call time (the row always carries the full D0-D4
+// table; Fix 4), so drought changes after the pattern was computed still
+// apply correctly.
+export function calibrateCollarPattern(
+  row: CollarPatternRow,
+  conditionModifiers: { droughtLevel?: DroughtLevel; currentTempF?: number } = {}
+): CollarCalibrationOutput {
+  const peakWindows = row.peak_movement_windows ?? [];
   const droughtLevel = conditionModifiers.droughtLevel;
-  const droughtMods = (row.drought_modifiers as Record<string, { window_shift_hours: number; elevation_shift_ft: number }> | null) ?? {};
+  const droughtMods = row.drought_modifiers ?? {};
+  // 'none' and 'unknown' intentionally fall through to no shift.
   const modifier = droughtLevel && droughtLevel in droughtMods ? droughtMods[droughtLevel] : null;
 
-  const tempSuppressionF = row.temp_suppression_f as number | null;
+  const tempSuppressionF = row.temp_suppression_f;
   const tempSuppressed = tempSuppressionF != null
     && conditionModifiers.currentTempF != null
     && conditionModifiers.currentTempF > tempSuppressionF;
@@ -96,19 +139,22 @@ export async function applyCollarCalibration(
     const endHour = w.window_end_hour + shift;
     const isMidday = startHour >= 10 && startHour < 15;
     const priority = tempSuppressed && isMidday ? 'low' : priorityFromConfidence(w.confidence);
+    const shifted = shift !== 0;
 
     return {
       window: formatWindow(startHour, endHour),
-      action: `Collar-confirmed ${w.label} movement window`,
+      action: shifted
+        ? `Collar-observed ${w.label} window (adjusted for drought)`
+        : `Collar-observed ${w.label} window`,
       priority,
       collar_confidence: w.confidence,
-      condition_adjusted: shift !== 0 || (tempSuppressed && isMidday),
+      condition_adjusted: shifted || (tempSuppressed && isMidday),
     };
   });
 
-  const medianFt = row.median_bedding_ft as number | null;
-  const p25 = row.bedding_p25_ft as number | null;
-  const p75 = row.bedding_p75_ft as number | null;
+  const medianFt = row.median_bedding_ft;
+  const p25 = row.bedding_p25_ft;
+  const p75 = row.bedding_p75_ft;
   const elevationShift = modifier?.elevation_shift_ft ?? 0;
 
   const beddingZone = medianFt != null ? {
@@ -117,14 +163,17 @@ export async function applyCollarCalibration(
     thermal_belt_confirmed: !!row.aligns_ff080,
   } : null;
 
-  const years = (row.years_coverage as string | null) ?? 'unknown';
-  const credit = (row.data_owner_credit as string | null) ?? 'Movebank';
+  const years = row.years_coverage ?? 'unknown';
+  const credit = row.data_owner_credit ?? 'Movebank';
 
   return {
     calibrated_windows: calibratedWindows,
     bedding_zone: beddingZone,
     data_credit: `Movebank GPS collar data — ${credit} (${years})`,
-    confidence_tier: (row.confidence_tier as number | null) ?? 1,
+    confidence_tier: row.confidence_tier ?? 1,
+    local_tz: row.local_tz,
     pattern_found: true,
   };
 }
+
+export { EMPTY_OUTPUT as EMPTY_COLLAR_CALIBRATION };

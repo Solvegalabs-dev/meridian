@@ -2,7 +2,7 @@
 // Extracted from app/api/mip/brief/route.ts so server components can call it directly
 // instead of self-fetching the API route.
 import { createServiceClient } from '@/lib/supabase/server'
-import { applyCollarCalibration } from '@/lib/swarm/agents/outdoor/collarCalibration'
+import { findCollarPattern, calibrateCollarPattern, parseTempF } from '@/lib/swarm/agents/outdoor/collarCalibration'
 import { extractCurrentConditions } from '@/lib/sweep/patternDeviation/currentConditionsExtractor'
 
 export type SignalChip = { label: string; value: string; status: 'ok' | 'warn' | 'critical' }
@@ -223,29 +223,38 @@ export async function getMipBriefPayload(
   if ((terrainRows ?? []).length > 0) sources.push('USGS 3DEP Terrain')
   if (brief) sources.push('Strike Brief Engine')
 
-  // FF-093 — Movebank collar calibration (read-only; safe on every brief build)
-  if (profile?.taxonomy_key && profile.lat != null && profile.lon != null) {
-    const tempChip = signalChips.find(c => /temp/i.test(c.label))
-    const currentTempF = tempChip ? Number(tempChip.value) : undefined
-    const conditions = await extractCurrentConditions(String(profile.domain ?? 'elk_hunt'), null)
+  // FF-093 — Movebank collar calibration. A collar lookup/calibration failure
+  // must never break the brief (Fix 6a), so the whole block is best-effort.
+  // The pattern lookup runs first; extractCurrentConditions (a DB query of
+  // its own) only runs when a pattern actually exists to calibrate, so an
+  // objective with no collar data pays nothing extra.
+  try {
+    if (profile?.taxonomy_key && profile.lat != null && profile.lon != null) {
+      const patternRow = await findCollarPattern(
+        profile.taxonomy_key as string,
+        Number(profile.lat),
+        Number(profile.lon),
+        new Date().getMonth() + 1
+      )
 
-    const calibration = await applyCollarCalibration(
-      profile.taxonomy_key as string,
-      Number(profile.lat),
-      Number(profile.lon),
-      new Date().getMonth() + 1,
-      {
-        droughtLevel: conditions.droughtLevel,
-        currentTempF: currentTempF != null && !isNaN(currentTempF) ? currentTempF : undefined,
-      }
-    )
+      if (patternRow) {
+        const tempChip = signalChips.find(c => /temp/i.test(c.label))
+        const currentTempF = parseTempF(tempChip?.value)
+        const conditions = await extractCurrentConditions(String(profile.domain ?? 'elk_hunt'), null)
 
-    if (calibration.pattern_found) {
-      for (const w of calibration.calibrated_windows) {
-        timeWindows.push({ window: w.window, action: w.action, priority: w.priority })
+        const calibration = calibrateCollarPattern(patternRow, {
+          droughtLevel: conditions.droughtLevel,
+          currentTempF,
+        })
+
+        for (const w of calibration.calibrated_windows) {
+          timeWindows.push({ window: w.window, action: w.action, priority: w.priority })
+        }
+        sources.push(calibration.data_credit)
       }
-      sources.push(calibration.data_credit)
     }
+  } catch (err) {
+    console.error('[FF-093] collar calibration failed, continuing without it:', err)
   }
 
   const derivedTier = confidencePct > 0
