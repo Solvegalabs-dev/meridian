@@ -153,23 +153,29 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+type CappedRead = { bytes: Uint8Array; totalBytes: number; truncated: boolean };
+
 // Reads a response body up to maxBytes, returning the raw bytes (never a
 // re-encoded string) so callers that need to hash the exact payload
-// (the license-md5 handshake) get a byte-for-byte match.
-async function readBodyCapped(response: Response, maxBytes: number): Promise<Uint8Array> {
+// (the license-md5 handshake) get a byte-for-byte match. Also reports the
+// true total size seen and whether the cap cut anything off, for diagnostics
+// (the admin probe route).
+async function readBodyCapped(response: Response, maxBytes: number): Promise<CappedRead> {
   const reader = response.body?.getReader();
   if (!reader) {
     const buf = new Uint8Array(await response.arrayBuffer());
-    return buf.length > maxBytes ? buf.slice(0, maxBytes) : buf;
+    const truncated = buf.length > maxBytes;
+    return { bytes: truncated ? buf.slice(0, maxBytes) : buf, totalBytes: buf.length, truncated };
   }
 
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let truncated = false;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > maxBytes) { await reader.cancel(); break; }
+    if (total > maxBytes) { truncated = true; await reader.cancel(); break; }
     chunks.push(value);
   }
   const out = new Uint8Array(Math.min(total, maxBytes));
@@ -180,7 +186,7 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<Uin
     out.set(slice, offset);
     offset += slice.length;
   }
-  return out;
+  return { bytes: out, totalBytes: total, truncated };
 }
 
 // Every Set-Cookie value's `name=value` pair, joined for a Cookie header.
@@ -227,28 +233,30 @@ async function recordLicenseAcceptance(studyId: string, licenseType: string | un
 // (studyId/licenseType) is provided for event fetches so an accepted
 // handshake can be recorded; omitted for the study-catalog call, which
 // isn't scoped to one study.
+type MovebankRequestResult = { text: string; handshake: MovebankHandshakeResult; responseBytes: number; truncated: boolean };
+
 async function movebankRequest(
   url: string,
   maxDataBytes: number,
   context?: { studyId: string; licenseType?: string }
-): Promise<{ text: string; handshake: MovebankHandshakeResult }> {
+): Promise<MovebankRequestResult> {
   return serialize(async () => {
     const first = await rawFetch(url, null, 30000);
     if (!first.ok) throw new Error(`Movebank HTTP ${first.status}`);
 
     if (first.headers.get('accept-license') !== 'true') {
-      const bytes = await readBodyCapped(first, maxDataBytes);
-      return { text: new TextDecoder().decode(bytes), handshake: 'not_required' as const };
+      const { bytes, totalBytes, truncated } = await readBodyCapped(first, maxDataBytes);
+      return { text: new TextDecoder().decode(bytes), handshake: 'not_required' as const, responseBytes: totalBytes, truncated };
     }
 
     // License handshake required — read the license text (capped, small),
     // never the full data cap.
-    const licenseBytes = await readBodyCapped(first, MAX_LICENSE_BYTES);
+    const { bytes: licenseBytes } = await readBodyCapped(first, MAX_LICENSE_BYTES);
     const licenseText = new TextDecoder().decode(licenseBytes);
 
     if (/non-?commercial/i.test(licenseText)) {
       if (context) console.warn(`[movebank] study ${context.studyId} license text mentions NonCommercial — aborting use despite license_type='${context.licenseType ?? 'unknown'}'`);
-      return { text: '', handshake: 'aborted_noncommercial' as const };
+      return { text: '', handshake: 'aborted_noncommercial' as const, responseBytes: 0, truncated: false };
     }
 
     // Hash the exact bytes received, not a re-encoded string.
@@ -267,8 +275,8 @@ async function movebankRequest(
       await recordLicenseAcceptance(context.studyId, context.licenseType, licenseMd5, licenseText);
     }
 
-    const dataBytes = await readBodyCapped(second, maxDataBytes);
-    return { text: new TextDecoder().decode(dataBytes), handshake: 'accepted' as const };
+    const { bytes: dataBytes, totalBytes, truncated } = await readBodyCapped(second, maxDataBytes);
+    return { text: new TextDecoder().decode(dataBytes), handshake: 'accepted' as const, responseBytes: totalBytes, truncated };
   });
 }
 
@@ -286,20 +294,32 @@ export type MovebankStudy = {
 
 const MAX_STUDY_ROWS = 20000;
 
+export type MovebankStudyFetchResult = {
+  studies: MovebankStudy[];                    // coordinate-valid — same set fetchMovebankStudies() returns
+  rawRows: Array<Record<string, string>>;       // every parsed CSV row, unfiltered — for probe/diagnostic use
+  rawRowCount: number;                          // rawRows.length, before the coordinate filter
+  responseBytes: number;
+  truncated: boolean;                           // true if the 20MB response cap or the row cap cut the list
+};
+
 // Movebank has no server-side taxon or geographic filter for study
 // discovery (see file header) — this fetches every study the account can
 // see download access to, and the caller filters by species name, distance,
 // and license client-side. `i_have_download_access=true` is a real
 // documented query parameter and meaningfully narrows the result set.
-export async function fetchMovebankStudies(): Promise<MovebankStudy[]> {
+export async function fetchMovebankStudiesDetailed(): Promise<MovebankStudyFetchResult> {
   const url = 'https://www.movebank.org/movebank/service/direct-read'
     + '?entity_type=study&i_have_download_access=true'
     + '&attributes=id,name,main_location_lat,main_location_long,number_of_individuals,taxon_ids,license_type,citation,i_have_download_access';
 
-  const { text } = await movebankRequest(url, MAX_RESPONSE_BYTES);
-  const rows = parseCsv(text, MAX_STUDY_ROWS);
+  const { text, responseBytes, truncated: byteTruncated } = await movebankRequest(url, MAX_RESPONSE_BYTES);
+  const rawRows = parseCsv(text, MAX_STUDY_ROWS);
+  // parseCsv stops accepting rows once it hits maxRows — if it returned
+  // exactly that many, the source almost certainly had more (or, rarely,
+  // had exactly that many; documented approximation).
+  const rowTruncated = rawRows.length >= MAX_STUDY_ROWS;
 
-  return rows
+  const studies = rawRows
     .filter(r => r.id)
     .map(r => ({
       id: r.id,
@@ -313,6 +333,13 @@ export async function fetchMovebankStudies(): Promise<MovebankStudy[]> {
       hasDownloadAccess: (r.i_have_download_access ?? '').toLowerCase() === 'true',
     }))
     .filter(s => s.lat !== null && !isNaN(s.lat) && s.lon !== null && !isNaN(s.lon));
+
+  return { studies, rawRows, rawRowCount: rawRows.length, responseBytes, truncated: byteTruncated || rowTruncated };
+}
+
+export async function fetchMovebankStudies(): Promise<MovebankStudy[]> {
+  const { studies } = await fetchMovebankStudiesDetailed();
+  return studies;
 }
 
 export type MovebankEvent = {
