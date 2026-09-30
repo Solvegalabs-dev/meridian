@@ -2,6 +2,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
 import { resolveMovebankTaxon, parseCsv, normalizeLicenseType, isCommercialSafeLicense } from './movebankCollarFetch'
 
+// Controlled Supabase spy for the whole file — lets the "record" gating
+// tests assert whether a database write happened, and keeps the earlier
+// handshake tests from hitting a real (env-less) Supabase client and
+// swallowing errors silently.
+const { upsertSpy, fromSpy } = vi.hoisted(() => {
+  const upsertSpy = vi.fn(async () => ({ error: null }))
+  const fromSpy = vi.fn(() => ({ upsert: upsertSpy }))
+  return { upsertSpy, fromSpy }
+})
+
+vi.mock('@/lib/supabase/server', () => ({
+  createServiceClient: () => ({ from: fromSpy }),
+}))
+
 describe('resolveMovebankTaxon (Fix 5 — single source of truth for species keys)', () => {
   it('resolves a fully-qualified elk taxonomy key', () => {
     expect(resolveMovebankTaxon('elk.bull.archery.HD316')).toEqual({
@@ -143,6 +157,8 @@ describe('movebankRequest license handshake (addendum Fix 1)', () => {
     vi.stubGlobal('fetch', fetchMock)
     process.env.MOVEBANK_USERNAME = 'testuser'
     process.env.MOVEBANK_PASSWORD = 'testpass'
+    upsertSpy.mockClear()
+    fromSpy.mockClear()
   })
 
   afterEach(() => {
@@ -220,5 +236,69 @@ describe('movebankRequest license handshake (addendum Fix 1)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(result.handshake).toBe('not_required')
     expect(result.events).toHaveLength(1)
+  })
+})
+
+describe('license acceptance recording gated by the `record` flag (probe safety)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    process.env.MOVEBANK_USERNAME = 'testuser'
+    process.env.MOVEBANK_PASSWORD = 'testpass'
+    upsertSpy.mockClear()
+    fromSpy.mockClear()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('makes no Supabase call when record=false, even on an accepted handshake', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fakeResponse({ headers: { 'accept-license': 'true' }, body: LICENSE_HTML }))
+      .mockResolvedValueOnce(fakeResponse({ body: CSV_DATA }))
+
+    const { fetchMovebankEventsDetailed } = await import('./movebankCollarFetch')
+    const result = await fetchMovebankEventsDetailed('999', 'CC_BY', false)
+
+    expect(result.handshake).toBe('accepted') // the handshake itself still ran
+    expect(fromSpy).not.toHaveBeenCalled()
+    expect(upsertSpy).not.toHaveBeenCalled()
+  })
+
+  it('calls Supabase to record the acceptance when record=true', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fakeResponse({ headers: { 'accept-license': 'true' }, body: LICENSE_HTML }))
+      .mockResolvedValueOnce(fakeResponse({ body: CSV_DATA }))
+
+    const { fetchMovebankEventsDetailed } = await import('./movebankCollarFetch')
+    const result = await fetchMovebankEventsDetailed('999', 'CC_BY', true)
+
+    expect(result.handshake).toBe('accepted')
+    expect(fromSpy).toHaveBeenCalledWith('movebank_license_acceptances')
+    expect(upsertSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('defaults to record=true when the flag is omitted, so the production extractor is unaffected', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fakeResponse({ headers: { 'accept-license': 'true' }, body: LICENSE_HTML }))
+      .mockResolvedValueOnce(fakeResponse({ body: CSV_DATA }))
+
+    const { fetchMovebankEventsDetailed } = await import('./movebankCollarFetch')
+    await fetchMovebankEventsDetailed('999', 'CC_BY') // no 3rd argument
+
+    expect(upsertSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('never calls Supabase for a NonCommercial-aborted study, regardless of record', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ headers: { 'accept-license': 'true' }, body: NONCOMMERCIAL_LICENSE_HTML }))
+
+    const { fetchMovebankEventsDetailed } = await import('./movebankCollarFetch')
+    await fetchMovebankEventsDetailed('999', 'CC_BY', true)
+
+    expect(fromSpy).not.toHaveBeenCalled()
   })
 })

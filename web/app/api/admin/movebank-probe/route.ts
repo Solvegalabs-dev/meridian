@@ -12,7 +12,10 @@ import {
 // FF-093 addendum — live diagnostic probe so Jason can verify Movebank
 // credentials, real license_type spellings, the license handshake, and the
 // ITIS taxon names all work without needing a swarm run or a real objective.
-// Never stores anything, never returns raw events or credentials.
+// Never returns raw events, license text, or credentials. Makes zero
+// database writes unless `record=true` is explicitly passed — the handshake
+// itself still runs either way (Movebank requires it per session
+// regardless), only the movebank_license_acceptances audit row is gated.
 export const maxDuration = 120;
 
 const DEFAULT_LAT = 40.948;
@@ -60,11 +63,12 @@ async function probeOneStudy(
   licenseType: string | null,
   lat: number,
   lon: number,
+  record: boolean,
   distanceKm?: number
 ): Promise<StudyProbeResult> {
   const probeStart = Date.now();
   try {
-    const { events, handshake } = await fetchMovebankEventsDetailed(studyId, licenseType ?? undefined);
+    const { events, handshake } = await fetchMovebankEventsDetailed(studyId, licenseType ?? undefined, record);
     const individualIds = new Set(events.map(e => e.individualId).filter(Boolean));
     const inRadius = events.filter(e => haversineKm(lat, lon, e.lat, e.lon) <= EVENT_RADIUS_KM);
     const timestamps = events.map(e => e.timestamp).sort();
@@ -151,9 +155,13 @@ export async function GET(request: Request) {
   const limit = Math.max(1, Math.min(10, Number(searchParams.get('limit') ?? 3) || 3));
   const directStudyId = searchParams.get('study_id');
   const directLicenseType = searchParams.get('license_type');
+  // Off by default: a diagnostic probe run must make zero database writes.
+  // The handshake itself still runs (Movebank requires it regardless), but
+  // the accepted-license audit row is only written when explicitly asked.
+  const record = searchParams.get('record') === 'true';
 
   const credentialsPresent = hasMovebankCredentials();
-  const report: Record<string, unknown> = { credentials_present: credentialsPresent, lat, lon };
+  const report: Record<string, unknown> = { credentials_present: credentialsPresent, lat, lon, record };
 
   if (!credentialsPresent) {
     report.auth_ok = null;
@@ -166,7 +174,7 @@ export async function GET(request: Request) {
   // test the handshake on its own.
   if (directStudyId) {
     report.mode = 'direct_study';
-    report.study_probe = await probeOneStudy(directStudyId, directLicenseType, lat, lon);
+    report.study_probe = await probeOneStudy(directStudyId, directLicenseType, lat, lon, record);
     report.elapsed_ms = Date.now() - start;
     return NextResponse.json(report);
   }
@@ -246,7 +254,7 @@ export async function GET(request: Request) {
       report.deadline_reached = true;
       break;
     }
-    studyProbes.push(await probeOneStudy(study.id, study.licenseType, lat, lon, distanceKm));
+    studyProbes.push(await probeOneStudy(study.id, study.licenseType, lat, lon, record, distanceKm));
   }
 
   report.study_probes = studyProbes;

@@ -44,7 +44,7 @@ describe('GET /api/admin/movebank-probe', () => {
     expect(res.status).toBe(401)
   })
 
-  it('direct study_id mode skips catalog discovery entirely', async () => {
+  it('direct study_id mode skips catalog discovery entirely and defaults to record=false', async () => {
     fetchMovebankEventsDetailedMock.mockResolvedValue({
       events: [{ individualId: 'ind-1', timestamp: '2026-06-15 07:00:00.000', lat: 40.5, lon: -110.0 }],
       handshake: 'accepted',
@@ -59,7 +59,12 @@ describe('GET /api/admin/movebank-probe', () => {
 
     expect(res.status).toBe(200)
     expect(fetchMovebankStudiesDetailedMock).not.toHaveBeenCalled()
-    expect(fetchMovebankEventsDetailedMock).toHaveBeenCalledWith('999', 'CC_BY')
+    // A diagnostic probe run must make zero database writes by default — the
+    // `record` flag threaded down to fetchMovebankEventsDetailed is what
+    // gates the actual Supabase write (verified at the unit level in
+    // movebankCollarFetch.test.ts, since this file mocks that module out).
+    expect(fetchMovebankEventsDetailedMock).toHaveBeenCalledWith('999', 'CC_BY', false)
+    expect(body.record).toBe(false)
     expect(body.mode).toBe('direct_study')
     expect(body.study_probe).toMatchObject({
       study_id: '999',
@@ -69,6 +74,45 @@ describe('GET /api/admin/movebank-probe', () => {
       rows_returned: 1,
       distinct_individuals: 1,
     })
+  })
+
+  it('passes record=true through only when explicitly requested', async () => {
+    fetchMovebankEventsDetailedMock.mockResolvedValue({ events: [], handshake: 'not_required' })
+
+    const req = new Request(
+      'https://example.com/api/admin/movebank-probe?study_id=999&record=true',
+      { headers: { Authorization: 'Bearer test-cron-secret' } }
+    )
+    const res = await GET(req)
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(fetchMovebankEventsDetailedMock).toHaveBeenCalledWith('999', undefined, true)
+    expect(body.record).toBe(true)
+  })
+
+  it('direct study_id mode output contains no raw event rows', async () => {
+    fetchMovebankEventsDetailedMock.mockResolvedValue({
+      events: [
+        { individualId: 'ind-1', timestamp: '2026-06-15 07:00:00.000', lat: 40.5, lon: -110.0 },
+        { individualId: 'ind-2', timestamp: '2026-06-15 08:00:00.000', lat: 40.6, lon: -110.1 },
+      ],
+      handshake: 'accepted',
+    })
+
+    const req = new Request(
+      'https://example.com/api/admin/movebank-probe?study_id=999&license_type=CC_BY',
+      { headers: { Authorization: 'Bearer test-cron-secret' } }
+    )
+    const res = await GET(req)
+    const bodyText = await res.text()
+
+    // Aggregate counts (rows_returned: 2) are fine; the individual fixes
+    // themselves (ids, per-point lat/lon) must never appear.
+    expect(bodyText).not.toContain('ind-1')
+    expect(bodyText).not.toContain('ind-2')
+    expect(bodyText).not.toContain('40.6')
+    expect(bodyText).not.toContain('-110.1')
   })
 
   it('discovery mode reports raw_row_count, response_bytes, truncated, taxon_sample, and species_probe', async () => {
@@ -114,5 +158,21 @@ describe('GET /api/admin/movebank-probe', () => {
     const cervusSubstring = body.species_probe.find((e: { query: string }) => e.query === 'cervus')
     expect(cervusSubstring.match_type).toBe('substring')
     expect(cervusSubstring.matching_studies).toBe(1)
+
+    // Discovery-mode per-study probes must also default to record=false.
+    expect(fetchMovebankEventsDetailedMock).toHaveBeenCalledWith('1', 'CC_0', false)
+
+    // Study names ('Elk Study', 'Deer Study', ...) are real attribute data
+    // pulled in for taxon/license aggregation — confirm they never surface
+    // anywhere in the response, since only counts are meant to leave this
+    // route (Fix: no raw event rows, license text, or study names beyond
+    // aggregate data).
+    const bodyText = JSON.stringify(body)
+    expect(bodyText).not.toContain('Elk Study')
+    expect(bodyText).not.toContain('Deer Study')
+    expect(bodyText).not.toContain('No-taxon Study')
+    expect(bodyText).not.toContain('Elk et al.')
+    expect(bodyText).not.toContain('super-secret-password')
+    expect(bodyText).not.toContain('testuser')
   })
 })

@@ -232,13 +232,16 @@ async function recordLicenseAcceptance(studyId: string, licenseType: string | un
 // serialization, and the license-terms handshake all live here. `context`
 // (studyId/licenseType) is provided for event fetches so an accepted
 // handshake can be recorded; omitted for the study-catalog call, which
-// isn't scoped to one study.
+// isn't scoped to one study. `context.record` (defaults true) gates the
+// actual database write — the admin probe route passes `record: false` so a
+// diagnostic run performs the handshake (Movebank requires it regardless)
+// without ever writing to movebank_license_acceptances.
 type MovebankRequestResult = { text: string; handshake: MovebankHandshakeResult; responseBytes: number; truncated: boolean };
 
 async function movebankRequest(
   url: string,
   maxDataBytes: number,
-  context?: { studyId: string; licenseType?: string }
+  context?: { studyId: string; licenseType?: string; record?: boolean }
 ): Promise<MovebankRequestResult> {
   return serialize(async () => {
     const first = await rawFetch(url, null, 30000);
@@ -271,7 +274,7 @@ async function movebankRequest(
       throw new Error('license handshake rejected');
     }
 
-    if (context) {
+    if (context && context.record !== false) {
       await recordLicenseAcceptance(context.studyId, context.licenseType, licenseMd5, licenseText);
     }
 
@@ -385,14 +388,18 @@ export type MovebankEventFetchResult = {
 // Rich variant used by the admin probe route to report what actually
 // happened (handshake required? accepted? aborted?) without exposing raw
 // events. fetchMovebankEvents() below is the plain production-facing form.
-export async function fetchMovebankEventsDetailed(studyId: string, licenseType?: string): Promise<MovebankEventFetchResult> {
+// `record` (defaults true, matching prior behavior for the production
+// extractor) gates whether an accepted handshake is written to
+// movebank_license_acceptances — the probe route passes `record: false` by
+// default so a diagnostic run makes zero database writes.
+export async function fetchMovebankEventsDetailed(studyId: string, licenseType?: string, record: boolean = true): Promise<MovebankEventFetchResult> {
   const timestampStart = movebankTimestampParam(new Date(Date.now() - YEARS_OF_HISTORY * 365 * 86400000));
   const url = 'https://www.movebank.org/movebank/service/direct-read'
     + `?entity_type=event&study_id=${studyId}&sensor_type_id=${GPS_SENSOR_TYPE_ID}`
     + `&timestamp_start=${timestampStart}`
     + '&attributes=individual_id,timestamp,location_lat,location_long';
 
-  const { text, handshake } = await movebankRequest(url, MAX_RESPONSE_BYTES, { studyId, licenseType });
+  const { text, handshake } = await movebankRequest(url, MAX_RESPONSE_BYTES, { studyId, licenseType, record });
 
   if (handshake === 'aborted_noncommercial' || isAccessDenied(text)) {
     return { events: [], handshake };
