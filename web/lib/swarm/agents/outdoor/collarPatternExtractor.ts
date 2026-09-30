@@ -14,6 +14,7 @@ import { haversineKm } from '@/lib/geo/distance';
 import { resolveTimezone } from '@/lib/geo/timezone';
 import {
   resolveMovebankTaxon,
+  taxonMatchesAny,
   hasMovebankCredentials,
   fetchMovebankStudies,
   fetchMovebankEvents,
@@ -161,13 +162,6 @@ export function extractMovementWindows(events: MovebankEvent[], timeZone: string
   return groupPeaksIntoWindows(peakHours, counts, maxCount);
 }
 
-function taxonMatches(study: MovebankStudy, scientificName: string): boolean {
-  return study.taxonIds
-    .split(',')
-    .map(s => s.trim().toLowerCase())
-    .includes(scientificName.toLowerCase());
-}
-
 export async function computeCollarPatterns(objectiveId?: string): Promise<number | null> {
   if (!objectiveId) return null;
 
@@ -213,7 +207,7 @@ export async function computeCollarPatterns(objectiveId?: string): Promise<numbe
   }
 
   const eligible = allStudies
-    .filter(s => taxonMatches(s, taxon.scientificName))
+    .filter(s => taxonMatchesAny(s.taxonIds, taxon.scientificNames))
     .filter(s => isCommercialSafeLicense(s.licenseType))
     .map(s => ({ study: s, distanceKm: haversineKm(lat, lon, s.lat as number, s.lon as number) }))
     .filter(s => s.distanceKm <= STUDY_SEARCH_RADIUS_KM)

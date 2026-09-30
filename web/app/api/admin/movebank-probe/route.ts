@@ -5,6 +5,7 @@ import {
   fetchMovebankStudiesDetailed,
   fetchMovebankEventsDetailed,
   isCommercialSafeLicense,
+  taxonMatchesAny,
   MOVEBANK_TAXON_NAMES,
   type MovebankStudy,
 } from '@/lib/swarm/agents/outdoor/movebankCollarFetch';
@@ -34,13 +35,7 @@ const SPECIES_PROBE_NAMES = [
   'Alces alces', 'Rangifer tarandus', 'Antilocapra americana',
 ];
 const SPECIES_PROBE_SUBSTRINGS = ['cervus', 'odocoileus'];
-
-function taxonMatches(taxonIdsRaw: string, scientificName: string): boolean {
-  return taxonIdsRaw
-    .split(',')
-    .map(s => s.trim().toLowerCase())
-    .includes(scientificName.toLowerCase());
-}
+const NEAREST_SAMPLE_SIZE = 5;
 
 type StudyProbeResult = {
   study_id: string;
@@ -99,6 +94,15 @@ async function probeOneStudy(
   }
 }
 
+type NearestStudy = {
+  id: string;
+  license_type: string;
+  commercial_safe: boolean; // CUSTOM (and any other non-CC_0/CC_BY license) stays in the list, just clearly marked false
+  distance_km: number;
+  number_of_individuals: number;
+  has_download_access: boolean;
+};
+
 type SpeciesProbeEntry = {
   query: string;
   match_type: 'exact_taxon' | 'substring';
@@ -106,7 +110,14 @@ type SpeciesProbeEntry = {
   license_type_counts: Record<string, number>;
   within_500km: number;
   within_1000km: number;
+  within_500km_by_license: Record<string, number>;
+  eligible_within_500km: number; // CC_0/CC_BY only, within 500km
+  nearest: NearestStudy[];       // up to 5 nearest matches overall — no names, citations, or contact info
 };
+
+function studyRowNumber(r: Record<string, string>, field: string): number {
+  return parseInt(r[field] ?? '0', 10) || 0;
+}
 
 function probeSpecies(
   rawRows: Array<Record<string, string>>,
@@ -116,29 +127,87 @@ function probeSpecies(
   lon: number
 ): SpeciesProbeEntry {
   const licenseTypeCounts: Record<string, number> = {};
+  const within500ByLicense: Record<string, number> = {};
   let matchingStudies = 0;
   let within500km = 0;
   let within1000km = 0;
+  let eligibleWithin500km = 0;
+  const withDistance: NearestStudy[] = [];
 
   for (const r of rawRows) {
     const taxonIds = r.taxon_ids ?? '';
-    const isMatch = matchType === 'exact_taxon' ? taxonMatches(taxonIds, query) : taxonIds.toLowerCase().includes(query.toLowerCase());
+    const isMatch = matchType === 'exact_taxon' ? taxonMatchesAny(taxonIds, [query]) : taxonIds.toLowerCase().includes(query.toLowerCase());
     if (!isMatch) continue;
 
     matchingStudies++;
-    const licenseKey = r.license_type || '(empty)';
+    const licenseType = r.license_type ?? '';
+    const licenseKey = licenseType || '(empty)';
     licenseTypeCounts[licenseKey] = (licenseTypeCounts[licenseKey] ?? 0) + 1;
 
     const rLat = r.main_location_lat ? parseFloat(r.main_location_lat) : NaN;
     const rLon = r.main_location_long ? parseFloat(r.main_location_long) : NaN;
-    if (!isNaN(rLat) && !isNaN(rLon)) {
-      const distanceKm = haversineKm(lat, lon, rLat, rLon);
-      if (distanceKm <= 500) within500km++;
-      if (distanceKm <= 1000) within1000km++;
+    if (isNaN(rLat) || isNaN(rLon)) continue;
+
+    const distanceKm = haversineKm(lat, lon, rLat, rLon);
+    withDistance.push({
+      id: r.id,
+      license_type: licenseType,
+      commercial_safe: isCommercialSafeLicense(licenseType),
+      distance_km: Math.round(distanceKm),
+      number_of_individuals: studyRowNumber(r, 'number_of_individuals'),
+      has_download_access: (r.i_have_download_access ?? '').toLowerCase() === 'true',
+    });
+
+    if (distanceKm <= 500) {
+      within500km++;
+      within500ByLicense[licenseKey] = (within500ByLicense[licenseKey] ?? 0) + 1;
+      if (isCommercialSafeLicense(licenseType)) eligibleWithin500km++;
     }
+    if (distanceKm <= 1000) within1000km++;
   }
 
-  return { query, match_type: matchType, matching_studies: matchingStudies, license_type_counts: licenseTypeCounts, within_500km: within500km, within_1000km: within1000km };
+  withDistance.sort((a, b) => a.distance_km - b.distance_km);
+
+  return {
+    query,
+    match_type: matchType,
+    matching_studies: matchingStudies,
+    license_type_counts: licenseTypeCounts,
+    within_500km: within500km,
+    within_1000km: within1000km,
+    within_500km_by_license: within500ByLicense,
+    eligible_within_500km: eligibleWithin500km,
+    nearest: withDistance.slice(0, NEAREST_SAMPLE_SIZE),
+  };
+}
+
+// Item 4 — elk_family: Cervus elaphus + Cervus canadensis combined (the same
+// list MOVEBANK_TAXON_NAMES.elk uses), deduplicated by study id in case a
+// study somehow tagged both names. Only the two eligible counts are asked
+// for here — per-name breakdowns already exist in species_probe.
+function probeElkFamily(rawRows: Array<Record<string, string>>, lat: number, lon: number): { eligible_within_500km: number; eligible_within_1000km: number } {
+  const elkNames = MOVEBANK_TAXON_NAMES.elk;
+  const seenIds = new Set<string>();
+  let eligible500 = 0;
+  let eligible1000 = 0;
+
+  for (const r of rawRows) {
+    if (!taxonMatchesAny(r.taxon_ids ?? '', elkNames)) continue;
+    if (seenIds.has(r.id)) continue;
+    seenIds.add(r.id);
+
+    if (!isCommercialSafeLicense(r.license_type ?? '')) continue;
+
+    const rLat = r.main_location_lat ? parseFloat(r.main_location_lat) : NaN;
+    const rLon = r.main_location_long ? parseFloat(r.main_location_long) : NaN;
+    if (isNaN(rLat) || isNaN(rLon)) continue;
+
+    const distanceKm = haversineKm(lat, lon, rLat, rLon);
+    if (distanceKm <= 500) eligible500++;
+    if (distanceKm <= 1000) eligible1000++;
+  }
+
+  return { eligible_within_500km: eligible500, eligible_within_1000km: eligible1000 };
 }
 
 export async function GET(request: Request) {
@@ -180,11 +249,11 @@ export async function GET(request: Request) {
   }
 
   report.species = species;
-  const scientificName = MOVEBANK_TAXON_NAMES[species];
-  report.scientific_name = scientificName ?? null;
+  const scientificNames = MOVEBANK_TAXON_NAMES[species];
+  report.scientific_names = scientificNames ?? null;
   report.limit = limit;
 
-  if (!scientificName) {
+  if (!scientificNames) {
     report.error = `Unknown species key '${species}'. Valid: ${Object.keys(MOVEBANK_TAXON_NAMES).join(', ')}`;
     return NextResponse.json(report, { status: 400 });
   }
@@ -208,7 +277,7 @@ export async function GET(request: Request) {
     const key = s.licenseType || '(empty)';
     licenseTypeCounts[key] = (licenseTypeCounts[key] ?? 0) + 1;
 
-    if (!taxonMatches(s.taxonIds, scientificName)) continue;
+    if (!taxonMatchesAny(s.taxonIds, scientificNames)) continue;
     speciesMatchCount++;
 
     const distanceKm = haversineKm(lat, lon, s.lat as number, s.lon as number);
@@ -247,6 +316,11 @@ export async function GET(request: Request) {
     ...SPECIES_PROBE_NAMES.map(name => probeSpecies(catalog.rawRows, name, 'exact_taxon', lat, lon)),
     ...SPECIES_PROBE_SUBSTRINGS.map(word => probeSpecies(catalog.rawRows, word, 'substring', lat, lon)),
   ];
+
+  // Cervus elaphus + Cervus canadensis combined — whitetail/mule deer are
+  // never folded into this or any other combined grouping (they resolve as
+  // their own independent species only; see resolveMovebankTaxon).
+  report.elk_family = probeElkFamily(catalog.rawRows, lat, lon);
 
   const studyProbes: StudyProbeResult[] = [];
   for (const { study, distanceKm } of nearby.slice(0, limit)) {

@@ -175,4 +175,68 @@ describe('GET /api/admin/movebank-probe', () => {
     expect(bodyText).not.toContain('super-secret-password')
     expect(bodyText).not.toContain('testuser')
   })
+
+  it('addendum 3: elk_family combines Cervus elaphus + Cervus canadensis, per-species nearest/eligibility fields are correct, whitetail stays unmerged', async () => {
+    const row = (over: Partial<Record<string, string>>): Record<string, string> => ({
+      id: '0', name: '', main_location_lat: '', main_location_long: '',
+      number_of_individuals: '0', taxon_ids: '', license_type: '', citation: '',
+      i_have_download_access: 'true', ...over,
+    })
+
+    const rawRows = [
+      // Cervus elaphus, CC_0, at the query point exactly (0km) — eligible.
+      row({ id: '1', name: 'A', main_location_lat: '40.5', main_location_long: '-110.0', number_of_individuals: '20', taxon_ids: 'Cervus elaphus', license_type: 'CC_0' }),
+      // Cervus canadensis, CC_BY, ~100km away — eligible, and the OTHER elk name.
+      row({ id: '2', name: 'B', main_location_lat: '41.0', main_location_long: '-110.5', number_of_individuals: '15', taxon_ids: 'Cervus canadensis', license_type: 'CC_BY' }),
+      // Cervus elaphus, CUSTOM license, ~50km away — within 500km but NOT eligible; must still appear in `nearest`, clearly marked.
+      row({ id: '3', name: 'C', main_location_lat: '40.9', main_location_long: '-110.0', number_of_individuals: '8', taxon_ids: 'Cervus elaphus', license_type: 'CUSTOM' }),
+      // Whitetail deer, CC_0, far away (~1600km) — simulates "0 studies within
+      // 500km of Utah" for whitetail. Must remain its own species entry and
+      // never be folded into elk_family or any elk/mule-deer grouping.
+      row({ id: '4', name: 'D', main_location_lat: '25.0', main_location_long: '-100.0', number_of_individuals: '30', taxon_ids: 'Odocoileus virginianus', license_type: 'CC_0' }),
+    ]
+    const studies = rawRows.map(r => ({
+      id: r.id, name: r.name,
+      lat: parseFloat(r.main_location_lat), lon: parseFloat(r.main_location_long),
+      numberOfIndividuals: parseInt(r.number_of_individuals, 10),
+      taxonIds: r.taxon_ids, licenseType: r.license_type, citation: r.citation,
+      hasDownloadAccess: true,
+    }))
+    fetchMovebankStudiesDetailedMock.mockResolvedValue({
+      studies, rawRows, rawRowCount: rawRows.length, responseBytes: 999, truncated: false,
+    })
+    fetchMovebankEventsDetailedMock.mockResolvedValue({ events: [], handshake: 'not_required' })
+
+    const req = new Request(
+      'https://example.com/api/admin/movebank-probe?species=elk&lat=40.5&lon=-110.0&limit=1',
+      { headers: { Authorization: 'Bearer test-cron-secret' } }
+    )
+    const res = await GET(req)
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.scientific_names).toEqual(['Cervus elaphus', 'Cervus canadensis'])
+
+    // elk_family: studies 1 + 2 (CC_0 and CC_BY) are eligible within 500km;
+    // study 3 (CUSTOM) is excluded from the eligible count despite distance.
+    expect(body.elk_family).toEqual({ eligible_within_500km: 2, eligible_within_1000km: 2 })
+
+    const elaphusEntry = body.species_probe.find((e: { query: string }) => e.query === 'Cervus elaphus')
+    expect(elaphusEntry.matching_studies).toBe(2) // studies 1 and 3 only — NOT study 2 (tagged canadensis, not elaphus)
+    expect(elaphusEntry.eligible_within_500km).toBe(1) // only study 1 (CUSTOM study 3 excluded)
+    expect(elaphusEntry.within_500km_by_license).toEqual({ CC_0: 1, CUSTOM: 1 })
+    expect(elaphusEntry.nearest).toHaveLength(2)
+    expect(elaphusEntry.nearest[0]).toMatchObject({ id: '1', license_type: 'CC_0', commercial_safe: true, distance_km: 0 })
+    expect(elaphusEntry.nearest[1]).toMatchObject({ id: '3', license_type: 'CUSTOM', commercial_safe: false }) // included, clearly marked, not filtered out
+
+    const whitetailEntry = body.species_probe.find((e: { query: string }) => e.query === 'Odocoileus virginianus')
+    expect(whitetailEntry.matching_studies).toBe(1) // still resolvable as its own species
+    expect(whitetailEntry.within_500km).toBe(0)      // but 0 studies within 500km of this (Utah) point
+    expect(whitetailEntry.eligible_within_500km).toBe(0)
+
+    // No study names, citations, or contact info anywhere in the response —
+    // only the ids/license/distance/individual-count aggregate fields.
+    const bodyText = JSON.stringify(body)
+    expect(bodyText).not.toMatch(/"name":"[A-D]"/)
+  })
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { resolveMovebankTaxon, parseCsv, normalizeLicenseType, isCommercialSafeLicense } from './movebankCollarFetch'
+import { resolveMovebankTaxon, taxonMatchesAny, parseCsv, normalizeLicenseType, isCommercialSafeLicense } from './movebankCollarFetch'
 
 // Controlled Supabase spy for the whole file — lets the "record" gating
 // tests assert whether a database write happened, and keeps the earlier
@@ -17,16 +17,19 @@ vi.mock('@/lib/supabase/server', () => ({
 }))
 
 describe('resolveMovebankTaxon (Fix 5 — single source of truth for species keys)', () => {
-  it('resolves a fully-qualified elk taxonomy key', () => {
+  it('resolves a fully-qualified elk taxonomy key to BOTH acceptable Movebank names', () => {
+    // The live catalog tags elk studies as "Cervus elaphus", not just the
+    // North American "Cervus canadensis" originally assumed — a species can
+    // have more than one acceptable name, but still one speciesTaxonKey.
     expect(resolveMovebankTaxon('elk.bull.archery.HD316')).toEqual({
-      scientificName: 'Cervus canadensis',
+      scientificNames: ['Cervus elaphus', 'Cervus canadensis'],
       speciesTaxonKey: 'elk.bull',
     })
   })
 
   it('resolves mule deer', () => {
     expect(resolveMovebankTaxon('deer.mule.archery')).toEqual({
-      scientificName: 'Odocoileus hemionus',
+      scientificNames: ['Odocoileus hemionus'],
       speciesTaxonKey: 'deer.mule',
     })
   })
@@ -35,15 +38,15 @@ describe('resolveMovebankTaxon (Fix 5 — single source of truth for species key
     // These species have no sub-segment in their taxonomy_key, unlike elk/deer —
     // the old fallback (first two dot-segments) broke on 'moose.bull.x'.
     expect(resolveMovebankTaxon('moose.bull.x')).toEqual({
-      scientificName: 'Alces alces',
+      scientificNames: ['Alces alces'],
       speciesTaxonKey: 'moose',
     })
     expect(resolveMovebankTaxon('caribou')).toEqual({
-      scientificName: 'Rangifer tarandus',
+      scientificNames: ['Rangifer tarandus'],
       speciesTaxonKey: 'caribou',
     })
     expect(resolveMovebankTaxon('pronghorn')).toEqual({
-      scientificName: 'Antilocapra americana',
+      scientificNames: ['Antilocapra americana'],
       speciesTaxonKey: 'pronghorn',
     })
   })
@@ -54,6 +57,38 @@ describe('resolveMovebankTaxon (Fix 5 — single source of truth for species key
 
   it('returns null for an unrecognized taxonomy key', () => {
     expect(resolveMovebankTaxon('trout.rainbow.fly_fishing')).toBeNull()
+  })
+
+  it('keeps whitetail deer independently resolvable, never merged with elk/mule-deer', () => {
+    // No cross-species "analog" substitution exists anywhere in this module —
+    // whitetail resolves to its own name/key and nothing else references it.
+    expect(resolveMovebankTaxon('deer.whitetail.archery')).toEqual({
+      scientificNames: ['Odocoileus virginianus'],
+      speciesTaxonKey: 'deer.whitetail',
+    })
+  })
+})
+
+describe('taxonMatchesAny (addendum 3 — multi-name species matching)', () => {
+  it('matches when taxon_ids contains any one of several acceptable names', () => {
+    expect(taxonMatchesAny('Cervus elaphus', ['Cervus elaphus', 'Cervus canadensis'])).toBe(true)
+    expect(taxonMatchesAny('Cervus canadensis', ['Cervus elaphus', 'Cervus canadensis'])).toBe(true)
+  })
+
+  it('matches a name alongside other comma-joined taxon_ids values', () => {
+    expect(taxonMatchesAny('Odocoileus hemionus,Cervus elaphus', ['Cervus elaphus', 'Cervus canadensis'])).toBe(true)
+  })
+
+  it('is case-insensitive', () => {
+    expect(taxonMatchesAny('cervus elaphus', ['Cervus elaphus', 'Cervus canadensis'])).toBe(true)
+  })
+
+  it('does not match on partial/substring overlap — segments must match exactly', () => {
+    expect(taxonMatchesAny('Cervus elaphus nelsoni', ['Cervus elaphus'])).toBe(false)
+  })
+
+  it('returns false when none of the names are present', () => {
+    expect(taxonMatchesAny('Odocoileus hemionus', ['Cervus elaphus', 'Cervus canadensis'])).toBe(false)
   })
 })
 

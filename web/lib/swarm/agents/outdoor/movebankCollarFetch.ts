@@ -22,35 +22,49 @@
 import { createHash } from 'node:crypto';
 import { createServiceClient } from '@/lib/supabase/server';
 
-// species_taxon_key -> ITIS canonical scientific name, matched as a substring
-// against a study's taxon_ids attribute (comma-separated list of names).
+// species_taxon_key -> ITIS canonical scientific name(s), matched against a
+// study's taxon_ids attribute (comma-separated list of names). A species can
+// have more than one acceptable name — the live catalog tags elk studies as
+// "Cervus elaphus" (the Old-World name Movebank's taxonomy actually uses),
+// not just "Cervus canadensis" as originally assumed, so both must match.
 // Salmon removed (FF-093 fix tasker item 8): salmon are not GPS-collared,
 // and this agent's domain is elk_hunt — including fish taxa here risked
 // cross-contaminating the fishing-domain agent isolation.
-export const MOVEBANK_TAXON_NAMES: Record<string, string> = {
-  elk: 'Cervus canadensis',
-  deer_mule: 'Odocoileus hemionus',
-  deer_whitetail: 'Odocoileus virginianus',
-  moose: 'Alces alces',
-  caribou: 'Rangifer tarandus',
-  pronghorn: 'Antilocapra americana',
+export const MOVEBANK_TAXON_NAMES: Record<string, string[]> = {
+  elk: ['Cervus elaphus', 'Cervus canadensis'],
+  deer_mule: ['Odocoileus hemionus'],
+  deer_whitetail: ['Odocoileus virginianus'],
+  moose: ['Alces alces'],
+  caribou: ['Rangifer tarandus'],
+  pronghorn: ['Antilocapra americana'],
 };
 
-// Maps a taxonomy_key (e.g. 'elk.bull.archery', 'deer.mule.archery') to a
-// Movebank scientific name + the normalized species_taxon_key used as the
-// collar_pattern_library routing key. Single source of truth — both the
-// extractor (write path) and calibration (read path) call this.
-export function resolveMovebankTaxon(taxonomyKey: string): { scientificName: string; speciesTaxonKey: string } | null {
+// True if a study's raw taxon_ids cell contains ANY of the given scientific
+// names (case-insensitive, exact segment match — taxon_ids is a
+// comma-joined list of names, not a free-text field to substring-search).
+export function taxonMatchesAny(taxonIdsRaw: string, scientificNames: string[]): boolean {
+  const segments = taxonIdsRaw.split(',').map(s => s.trim().toLowerCase());
+  return scientificNames.some(name => segments.includes(name.toLowerCase()));
+}
+
+// Maps a taxonomy_key (e.g. 'elk.bull.archery', 'deer.mule.archery') to the
+// Movebank scientific name(s) that identify it + the normalized
+// species_taxon_key used as the collar_pattern_library routing key. Single
+// source of truth — both the extractor (write path) and calibration (read
+// path) call this. speciesTaxonKey is unaffected by a species having
+// multiple acceptable Movebank names — it's still one routing key per
+// species regardless of how many taxon_ids strings can match it.
+export function resolveMovebankTaxon(taxonomyKey: string): { scientificNames: string[]; speciesTaxonKey: string } | null {
   const parts = taxonomyKey.split('.');
   const root = parts[0];
   const sub = parts[1];
 
-  if (root === 'elk') return { scientificName: MOVEBANK_TAXON_NAMES.elk, speciesTaxonKey: `elk.${sub ?? 'unspecified'}` };
-  if (root === 'deer' && sub === 'mule') return { scientificName: MOVEBANK_TAXON_NAMES.deer_mule, speciesTaxonKey: 'deer.mule' };
-  if (root === 'deer' && sub === 'whitetail') return { scientificName: MOVEBANK_TAXON_NAMES.deer_whitetail, speciesTaxonKey: 'deer.whitetail' };
-  if (root === 'moose') return { scientificName: MOVEBANK_TAXON_NAMES.moose, speciesTaxonKey: 'moose' };
-  if (root === 'caribou') return { scientificName: MOVEBANK_TAXON_NAMES.caribou, speciesTaxonKey: 'caribou' };
-  if (root === 'pronghorn') return { scientificName: MOVEBANK_TAXON_NAMES.pronghorn, speciesTaxonKey: 'pronghorn' };
+  if (root === 'elk') return { scientificNames: MOVEBANK_TAXON_NAMES.elk, speciesTaxonKey: `elk.${sub ?? 'unspecified'}` };
+  if (root === 'deer' && sub === 'mule') return { scientificNames: MOVEBANK_TAXON_NAMES.deer_mule, speciesTaxonKey: 'deer.mule' };
+  if (root === 'deer' && sub === 'whitetail') return { scientificNames: MOVEBANK_TAXON_NAMES.deer_whitetail, speciesTaxonKey: 'deer.whitetail' };
+  if (root === 'moose') return { scientificNames: MOVEBANK_TAXON_NAMES.moose, speciesTaxonKey: 'moose' };
+  if (root === 'caribou') return { scientificNames: MOVEBANK_TAXON_NAMES.caribou, speciesTaxonKey: 'caribou' };
+  if (root === 'pronghorn') return { scientificNames: MOVEBANK_TAXON_NAMES.pronghorn, speciesTaxonKey: 'pronghorn' };
 
   return null;
 }
