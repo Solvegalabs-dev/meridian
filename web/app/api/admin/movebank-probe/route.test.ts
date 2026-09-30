@@ -1,8 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-const { fetchMovebankStudiesDetailedMock, fetchMovebankEventsDetailedMock } = vi.hoisted(() => ({
+const {
+  fetchMovebankStudiesDetailedMock,
+  fetchMovebankEventsDetailedMock,
+  fetchMovebankStudyMetaMock,
+  fetchMovebankIndividualsMock,
+  fetchMovebankEventsVariantMock,
+} = vi.hoisted(() => ({
   fetchMovebankStudiesDetailedMock: vi.fn(),
   fetchMovebankEventsDetailedMock: vi.fn(),
+  fetchMovebankStudyMetaMock: vi.fn(),
+  fetchMovebankIndividualsMock: vi.fn(),
+  fetchMovebankEventsVariantMock: vi.fn(),
 }))
 
 vi.mock('@/lib/swarm/agents/outdoor/movebankCollarFetch', async (importOriginal) => {
@@ -11,6 +20,9 @@ vi.mock('@/lib/swarm/agents/outdoor/movebankCollarFetch', async (importOriginal)
     ...actual,
     fetchMovebankStudiesDetailed: fetchMovebankStudiesDetailedMock,
     fetchMovebankEventsDetailed: fetchMovebankEventsDetailedMock,
+    fetchMovebankStudyMeta: fetchMovebankStudyMetaMock,
+    fetchMovebankIndividuals: fetchMovebankIndividualsMock,
+    fetchMovebankEventsVariant: fetchMovebankEventsVariantMock,
   }
 })
 
@@ -23,6 +35,15 @@ describe('GET /api/admin/movebank-probe', () => {
     process.env.MOVEBANK_PASSWORD = 'super-secret-password'
     fetchMovebankStudiesDetailedMock.mockReset()
     fetchMovebankEventsDetailedMock.mockReset()
+    fetchMovebankStudyMetaMock.mockReset().mockResolvedValue({
+      timestampFirstDeployedLocation: '2018-01-01', timestampLastDeployedLocation: '2025-01-01',
+      numberOfDeployedLocations: '5000', sensorTypeIds: 'GPS', taxonIds: 'Cervus elaphus', numberOfIndividuals: '10',
+    })
+    fetchMovebankIndividualsMock.mockReset().mockResolvedValue([])
+    fetchMovebankEventsVariantMock.mockReset().mockResolvedValue({
+      http_ok: true, response_bytes: 100, truncated: false, data_line_count: 0,
+      access_denied_message: false, header_columns: [], handshake: 'not_required', elapsed_ms: 5,
+    })
   })
 
   it('returns 401 with no Authorization header, and never leaks the password', async () => {
@@ -115,11 +136,68 @@ describe('GET /api/admin/movebank-probe', () => {
     expect(bodyText).not.toContain('-110.1')
   })
 
+  it('addendum 4 item 1: direct study_id mode returns study_meta + 4 event variants + individuals counts', async () => {
+    fetchMovebankEventsDetailedMock.mockResolvedValue({ events: [], handshake: 'accepted' })
+    fetchMovebankIndividualsMock.mockResolvedValue([
+      { id: '1', localIdentifier: 'E1', taxonCanonicalName: 'Cervus elaphus' },
+      { id: '2', localIdentifier: 'D1', taxonCanonicalName: 'Odocoileus hemionus' },
+    ])
+
+    const req = new Request(
+      'https://example.com/api/admin/movebank-probe?study_id=7364502758&license_type=CC_0&species=elk',
+      { headers: { Authorization: 'Bearer test-cron-secret' } }
+    )
+    const res = await GET(req)
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.diagnostics.study_meta).toMatchObject({ sensorTypeIds: 'GPS', numberOfIndividuals: '10' })
+    expect(body.diagnostics.individuals_total).toBe(2)
+    expect(body.diagnostics.individuals_matching_species).toBe(1) // only the Cervus elaphus individual
+
+    const variants = body.diagnostics.variants
+    expect(Object.keys(variants)).toEqual([
+      'a_sensor_filter_and_timestamp_start_current',
+      'b_sensor_filter_no_timestamp_start',
+      'c_no_sensor_filter_with_timestamp_start',
+      'd_no_filters_single_individual',
+    ])
+    // Variant (a) mirrors production exactly: sensor filter + timestamp_start, full production byte cap.
+    expect(fetchMovebankEventsVariantMock).toHaveBeenNthCalledWith(
+      1, '7364502758', { sensorFilter: true, timestampStart: true, maxBytes: 20 * 1024 * 1024 }, 'CC_0'
+    )
+    // Variant (d) uses the documented individual_local_identifier filter (not individual_id), from the first individual.
+    expect(fetchMovebankEventsVariantMock).toHaveBeenNthCalledWith(
+      4, '7364502758', { sensorFilter: false, timestampStart: false, individualLocalIdentifier: 'E1', maxBytes: 2 * 1024 * 1024 }, 'CC_0'
+    )
+
+    const bodyText = JSON.stringify(body)
+    expect(bodyText).not.toContain('super-secret-password')
+  })
+
+  it('addendum 4 item 1: skips variant d and explains why when no individuals are available', async () => {
+    fetchMovebankEventsDetailedMock.mockResolvedValue({ events: [], handshake: 'not_required' })
+    fetchMovebankIndividualsMock.mockRejectedValue(new Error('individuals endpoint down'))
+
+    const req = new Request(
+      'https://example.com/api/admin/movebank-probe?study_id=999',
+      { headers: { Authorization: 'Bearer test-cron-secret' } }
+    )
+    const res = await GET(req)
+    const body = await res.json()
+
+    expect(body.diagnostics.individuals_error).toBe('individuals endpoint down')
+    expect(body.diagnostics.individuals_total).toBe(0)
+    expect(body.diagnostics.variants.d_no_filters_single_individual).toMatchObject({ skipped: true })
+    expect(fetchMovebankEventsVariantMock).toHaveBeenCalledTimes(3) // a, b, c only — d never attempted
+  })
+
   it('discovery mode reports raw_row_count, response_bytes, truncated, taxon_sample, and species_probe', async () => {
     const rawRows = [
       { id: '1', name: 'Elk Study', main_location_lat: '40.5', main_location_long: '-110.0', number_of_individuals: '10', taxon_ids: 'Cervus canadensis', license_type: 'CC_0', citation: 'Elk et al.', i_have_download_access: 'true' },
       { id: '2', name: 'Deer Study', main_location_lat: '41.0', main_location_long: '-111.0', number_of_individuals: '5', taxon_ids: 'Odocoileus hemionus', license_type: 'CC_BY', citation: 'Deer et al.', i_have_download_access: 'true' },
       { id: '3', name: 'No-taxon Study', main_location_lat: '39.0', main_location_long: '-109.0', number_of_individuals: '2', taxon_ids: '', license_type: 'CUSTOM', citation: '', i_have_download_access: 'true' },
+      { id: '4', name: 'No-access Study', main_location_lat: '38.0', main_location_long: '-108.0', number_of_individuals: '1', taxon_ids: '', license_type: 'CC_0', citation: '', i_have_download_access: 'false' },
     ]
     const studies = rawRows.map(r => ({
       id: r.id, name: r.name,
@@ -142,13 +220,16 @@ describe('GET /api/admin/movebank-probe', () => {
 
     expect(res.status).toBe(200)
     expect(body.study_catalog).toMatchObject({
-      raw_row_count: 3,
-      total_studies: 3,
+      request_params: ['entity_type', 'i_have_download_access', 'attributes'],
+      raw_row_count: 4,
+      total_studies: 4,
+      has_download_access_count: 3,
+      without_download_access_count: 1,
       response_bytes: 1234,
       truncated: false,
       species_match_count: 1,
     })
-    expect(body.taxon_sample.empty_taxon_ids_count).toBe(1)
+    expect(body.taxon_sample.empty_taxon_ids_count).toBe(2)
     expect(body.taxon_sample.top).toContainEqual({ taxon_ids: 'Cervus canadensis', count: 1 })
 
     const elkEntry = body.species_probe.find((e: { query: string }) => e.query === 'Cervus canadensis')

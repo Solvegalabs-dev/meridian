@@ -4,10 +4,15 @@ import {
   hasMovebankCredentials,
   fetchMovebankStudiesDetailed,
   fetchMovebankEventsDetailed,
+  fetchMovebankIndividuals,
+  fetchMovebankStudyMeta,
+  fetchMovebankEventsVariant,
   isCommercialSafeLicense,
   taxonMatchesAny,
   MOVEBANK_TAXON_NAMES,
+  STUDY_QUERY_PARAM_NAMES,
   type MovebankStudy,
+  type MovebankEventVariantOptions,
 } from '@/lib/swarm/agents/outdoor/movebankCollarFetch';
 
 // FF-093 addendum — live diagnostic probe so Jason can verify Movebank
@@ -36,6 +41,8 @@ const SPECIES_PROBE_NAMES = [
 ];
 const SPECIES_PROBE_SUBSTRINGS = ['cervus', 'odocoileus'];
 const NEAREST_SAMPLE_SIZE = 5;
+const PRODUCTION_MAX_BYTES = 20 * 1024 * 1024; // matches fetchMovebankEventsDetailed's real cap — variant (a) mirrors production exactly
+const DIAGNOSTIC_MAX_BYTES = 2 * 1024 * 1024;  // hard cap for variants b/c/d so a huge study can't blow the function
 
 type StudyProbeResult = {
   study_id: string;
@@ -244,6 +251,66 @@ export async function GET(request: Request) {
   if (directStudyId) {
     report.mode = 'direct_study';
     report.study_probe = await probeOneStudy(directStudyId, directLicenseType, lat, lon, record);
+
+    // Addendum 4 item 1 — zero-row diagnosis. Tells us whether a zero-row
+    // result came from the time window, the sensor filter, access, or
+    // attribute naming. Never returns rows, names, owner, or citation.
+    const studyMeta = await fetchMovebankStudyMeta(directStudyId).catch((err: unknown) => ({
+      error: err instanceof Error ? err.message : 'unknown error',
+    }));
+
+    let individuals: Awaited<ReturnType<typeof fetchMovebankIndividuals>> = [];
+    let individualsError: string | null = null;
+    try {
+      individuals = await fetchMovebankIndividuals(directStudyId, directLicenseType ?? undefined);
+    } catch (err) {
+      individualsError = err instanceof Error ? err.message : 'unknown error';
+    }
+
+    // species defaults to 'elk' above even in direct-study mode, so
+    // individuals_matching_species always answers against a real species
+    // rather than requiring a separate param just for this.
+    const directScientificNames = MOVEBANK_TAXON_NAMES[species] ?? null;
+    const individualsMatchingSpecies = directScientificNames
+      ? individuals.filter(i => i.taxonCanonicalName && directScientificNames.some(n => n.toLowerCase() === i.taxonCanonicalName.toLowerCase())).length
+      : null;
+
+    const variantDefs: Array<{ name: string; opts: MovebankEventVariantOptions }> = [
+      { name: 'a_sensor_filter_and_timestamp_start_current', opts: { sensorFilter: true, timestampStart: true, maxBytes: PRODUCTION_MAX_BYTES } },
+      { name: 'b_sensor_filter_no_timestamp_start', opts: { sensorFilter: true, timestampStart: false, maxBytes: DIAGNOSTIC_MAX_BYTES } },
+      { name: 'c_no_sensor_filter_with_timestamp_start', opts: { sensorFilter: false, timestampStart: true, maxBytes: DIAGNOSTIC_MAX_BYTES } },
+    ];
+    const firstIndividual = individuals[0]?.localIdentifier;
+    if (firstIndividual) {
+      variantDefs.push({
+        name: 'd_no_filters_single_individual',
+        opts: { sensorFilter: false, timestampStart: false, individualLocalIdentifier: firstIndividual, maxBytes: DIAGNOSTIC_MAX_BYTES },
+      });
+    }
+
+    const variantResults: Record<string, unknown> = {};
+    for (const { name, opts } of variantDefs) {
+      if (Date.now() - start > DEADLINE_MS) {
+        variantResults[name] = { skipped: true, reason: 'deadline reached' };
+        continue;
+      }
+      variantResults[name] = await fetchMovebankEventsVariant(directStudyId, opts, directLicenseType ?? undefined);
+    }
+    if (!firstIndividual) {
+      variantResults.d_no_filters_single_individual = {
+        skipped: true,
+        reason: individualsError ? `individuals unavailable: ${individualsError}` : 'no individuals returned for this study',
+      };
+    }
+
+    report.diagnostics = {
+      study_meta: studyMeta,
+      individuals_total: individuals.length,
+      individuals_matching_species: individualsMatchingSpecies,
+      individuals_error: individualsError,
+      variants: variantResults,
+    };
+
     report.elapsed_ms = Date.now() - start;
     return NextResponse.json(report);
   }
@@ -286,9 +353,24 @@ export async function GET(request: Request) {
 
   nearby.sort((a, b) => a.distanceKm - b.distanceKm);
 
+  // Addendum 4 item 4 — catalog determinism. A live probe found the row
+  // count differ (8796 vs 1001) between two runs with identical CC_0/CC_BY/
+  // CC_BY_NC counts and only CUSTOM differing (7874 vs 79) — reporting the
+  // exact request params and the has/without-download-access split lets a
+  // future diff explain (or rule out) a code change as the cause.
+  let hasDownloadAccessCount = 0;
+  let withoutDownloadAccessCount = 0;
+  for (const r of catalog.rawRows) {
+    if ((r.i_have_download_access ?? '').toLowerCase() === 'true') hasDownloadAccessCount++;
+    else withoutDownloadAccessCount++;
+  }
+
   report.study_catalog = {
+    request_params: STUDY_QUERY_PARAM_NAMES,
     raw_row_count: catalog.rawRowCount,
     total_studies: catalog.studies.length, // after the coordinate-validity filter
+    has_download_access_count: hasDownloadAccessCount,
+    without_download_access_count: withoutDownloadAccessCount,
     response_bytes: catalog.responseBytes,
     truncated: catalog.truncated,
     species_match_count: speciesMatchCount,

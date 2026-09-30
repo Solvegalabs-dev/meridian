@@ -17,11 +17,13 @@ import {
   taxonMatchesAny,
   hasMovebankCredentials,
   fetchMovebankStudies,
-  fetchMovebankEvents,
+  fetchMovebankEventsDetailed,
+  fetchMovebankIndividuals,
   parseMovebankTimestamp,
   isCommercialSafeLicense,
   type MovebankStudy,
   type MovebankEvent,
+  type MovebankIndividual,
 } from './movebankCollarFetch';
 
 // Bound external calls per run — Movebank studies can carry very large
@@ -162,6 +164,46 @@ export function extractMovementWindows(events: MovebankEvent[], timeZone: string
   return groupPeaksIntoWindows(peakHours, counts, maxCount);
 }
 
+function taxonCountInStudy(taxonIdsRaw: string): number {
+  return taxonIdsRaw.split(',').map(s => s.trim()).filter(Boolean).length;
+}
+
+// Addendum 4 item 2 — a study can carry several species (a live probe found
+// one with elk, mule deer, and pronghorn all in the same taxon_ids), so
+// events must be filtered to individuals of the REQUESTED species before
+// anything gets binned. Returns null to mean "skip this study entirely"
+// (never silently mix species into one pattern).
+async function filterEventsBySpecies(
+  study: MovebankStudy,
+  events: MovebankEvent[],
+  scientificNames: string[]
+): Promise<MovebankEvent[] | null> {
+  let individuals: MovebankIndividual[] = [];
+  try {
+    individuals = await fetchMovebankIndividuals(study.id, study.licenseType);
+  } catch (err) {
+    console.error(`[collarPatterns] individuals fetch failed for study ${study.id}:`, err);
+  }
+
+  const withTaxon = individuals.filter(i => i.taxonCanonicalName);
+  if (withTaxon.length > 0) {
+    const matchingIds = new Set(
+      withTaxon
+        .filter(i => scientificNames.some(n => n.toLowerCase() === i.taxonCanonicalName.toLowerCase()))
+        .map(i => i.id)
+    );
+    return events.filter(e => matchingIds.has(e.individualId));
+  }
+
+  // Individuals table unavailable, empty, or carries no per-individual taxon
+  // data — only trust this study if its OWN taxon_ids lists exactly one
+  // species (already confirmed to match — `study` came from the `eligible`
+  // filter). A multi-species study with no individual-level taxon data has
+  // no reliable way to separate species, so it's skipped rather than mixed.
+  if (taxonCountInStudy(study.taxonIds) === 1) return events;
+  return null;
+}
+
 export async function computeCollarPatterns(objectiveId?: string): Promise<number | null> {
   if (!objectiveId) return null;
 
@@ -224,16 +266,33 @@ export async function computeCollarPatterns(objectiveId?: string): Promise<numbe
     if (Date.now() - startTime > OVERALL_DEADLINE_MS) break;
 
     let events: MovebankEvent[];
+    let truncated: boolean;
     try {
-      events = await fetchMovebankEvents(study.id, study.licenseType);
+      const result = await fetchMovebankEventsDetailed(study.id, study.licenseType);
+      events = result.events;
+      truncated = result.truncated;
     } catch (err) {
       console.error(`[collarPatterns] event fetch failed for study ${study.id}:`, err);
       continue;
     }
 
+    // Truncation safety (addendum 4 item 3) — a truncated response is the
+    // START of the file, not a random sample of it; using it would silently
+    // bias the pattern toward whatever Movebank happened to return first.
+    // Phase 2 will add chunked fetching by individual and time window so a
+    // large study can still be used in full; until then, skip rather than
+    // raise the byte/row caps to paper over it.
+    if (truncated) {
+      console.log(`study ${study.id} truncated — skipped`);
+      continue;
+    }
+
+    const speciesFiltered = await filterEventsBySpecies(study, events, taxon.scientificNames);
+    if (speciesFiltered === null) continue; // multi-species study, no reliable per-individual taxon split — never mix species
+
     // The real location guard — study.lat/lon is a coarse centroid; individual
     // GPS fixes are filtered to the objective's actual radius (Fix 3).
-    const nearby = events.filter(e => haversineKm(lat, lon, e.lat, e.lon) <= EVENT_RADIUS_KM);
+    const nearby = speciesFiltered.filter(e => haversineKm(lat, lon, e.lat, e.lon) <= EVENT_RADIUS_KM);
     if (nearby.length > 0) {
       inRadiusEvents.push(...nearby);
       contributingStudies.push(study);

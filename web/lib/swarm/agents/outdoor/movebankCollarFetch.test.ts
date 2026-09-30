@@ -337,3 +337,130 @@ describe('license acceptance recording gated by the `record` flag (probe safety)
     expect(fromSpy).not.toHaveBeenCalled()
   })
 })
+
+describe('STUDY_QUERY_PARAM_NAMES (addendum 4 item 4 — catalog determinism)', () => {
+  it('reports the exact parameter names the study catalog request uses', async () => {
+    const { STUDY_QUERY_PARAM_NAMES } = await import('./movebankCollarFetch')
+    expect(STUDY_QUERY_PARAM_NAMES).toEqual(['entity_type', 'i_have_download_access', 'attributes'])
+  })
+})
+
+describe('fetchMovebankIndividuals / fetchMovebankStudyMeta / fetchMovebankEventsVariant (addendum 4)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    process.env.MOVEBANK_USERNAME = 'testuser'
+    process.env.MOVEBANK_PASSWORD = 'testpass'
+    upsertSpy.mockClear()
+    fromSpy.mockClear()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('fetchMovebankIndividuals parses id/local_identifier/individual_taxon_canonical_name', async () => {
+    const csv = 'id,local_identifier,individual_taxon_canonical_name\n1,E1,Cervus elaphus\n2,E2,Odocoileus hemionus\n'
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: csv }))
+
+    const { fetchMovebankIndividuals } = await import('./movebankCollarFetch')
+    const result = await fetchMovebankIndividuals('999', 'CC_0')
+
+    expect(result).toEqual([
+      { id: '1', localIdentifier: 'E1', taxonCanonicalName: 'Cervus elaphus' },
+      { id: '2', localIdentifier: 'E2', taxonCanonicalName: 'Odocoileus hemionus' },
+    ])
+    expect(fetchMock.mock.calls[0][0]).toContain('entity_type=individual')
+    expect(fetchMock.mock.calls[0][0]).toContain('study_id=999')
+  })
+
+  it('fetchMovebankIndividuals never records a license acceptance itself', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fakeResponse({ headers: { 'accept-license': 'true' }, body: LICENSE_HTML }))
+      .mockResolvedValueOnce(fakeResponse({ body: 'id,local_identifier,individual_taxon_canonical_name\n1,E1,Cervus elaphus\n' }))
+
+    const { fetchMovebankIndividuals } = await import('./movebankCollarFetch')
+    await fetchMovebankIndividuals('999', 'CC_BY')
+
+    expect(fromSpy).not.toHaveBeenCalled()
+  })
+
+  it('fetchMovebankStudyMeta requests the six diagnostic attributes and no names/citation', async () => {
+    const csv = 'timestamp_first_deployed_location,timestamp_last_deployed_location,number_of_deployed_locations,sensor_type_ids,taxon_ids,number_of_individuals\n'
+      + '2018-01-01,2025-01-01,5000,GPS,Cervus elaphus,50\n'
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: csv }))
+
+    const { fetchMovebankStudyMeta } = await import('./movebankCollarFetch')
+    const meta = await fetchMovebankStudyMeta('999')
+
+    expect(meta).toEqual({
+      timestampFirstDeployedLocation: '2018-01-01',
+      timestampLastDeployedLocation: '2025-01-01',
+      numberOfDeployedLocations: '5000',
+      sensorTypeIds: 'GPS',
+      taxonIds: 'Cervus elaphus',
+      numberOfIndividuals: '50',
+    })
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('entity_type=study&study_id=999')
+    expect(url).not.toContain('name')
+    expect(url).not.toContain('citation')
+  })
+
+  it('fetchMovebankStudyMeta returns null for an empty/not-found response', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: 'timestamp_first_deployed_location\n' }))
+    const { fetchMovebankStudyMeta } = await import('./movebankCollarFetch')
+    expect(await fetchMovebankStudyMeta('999')).toBeNull()
+  })
+
+  it('fetchMovebankEventsVariant reports header column names and line count, never rows', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: CSV_DATA }))
+
+    const { fetchMovebankEventsVariant } = await import('./movebankCollarFetch')
+    const result = await fetchMovebankEventsVariant('999', { sensorFilter: true, timestampStart: true, maxBytes: 2 * 1024 * 1024 })
+
+    expect(result.http_ok).toBe(true)
+    expect(result.header_columns).toEqual(['individual_id', 'timestamp', 'location_lat', 'location_long'])
+    expect(result.data_line_count).toBe(1)
+    expect(result.access_denied_message).toBe(false)
+    expect(JSON.stringify(result)).not.toContain('ind-1') // no raw row data anywhere in the diagnostic result
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('sensor_type_id=653')
+    expect(url).toContain('timestamp_start=')
+  })
+
+  it('fetchMovebankEventsVariant omits filters when the variant asks for none, and filters by individual_local_identifier (not individual_id, per the docs)', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: CSV_DATA }))
+
+    const { fetchMovebankEventsVariant } = await import('./movebankCollarFetch')
+    await fetchMovebankEventsVariant('999', { sensorFilter: false, timestampStart: false, individualLocalIdentifier: 'E1', maxBytes: 2 * 1024 * 1024 })
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).not.toContain('sensor_type_id=')
+    expect(url).not.toContain('timestamp_start=')
+    expect(url).toContain('individual_local_identifier=E1')
+  })
+
+  it('fetchMovebankEventsVariant reports truncated=true when the byte cap is hit', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: CSV_DATA }))
+
+    const { fetchMovebankEventsVariant } = await import('./movebankCollarFetch')
+    const result = await fetchMovebankEventsVariant('999', { sensorFilter: false, timestampStart: false, maxBytes: 10 })
+
+    expect(result.truncated).toBe(true)
+  })
+
+  it('fetchMovebankEventsVariant reports http_ok=false on a request failure, without throwing', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('network down'))
+
+    const { fetchMovebankEventsVariant } = await import('./movebankCollarFetch')
+    const result = await fetchMovebankEventsVariant('999', { sensorFilter: false, timestampStart: false, maxBytes: 2 * 1024 * 1024 })
+
+    expect(result.http_ok).toBe(false)
+    expect(result.error).toBeDefined()
+  })
+})

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { localParts, extractMovementWindows } from './collarPatternExtractor'
 import type { MovebankEvent } from './movebankCollarFetch'
 
@@ -71,11 +71,16 @@ describe('extractMovementWindows (Fix 6d — never cache an empty pattern)', () 
 // never write a row (Fix 6d's other half — the caller must not cache it). ---
 
 const PROFILE = { taxonomy_key: 'elk.bull.archery', lat: 40.5, lon: -110.0, state: 'UT', hunt_unit_id: 'HD-316' }
-const STUDY = {
-  id: '123', name: 'Test Study', lat: 40.5, lon: -110.0,
-  numberOfIndividuals: 5, taxonIds: 'Cervus canadensis', licenseType: 'CC_0',
-  citation: 'Test citation (2020)', hasDownloadAccess: true,
+
+function study(overrides: Partial<{ id: string; taxonIds: string }> = {}) {
+  return {
+    id: '123', name: 'Test Study', lat: 40.5, lon: -110.0,
+    numberOfIndividuals: 5, taxonIds: 'Cervus canadensis', licenseType: 'CC_0',
+    citation: 'Test citation (2020)', hasDownloadAccess: true,
+    ...overrides,
+  }
 }
+const STUDY = study()
 
 function uniformEvents(): MovebankEvent[] {
   const events: MovebankEvent[] = []
@@ -87,7 +92,22 @@ function uniformEvents(): MovebankEvent[] {
   return events
 }
 
-const upsertSpy = vi.fn(async () => ({ error: null }))
+// A clearly-peaked, threshold-clearing sample (>=500 fixes, >=3 individuals)
+// so extractMovementWindows finds a real pattern and the minimum-evidence
+// gate passes — used to prove filtering/truncation logic by checking
+// exactly how many fixes made it into the written row.
+function peakedEvents(individualIds: string[], fixesPerIndividual: number): MovebankEvent[] {
+  const events: MovebankEvent[] = []
+  for (const id of individualIds) {
+    for (let i = 0; i < fixesPerIndividual; i++) {
+      const hour = i % 10 === 0 ? 20 : 13 // ~90% at 13:00Z = 07:00 MDT in June
+      events.push(eventAt(`2026-06-15T${String(hour).padStart(2, '0')}:00:00Z`, id))
+    }
+  }
+  return events
+}
+
+const upsertSpy = vi.fn(async (row: Record<string, unknown>) => { void row; return { error: null } })
 
 function makeChain(finalValue: unknown) {
   type Chain = Record<string, unknown>
@@ -111,21 +131,142 @@ vi.mock('@/lib/supabase/server', () => ({
   }),
 }))
 
+const { fetchMovebankStudiesMock, fetchMovebankEventsDetailedMock, fetchMovebankIndividualsMock } = vi.hoisted(() => ({
+  fetchMovebankStudiesMock: vi.fn(),
+  fetchMovebankEventsDetailedMock: vi.fn(),
+  fetchMovebankIndividualsMock: vi.fn(),
+}))
+
 vi.mock('./movebankCollarFetch', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./movebankCollarFetch')>()
   return {
     ...actual,
     hasMovebankCredentials: () => true,
-    fetchMovebankStudies: async () => [STUDY],
-    fetchMovebankEvents: async () => uniformEvents(),
+    fetchMovebankStudies: fetchMovebankStudiesMock,
+    fetchMovebankEventsDetailed: fetchMovebankEventsDetailedMock,
+    fetchMovebankIndividuals: fetchMovebankIndividualsMock,
   }
 })
 
-describe('computeCollarPatterns (Fix 6d integration)', () => {
+describe('computeCollarPatterns (Fix 6d integration + addendum 4 species/truncation filtering)', () => {
+  beforeEach(() => {
+    upsertSpy.mockClear()
+    fetchMovebankStudiesMock.mockReset()
+    fetchMovebankEventsDetailedMock.mockReset()
+    fetchMovebankIndividualsMock.mockReset()
+    // The only plain `fetch` call left once movebankCollarFetch is mocked out
+    // is queryElevation()'s call to USGS EPQS — stub it so tests that reach
+    // a written pattern don't make a real network call.
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ value: 8500 }) })))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('returns null and never upserts when no movement pattern is discernible', async () => {
+    fetchMovebankStudiesMock.mockResolvedValue([STUDY])
+    fetchMovebankEventsDetailedMock.mockResolvedValue({ events: uniformEvents(), handshake: 'not_required', truncated: false })
+    // Empty individuals list triggers the single-taxon fallback — STUDY's
+    // taxon_ids lists exactly one species (already matched to be eligible),
+    // so all events still pass through, preserving this test's intent.
+    fetchMovebankIndividualsMock.mockResolvedValue([])
+
     const { computeCollarPatterns } = await import('./collarPatternExtractor')
     const result = await computeCollarPatterns('obj-1')
     expect(result).toBeNull()
     expect(upsertSpy).not.toHaveBeenCalled()
+  })
+
+  it('filters a multi-species study down to only the requested species (P0 data integrity)', async () => {
+    // Mirrors a real study found in a live probe: elk, mule deer, and
+    // pronghorn all tagged in the same taxon_ids.
+    const multiSpeciesStudy = study({ taxonIds: 'Cervus canadensis,Odocoileus hemionus,Antilocapra americana' })
+    fetchMovebankStudiesMock.mockResolvedValue([multiSpeciesStudy])
+
+    const elkIds = ['elk-1', 'elk-2', 'elk-3']
+    const deerIds = ['deer-1', 'deer-2']
+    fetchMovebankIndividualsMock.mockResolvedValue([
+      ...elkIds.map(id => ({ id, localIdentifier: id, taxonCanonicalName: 'Cervus canadensis' })),
+      ...deerIds.map(id => ({ id, localIdentifier: id, taxonCanonicalName: 'Odocoileus hemionus' })),
+    ])
+
+    const elkEvents = peakedEvents(elkIds, 200)   // 600 fixes — clears the 500/3 minimum evidence gate
+    const deerEvents = peakedEvents(deerIds, 200) // would also clear it alone — must never be counted
+    fetchMovebankEventsDetailedMock.mockResolvedValue({ events: [...elkEvents, ...deerEvents], handshake: 'not_required', truncated: false })
+
+    const { computeCollarPatterns } = await import('./collarPatternExtractor')
+    const result = await computeCollarPatterns('obj-1')
+
+    expect(result).toBe(600) // elk fixes only — deer fixes excluded
+    expect(upsertSpy).toHaveBeenCalledTimes(1)
+    const upserted = upsertSpy.mock.calls[0][0]
+    expect(upserted.individual_count).toBe(3)
+    expect(upserted.gps_fix_count).toBe(600)
+  })
+
+  it('falls back to using all events for a genuinely single-species study when individuals data is unavailable', async () => {
+    fetchMovebankStudiesMock.mockResolvedValue([STUDY]) // taxon_ids: 'Cervus canadensis' — exactly one species
+    fetchMovebankIndividualsMock.mockRejectedValue(new Error('individuals endpoint down'))
+    fetchMovebankEventsDetailedMock.mockResolvedValue({
+      events: peakedEvents(['ind-1', 'ind-2', 'ind-3'], 200),
+      handshake: 'not_required',
+      truncated: false,
+    })
+
+    const { computeCollarPatterns } = await import('./collarPatternExtractor')
+    const result = await computeCollarPatterns('obj-1')
+
+    expect(result).toBe(600)
+    expect(upsertSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips a multi-species study entirely when individuals data is unavailable (never mixes species)', async () => {
+    const multiSpeciesStudy = study({ taxonIds: 'Cervus canadensis,Odocoileus hemionus' })
+    fetchMovebankStudiesMock.mockResolvedValue([multiSpeciesStudy])
+    fetchMovebankIndividualsMock.mockRejectedValue(new Error('individuals endpoint down'))
+    fetchMovebankEventsDetailedMock.mockResolvedValue({
+      events: peakedEvents(['ind-1', 'ind-2', 'ind-3'], 200),
+      handshake: 'not_required',
+      truncated: false,
+    })
+
+    const { computeCollarPatterns } = await import('./collarPatternExtractor')
+    const result = await computeCollarPatterns('obj-1')
+
+    expect(result).toBeNull() // no eligible study contributed any events
+    expect(upsertSpy).not.toHaveBeenCalled()
+  })
+
+  it('truncation safety: a truncated event response is skipped, never treated as the study pattern', async () => {
+    fetchMovebankStudiesMock.mockResolvedValue([STUDY])
+    fetchMovebankIndividualsMock.mockResolvedValue([])
+    fetchMovebankEventsDetailedMock.mockResolvedValue({
+      events: peakedEvents(['ind-1', 'ind-2', 'ind-3'], 200), // would otherwise clear every threshold
+      handshake: 'not_required',
+      truncated: true,
+    })
+
+    const { computeCollarPatterns } = await import('./collarPatternExtractor')
+    const result = await computeCollarPatterns('obj-1')
+
+    expect(result).toBeNull()
+    expect(upsertSpy).not.toHaveBeenCalled()
+  })
+
+  it('truncation safety: a non-truncated response with the same data proceeds normally', async () => {
+    fetchMovebankStudiesMock.mockResolvedValue([STUDY])
+    fetchMovebankIndividualsMock.mockResolvedValue([])
+    fetchMovebankEventsDetailedMock.mockResolvedValue({
+      events: peakedEvents(['ind-1', 'ind-2', 'ind-3'], 200),
+      handshake: 'not_required',
+      truncated: false,
+    })
+
+    const { computeCollarPatterns } = await import('./collarPatternExtractor')
+    const result = await computeCollarPatterns('obj-1')
+
+    expect(result).toBe(600)
+    expect(upsertSpy).toHaveBeenCalledTimes(1)
   })
 })

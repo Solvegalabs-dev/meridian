@@ -319,15 +319,32 @@ export type MovebankStudyFetchResult = {
   truncated: boolean;                           // true if the 20MB response cap or the row cap cut the list
 };
 
+// Single source of truth for the study catalog query, so the admin probe
+// can report the exact parameter NAMES used (addendum 4 item 4 — catalog
+// determinism) without a second, driftable copy of this list.
+const STUDY_QUERY_PARAMS: Record<string, string> = {
+  entity_type: 'study',
+  i_have_download_access: 'true',
+  attributes: 'id,name,main_location_lat,main_location_long,number_of_individuals,taxon_ids,license_type,citation,i_have_download_access',
+};
+export const STUDY_QUERY_PARAM_NAMES = Object.keys(STUDY_QUERY_PARAMS);
+
+// Builds "k1=v1&k2=v2" without URL-encoding values — Movebank's own doc
+// examples use literal unencoded commas in `attributes` lists, and there's
+// no live way to confirm %2C-encoded commas behave identically, so this
+// preserves the exact working format rather than switching to
+// URLSearchParams (which would percent-encode them).
+function buildQueryString(params: Record<string, string>): string {
+  return Object.entries(params).map(([k, v]) => `${k}=${v}`).join('&');
+}
+
 // Movebank has no server-side taxon or geographic filter for study
 // discovery (see file header) — this fetches every study the account can
 // see download access to, and the caller filters by species name, distance,
 // and license client-side. `i_have_download_access=true` is a real
 // documented query parameter and meaningfully narrows the result set.
 export async function fetchMovebankStudiesDetailed(): Promise<MovebankStudyFetchResult> {
-  const url = 'https://www.movebank.org/movebank/service/direct-read'
-    + '?entity_type=study&i_have_download_access=true'
-    + '&attributes=id,name,main_location_lat,main_location_long,number_of_individuals,taxon_ids,license_type,citation,i_have_download_access';
+  const url = 'https://www.movebank.org/movebank/service/direct-read?' + buildQueryString(STUDY_QUERY_PARAMS);
 
   const { text, responseBytes, truncated: byteTruncated } = await movebankRequest(url, MAX_RESPONSE_BYTES);
   const rawRows = parseCsv(text, MAX_STUDY_ROWS);
@@ -397,6 +414,7 @@ function movebankTimestampParam(date: Date): string {
 export type MovebankEventFetchResult = {
   events: MovebankEvent[];
   handshake: MovebankHandshakeResult;
+  truncated: boolean; // true if the byte cap or the row cap cut the response short — see collarPatternExtractor's truncation-safety check
 };
 
 // Rich variant used by the admin probe route to report what actually
@@ -413,13 +431,14 @@ export async function fetchMovebankEventsDetailed(studyId: string, licenseType?:
     + `&timestamp_start=${timestampStart}`
     + '&attributes=individual_id,timestamp,location_lat,location_long';
 
-  const { text, handshake } = await movebankRequest(url, MAX_RESPONSE_BYTES, { studyId, licenseType, record });
+  const { text, handshake, truncated: byteTruncated } = await movebankRequest(url, MAX_RESPONSE_BYTES, { studyId, licenseType, record });
 
   if (handshake === 'aborted_noncommercial' || isAccessDenied(text)) {
-    return { events: [], handshake };
+    return { events: [], handshake, truncated: false };
   }
 
   const rows = parseCsv(text, MAX_EVENT_ROWS);
+  const rowTruncated = rows.length >= MAX_EVENT_ROWS;
   const events: MovebankEvent[] = [];
   for (const r of rows) {
     const lat = parseFloat(r.location_lat ?? r['location-lat']);
@@ -427,10 +446,153 @@ export async function fetchMovebankEventsDetailed(studyId: string, licenseType?:
     if (!r.timestamp || isNaN(lat) || isNaN(lon)) continue;
     events.push({ individualId: r.individual_id ?? r['individual-id'] ?? '', timestamp: r.timestamp, lat, lon });
   }
-  return { events, handshake };
+  return { events, handshake, truncated: byteTruncated || rowTruncated };
 }
 
 export async function fetchMovebankEvents(studyId: string, licenseType?: string): Promise<MovebankEvent[]> {
   const { events } = await fetchMovebankEventsDetailed(studyId, licenseType);
   return events;
+}
+
+// --- Individuals (addendum 4 item 2 — multi-species study filtering) ---
+// A study can carry several species; without this, events from a
+// completely different animal were being binned into the requested
+// species' pattern. `individual_taxon_canonical_name` is the confirmed
+// result-header attribute name for entity_type=individual (NOT
+// "taxon_canonical_name" — that was an unverified guess). The join key
+// back to an event is individual.id == event.individual_id (confirmed in
+// the docs); local_identifier is a separate human-readable tag, not the
+// join key.
+export type MovebankIndividual = {
+  id: string;
+  localIdentifier: string;
+  taxonCanonicalName: string;
+};
+
+export async function fetchMovebankIndividuals(studyId: string, licenseType?: string): Promise<MovebankIndividual[]> {
+  const url = 'https://www.movebank.org/movebank/service/direct-read'
+    + `?entity_type=individual&study_id=${studyId}`
+    + '&attributes=id,local_identifier,individual_taxon_canonical_name';
+
+  // Metadata, not tracking data — routed through the same choke point for
+  // rate-limiting/serialization, but never itself recorded as a license
+  // acceptance (the event fetch for this study already records that).
+  const { text } = await movebankRequest(url, MAX_RESPONSE_BYTES, { studyId, licenseType, record: false });
+  if (isAccessDenied(text)) return [];
+
+  const rows = parseCsv(text, MAX_EVENT_ROWS);
+  return rows
+    .filter(r => r.id)
+    .map(r => ({
+      id: r.id,
+      localIdentifier: r.local_identifier ?? '',
+      taxonCanonicalName: r.individual_taxon_canonical_name ?? '',
+    }));
+}
+
+// --- Study metadata for zero-row diagnosis (addendum 4 item 1) ---
+// No names, owner, or citation — just the attributes needed to tell
+// whether a study's data window/sensors/individual count line up with why
+// an event fetch might have returned zero rows.
+export type MovebankStudyMeta = {
+  timestampFirstDeployedLocation: string;
+  timestampLastDeployedLocation: string;
+  numberOfDeployedLocations: string;
+  sensorTypeIds: string;
+  taxonIds: string;
+  numberOfIndividuals: string;
+};
+
+export async function fetchMovebankStudyMeta(studyId: string): Promise<MovebankStudyMeta | null> {
+  const url = 'https://www.movebank.org/movebank/service/direct-read'
+    + `?entity_type=study&study_id=${studyId}`
+    + '&attributes=timestamp_first_deployed_location,timestamp_last_deployed_location,number_of_deployed_locations,sensor_type_ids,taxon_ids,number_of_individuals';
+
+  const { text } = await movebankRequest(url, MAX_RESPONSE_BYTES);
+  const rows = parseCsv(text, 10);
+  const r = rows[0];
+  if (!r) return null;
+
+  return {
+    timestampFirstDeployedLocation: r.timestamp_first_deployed_location ?? '',
+    timestampLastDeployedLocation: r.timestamp_last_deployed_location ?? '',
+    numberOfDeployedLocations: r.number_of_deployed_locations ?? '',
+    sensorTypeIds: r.sensor_type_ids ?? '',
+    taxonIds: r.taxon_ids ?? '',
+    numberOfIndividuals: r.number_of_individuals ?? '',
+  };
+}
+
+// --- Event-fetch variants for zero-row diagnosis (addendum 4 item 1) ---
+// Isolates which of {time window, sensor filter, access, attribute naming}
+// caused a zero-row response, WITHOUT ever returning rows, names, or
+// license text — only counts and the header's column NAMES.
+export type MovebankEventVariantResult = {
+  http_ok: boolean;
+  response_bytes: number;
+  truncated: boolean;
+  data_line_count: number;
+  access_denied_message: boolean;
+  header_columns: string[];
+  handshake: MovebankHandshakeResult | 'error';
+  elapsed_ms: number;
+  error?: string;
+};
+
+export type MovebankEventVariantOptions = {
+  sensorFilter: boolean;
+  timestampStart: boolean;
+  individualLocalIdentifier?: string; // per the docs, events filter by individual_local_identifier, not individual_id
+  maxBytes: number;
+};
+
+export async function fetchMovebankEventsVariant(
+  studyId: string,
+  opts: MovebankEventVariantOptions,
+  licenseType?: string
+): Promise<MovebankEventVariantResult> {
+  const start = Date.now();
+  let url = 'https://www.movebank.org/movebank/service/direct-read?entity_type=event' + `&study_id=${studyId}`;
+  if (opts.sensorFilter) url += `&sensor_type_id=${GPS_SENSOR_TYPE_ID}`;
+  if (opts.timestampStart) url += `&timestamp_start=${movebankTimestampParam(new Date(Date.now() - YEARS_OF_HISTORY * 365 * 86400000))}`;
+  if (opts.individualLocalIdentifier) url += `&individual_local_identifier=${encodeURIComponent(opts.individualLocalIdentifier)}`;
+  url += '&attributes=individual_id,timestamp,location_lat,location_long';
+
+  try {
+    // record: false — this is a diagnostic probe of response shape, not a
+    // real data pull; the main event fetch for this study (if any) is what
+    // gets recorded.
+    const { text, handshake, responseBytes, truncated } = await movebankRequest(url, opts.maxBytes, { studyId, licenseType, record: false });
+
+    if (handshake === 'aborted_noncommercial') {
+      return { http_ok: true, response_bytes: responseBytes, truncated, data_line_count: 0, access_denied_message: false, header_columns: [], handshake, elapsed_ms: Date.now() - start };
+    }
+
+    const lines = text.split('\n').filter(l => l.length > 0);
+    const headerColumns = lines.length > 0 ? lines[0].split(',').map(c => c.trim()) : [];
+    const dataLineCount = Math.max(0, lines.length - 1);
+
+    return {
+      http_ok: true,
+      response_bytes: responseBytes,
+      truncated,
+      data_line_count: dataLineCount,
+      access_denied_message: isAccessDenied(text),
+      header_columns: headerColumns,
+      handshake,
+      elapsed_ms: Date.now() - start,
+    };
+  } catch (err) {
+    return {
+      http_ok: false,
+      response_bytes: 0,
+      truncated: false,
+      data_line_count: 0,
+      access_denied_message: false,
+      header_columns: [],
+      handshake: 'error',
+      elapsed_ms: Date.now() - start,
+      error: err instanceof Error ? err.message : 'unknown error',
+    };
+  }
 }
