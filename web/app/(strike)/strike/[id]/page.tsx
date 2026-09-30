@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { createServiceClient } from '@/lib/supabase/server'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
+import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,11 +22,32 @@ const CHIP_MAP: Record<string, ChipEntry> = {
   OUTDOOR_SNOTEL_STATE:          { label: 'SNOTEL',               value: 'Monitoring',  status: 'ok'   },
 }
 
-function mapBriefRow(
+// Priority buckets used elsewhere on this page (see the movement_windows
+// mapping below) reversed, so a collar-calibrated window (which only has a
+// priority, not a stored probability) can be slotted into the same list.
+const PRIORITY_TO_PROBABILITY: Record<'high' | 'medium' | 'low', number> = {
+  high: 0.75,
+  medium: 0.55,
+  low: 0.3,
+}
+
+async function mapBriefRow(
   row: Record<string, unknown> | null,
   arcObjectiveId: string,
-): Record<string, unknown> {
+  objective: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const today = new Date().toISOString().split('T')[0]
+
+  // Collar augmentation runs regardless of whether a strike_briefs row
+  // exists yet — an objective can have Movebank data before its first AI
+  // brief generates (Fix 4: this is the server-rendered path a hunter sees
+  // on first load, not just the client's 30-minute /api/mip/brief refresh).
+  const collarAugmentation = await getCollarBriefAugmentation(
+    objective.taxonomy_key as string | undefined,
+    (objective.lat as number | string | null | undefined),
+    (objective.lon as number | string | null | undefined),
+    objective.domain as string | undefined
+  )
 
   if (!row) {
     return {
@@ -37,9 +59,14 @@ function mapBriefRow(
       go_no_go: 'NO-GO',
       summary: null,
       lead_signal: null,
-      time_windows: null,
+      time_windows: collarAugmentation.windows.length > 0
+        ? collarAugmentation.windows.map(w => ({
+            window: w.window, action: w.action, priority: w.priority,
+            probability: PRIORITY_TO_PROBABILITY[w.priority], confidence_tier: 'T4',
+          }))
+        : null,
       signal_chips: [],
-      sources: [],
+      sources: collarAugmentation.credit ? [collarAugmentation.credit] : [],
       attribution: 'Powered by Meridian Arc',
     }
   }
@@ -67,11 +94,21 @@ function mapBriefRow(
     }
   })
 
+  for (const w of collarAugmentation.windows) {
+    timeWindows.push({
+      window: w.window, action: w.action, priority: w.priority,
+      probability: PRIORITY_TO_PROBABILITY[w.priority], confidence_tier: tierStr,
+    })
+  }
+
   const agentKeyToLabel = (key: string) =>
     key.split('_').slice(1).map((p: string) => p.charAt(0) + p.slice(1).toLowerCase()).join(' ')
-  const sources = Array.from(new Set(
-    agentHits.filter(h => h.startsWith('OUTDOOR_')).map(agentKeyToLabel)
-  ))
+  const sources = Array.from(new Set([
+    ...agentHits.filter(h => h.startsWith('OUTDOOR_')).map(agentKeyToLabel),
+    // CC-BY requires attribution reaching the hunter, not just an internal
+    // sources[] array nothing renders (Fix 4).
+    ...(collarAugmentation.credit ? [collarAugmentation.credit] : []),
+  ]))
 
   const rawSynthesis = (row.synthesis as string) ?? ''
   const stripped = rawSynthesis.replace(/ \(T[1-4]: [^)]+\)/g, '').trim()
@@ -142,7 +179,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   console.log('[strike/[id]] arcObjectiveId:', arcObjectiveId, 'brief found:', !!briefRow, 'time_windows:', (briefRow?.movement_windows as unknown[] | null)?.length ?? 'null')
 
-  const brief = mapBriefRow(briefRow, arcObjectiveId)
+  const brief = await mapBriefRow(briefRow, arcObjectiveId, objective as Record<string, unknown>)
 
   return (
     <StrikeBriefClient

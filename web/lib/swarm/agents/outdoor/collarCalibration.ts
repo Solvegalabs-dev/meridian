@@ -12,6 +12,7 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { encodeGeohash, geohashPrecisionSteps } from '@/lib/geo/geohash';
 import { resolveMovebankTaxon } from './movebankCollarFetch';
+import { extractCurrentConditions } from '@/lib/sweep/patternDeviation/currentConditionsExtractor';
 
 export type DroughtLevel = 'none' | 'D0' | 'D1' | 'D2' | 'D3' | 'D4' | 'unknown';
 
@@ -177,3 +178,41 @@ export function calibrateCollarPattern(
 }
 
 export { EMPTY_OUTPUT as EMPTY_COLLAR_CALIBRATION };
+
+export type CollarBriefAugmentation = {
+  windows: Array<{ window: string; action: string; priority: 'high' | 'medium' | 'low' }>;
+  credit: string | null;
+};
+
+const NO_AUGMENTATION: CollarBriefAugmentation = { windows: [], credit: null };
+
+// Shared by every brief-building call site (lib/mip/briefPayload.ts and the
+// Strike page's server-rendered mapBriefRow) so the "only pay for
+// extractCurrentConditions when a pattern exists" behavior (Fix 6a) and the
+// try/catch-everything-fails-open behavior live in exactly one place. A
+// collar lookup/calibration failure must never break a brief.
+export async function getCollarBriefAugmentation(
+  taxonomyKey: string | null | undefined,
+  lat: number | string | null | undefined,
+  lon: number | string | null | undefined,
+  domain: string | null | undefined,
+  currentTempF?: number
+): Promise<CollarBriefAugmentation> {
+  if (!taxonomyKey || lat == null || lon == null) return NO_AUGMENTATION;
+
+  try {
+    const patternRow = await findCollarPattern(taxonomyKey, Number(lat), Number(lon), new Date().getMonth() + 1);
+    if (!patternRow) return NO_AUGMENTATION;
+
+    const conditions = await extractCurrentConditions(domain ?? 'elk_hunt', null);
+    const calibration = calibrateCollarPattern(patternRow, { droughtLevel: conditions.droughtLevel, currentTempF });
+
+    return {
+      windows: calibration.calibrated_windows.map(w => ({ window: w.window, action: w.action, priority: w.priority })),
+      credit: calibration.data_credit,
+    };
+  } catch (err) {
+    console.error('[FF-093] collar brief augmentation failed, continuing without it:', err);
+    return NO_AUGMENTATION;
+  }
+}

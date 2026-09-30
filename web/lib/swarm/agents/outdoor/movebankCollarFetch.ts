@@ -3,7 +3,7 @@
 // Movebank REST API (HTTP Basic Auth, free registration, ~1 req/sec limit).
 //
 // Verified against https://github.com/movebank/movebank-api-doc/blob/master/movebank-api.md
-// (2026-09-29). Two corrections vs. the original FF-093 spec, which assumed
+// (2026-09-29/30). Corrections vs. the original FF-093 spec, which assumed
 // facts about the API that don't hold:
 //   1. `taxon_ids` is a STUDY OUTPUT ATTRIBUTE, not a request filter — and its
 //      values are ITIS scientific names (e.g. "Cervus canadensis"), not
@@ -11,8 +11,16 @@
 //      studies must be fetched broadly and matched client-side by name.
 //   2. `number_of_deployed_individuals` is not a real attribute — the
 //      documented field is `number_of_individuals`.
+//   3. Non-CC0 studies don't return data on the first request at all: the
+//      response is HTML license text with header `accept-license: true`.
+//      The caller must md5 that text and retry with `license-md5=<hash>`,
+//      carrying the session cookie from the first response (see
+//      movebankRequest() below).
 // Movebank taxon IDs from the original spec were therefore fabricated and
 // have been replaced with ITIS canonical names below.
+
+import { createHash } from 'node:crypto';
+import { createServiceClient } from '@/lib/supabase/server';
 
 // species_taxon_key -> ITIS canonical scientific name, matched as a substring
 // against a study's taxon_ids attribute (comma-separated list of names).
@@ -56,12 +64,25 @@ function authHeader(): string {
   return `Basic ${token}`;
 }
 
-// Confirmed CC0 via a live doc example ("license_type shows CC_0"). CC_BY is
+// Confirmed CC_0 via a live doc example ("license_type shows CC_0"). CC_BY is
 // included by Creative-Commons-naming-convention inference, NOT confirmed
 // against a real API response — flagged in the PR description. Everything
-// else (non-commercial, custom terms, unlicensed) is excluded until Todd
-// Reese reviews Movebank's data-use terms for a commercial product.
+// else (non-commercial, custom terms, unlicensed, ND/SA variants) is
+// excluded until Todd Reese reviews Movebank's data-use terms for a
+// commercial product.
 export const COMMERCIAL_SAFE_LICENSES = ['CC_0', 'CC_BY'];
+
+// Movebank's real license_type spelling is unconfirmed beyond the one CC_0
+// example in the docs (could be "CC-BY", "cc_by", "CC BY", etc.) — normalize
+// before comparing so any of those match, while NC/ND/SA variants
+// (CC_BY_NC, CC_BY_ND, CC_BY_SA, CC_BY_NC_SA, ...) correctly do NOT.
+export function normalizeLicenseType(raw: string): string {
+  return raw.toUpperCase().trim().replace(/[-\s]+/g, '_');
+}
+
+export function isCommercialSafeLicense(rawLicenseType: string): boolean {
+  return COMMERCIAL_SAFE_LICENSES.includes(normalizeLicenseType(rawLicenseType));
+}
 
 // --- RFC 4180 CSV parsing (handles quoted fields, escaped "" quotes, and
 // commas/newlines embedded inside quoted cells — Movebank's own multi-value
@@ -114,32 +135,141 @@ function isAccessDenied(text: string): boolean {
   return text.toLowerCase().includes('no data available');
 }
 
-const MAX_RESPONSE_BYTES = 20 * 1024 * 1024; // 20MB hard cap on any single fetch
+const RATE_LIMIT_DELAY_MS = 1100;
+const MAX_RESPONSE_BYTES = 20 * 1024 * 1024; // 20MB hard cap on a data response
+const MAX_LICENSE_BYTES = 1 * 1024 * 1024;   // license text is small — 1MB is generous
 
-async function fetchTextCapped(url: string, timeoutMs: number): Promise<string> {
-  const response = await fetch(url, {
-    headers: { Authorization: authHeader() },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) throw new Error(`Movebank HTTP ${response.status}`);
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
+// Movebank allows exactly one concurrent request per IP/account. Every real
+// HTTP call in this module goes through movebankRequest(), and this queue
+// serializes them so nothing ever overlaps, regardless of caller.
+let requestQueue: Promise<void> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const run = requestQueue.then(fn, fn);
+  requestQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+// Reads a response body up to maxBytes, returning the raw bytes (never a
+// re-encoded string) so callers that need to hash the exact payload
+// (the license-md5 handshake) get a byte-for-byte match.
+async function readBodyCapped(response: Response, maxBytes: number): Promise<Uint8Array> {
   const reader = response.body?.getReader();
-  if (!reader) return response.text();
+  if (!reader) {
+    const buf = new Uint8Array(await response.arrayBuffer());
+    return buf.length > maxBytes ? buf.slice(0, maxBytes) : buf;
+  }
 
-  const decoder = new TextDecoder();
-  let text = '';
-  let bytes = 0;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    bytes += value.byteLength;
-    if (bytes > MAX_RESPONSE_BYTES) {
-      await reader.cancel();
-      break;
-    }
-    text += decoder.decode(value, { stream: true });
+    total += value.byteLength;
+    if (total > maxBytes) { await reader.cancel(); break; }
+    chunks.push(value);
   }
-  return text;
+  const out = new Uint8Array(Math.min(total, maxBytes));
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= out.length) break;
+    const slice = chunk.subarray(0, out.length - offset);
+    out.set(slice, offset);
+    offset += slice.length;
+  }
+  return out;
+}
+
+// Every Set-Cookie value's `name=value` pair, joined for a Cookie header.
+// Node's fetch (undici) doesn't persist cookies across requests, so this is
+// carried manually on the license-accepted retry.
+function extractCookieHeader(headers: Headers): string | null {
+  type HeadersWithSetCookie = Headers & { getSetCookie?: () => string[] };
+  const h = headers as HeadersWithSetCookie;
+  const values = typeof h.getSetCookie === 'function' ? h.getSetCookie() : [];
+  const setCookies = values.length > 0 ? values : (headers.get('set-cookie') ? [headers.get('set-cookie') as string] : []);
+  if (setCookies.length === 0) return null;
+  return setCookies.map(c => c.split(';')[0]).join('; ');
+}
+
+async function rawFetch(url: string, cookie: string | null, timeoutMs: number): Promise<Response> {
+  await sleep(RATE_LIMIT_DELAY_MS);
+  const headers: Record<string, string> = { Authorization: authHeader() };
+  if (cookie) headers.Cookie = cookie;
+  // Never log `headers` or any derivative of it — it carries Authorization/Cookie.
+  return fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+export type MovebankHandshakeResult = 'not_required' | 'accepted' | 'rejected_by_server' | 'aborted_noncommercial';
+
+async function recordLicenseAcceptance(studyId: string, licenseType: string | undefined, licenseMd5: string, licenseText: string): Promise<void> {
+  try {
+    const supabase = createServiceClient();
+    // "on conflict do nothing" — Movebank requires the handshake once per
+    // session regardless, but the audit row only needs to exist once per
+    // (study, md5).
+    await supabase
+      .from('movebank_license_acceptances')
+      .upsert(
+        { study_id: Number(studyId), license_type: licenseType ?? null, license_md5: licenseMd5, license_text: licenseText },
+        { onConflict: 'study_id,license_md5', ignoreDuplicates: true }
+      );
+  } catch (err) {
+    console.error(`[movebank] failed to record license acceptance for study ${studyId}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+// The single choke point for all real Movebank HTTP calls: rate limiting,
+// serialization, and the license-terms handshake all live here. `context`
+// (studyId/licenseType) is provided for event fetches so an accepted
+// handshake can be recorded; omitted for the study-catalog call, which
+// isn't scoped to one study.
+async function movebankRequest(
+  url: string,
+  maxDataBytes: number,
+  context?: { studyId: string; licenseType?: string }
+): Promise<{ text: string; handshake: MovebankHandshakeResult }> {
+  return serialize(async () => {
+    const first = await rawFetch(url, null, 30000);
+    if (!first.ok) throw new Error(`Movebank HTTP ${first.status}`);
+
+    if (first.headers.get('accept-license') !== 'true') {
+      const bytes = await readBodyCapped(first, maxDataBytes);
+      return { text: new TextDecoder().decode(bytes), handshake: 'not_required' as const };
+    }
+
+    // License handshake required — read the license text (capped, small),
+    // never the full data cap.
+    const licenseBytes = await readBodyCapped(first, MAX_LICENSE_BYTES);
+    const licenseText = new TextDecoder().decode(licenseBytes);
+
+    if (/non-?commercial/i.test(licenseText)) {
+      if (context) console.warn(`[movebank] study ${context.studyId} license text mentions NonCommercial — aborting use despite license_type='${context.licenseType ?? 'unknown'}'`);
+      return { text: '', handshake: 'aborted_noncommercial' as const };
+    }
+
+    // Hash the exact bytes received, not a re-encoded string.
+    const licenseMd5 = createHash('md5').update(Buffer.from(licenseBytes)).digest('hex');
+    const cookie = extractCookieHeader(first.headers);
+
+    const retryUrl = `${url}&license-md5=${licenseMd5}`;
+    const second = await rawFetch(retryUrl, cookie, 30000);
+    if (!second.ok) throw new Error(`Movebank HTTP ${second.status}`);
+
+    if (second.headers.get('accept-license') === 'true') {
+      throw new Error('license handshake rejected');
+    }
+
+    if (context) {
+      await recordLicenseAcceptance(context.studyId, context.licenseType, licenseMd5, licenseText);
+    }
+
+    const dataBytes = await readBodyCapped(second, maxDataBytes);
+    return { text: new TextDecoder().decode(dataBytes), handshake: 'accepted' as const };
+  });
 }
 
 export type MovebankStudy = {
@@ -166,7 +296,7 @@ export async function fetchMovebankStudies(): Promise<MovebankStudy[]> {
     + '?entity_type=study&i_have_download_access=true'
     + '&attributes=id,name,main_location_lat,main_location_long,number_of_individuals,taxon_ids,license_type,citation,i_have_download_access';
 
-  const text = await fetchTextCapped(url, 30000);
+  const { text } = await movebankRequest(url, MAX_RESPONSE_BYTES);
   const rows = parseCsv(text, MAX_STUDY_ROWS);
 
   return rows
@@ -202,16 +332,11 @@ export function parseMovebankTimestamp(ts: string): Date {
   return new Date(`${ts.replace(' ', 'T')}Z`);
 }
 
-const RATE_LIMIT_DELAY_MS = 1100;
 const MAX_EVENT_ROWS = 250000;
 const YEARS_OF_HISTORY = 5;
 const GPS_SENSOR_TYPE_ID = 653; // confirmed: Movebank's numeric id for GPS sensors
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function movebankTimestamp(date: Date): string {
+function movebankTimestampParam(date: Date): string {
   // yyyyMMddHHmmssSSS, per the documented timestamp_start/timestamp_end format
   const pad = (n: number, len = 2) => String(n).padStart(len, '0');
   return (
@@ -225,17 +350,26 @@ function movebankTimestamp(date: Date): string {
   );
 }
 
-export async function fetchMovebankEvents(studyId: string): Promise<MovebankEvent[]> {
-  await sleep(RATE_LIMIT_DELAY_MS);
+export type MovebankEventFetchResult = {
+  events: MovebankEvent[];
+  handshake: MovebankHandshakeResult;
+};
 
-  const timestampStart = movebankTimestamp(new Date(Date.now() - YEARS_OF_HISTORY * 365 * 86400000));
+// Rich variant used by the admin probe route to report what actually
+// happened (handshake required? accepted? aborted?) without exposing raw
+// events. fetchMovebankEvents() below is the plain production-facing form.
+export async function fetchMovebankEventsDetailed(studyId: string, licenseType?: string): Promise<MovebankEventFetchResult> {
+  const timestampStart = movebankTimestampParam(new Date(Date.now() - YEARS_OF_HISTORY * 365 * 86400000));
   const url = 'https://www.movebank.org/movebank/service/direct-read'
     + `?entity_type=event&study_id=${studyId}&sensor_type_id=${GPS_SENSOR_TYPE_ID}`
     + `&timestamp_start=${timestampStart}`
     + '&attributes=individual_id,timestamp,location_lat,location_long';
 
-  const text = await fetchTextCapped(url, 20000);
-  if (isAccessDenied(text)) return [];
+  const { text, handshake } = await movebankRequest(url, MAX_RESPONSE_BYTES, { studyId, licenseType });
+
+  if (handshake === 'aborted_noncommercial' || isAccessDenied(text)) {
+    return { events: [], handshake };
+  }
 
   const rows = parseCsv(text, MAX_EVENT_ROWS);
   const events: MovebankEvent[] = [];
@@ -245,5 +379,10 @@ export async function fetchMovebankEvents(studyId: string): Promise<MovebankEven
     if (!r.timestamp || isNaN(lat) || isNaN(lon)) continue;
     events.push({ individualId: r.individual_id ?? r['individual-id'] ?? '', timestamp: r.timestamp, lat, lon });
   }
+  return { events, handshake };
+}
+
+export async function fetchMovebankEvents(studyId: string, licenseType?: string): Promise<MovebankEvent[]> {
+  const { events } = await fetchMovebankEventsDetailed(studyId, licenseType);
   return events;
 }

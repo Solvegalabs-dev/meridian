@@ -18,7 +18,7 @@ import {
   fetchMovebankStudies,
   fetchMovebankEvents,
   parseMovebankTimestamp,
-  COMMERCIAL_SAFE_LICENSES,
+  isCommercialSafeLicense,
   type MovebankStudy,
   type MovebankEvent,
 } from './movebankCollarFetch';
@@ -214,7 +214,7 @@ export async function computeCollarPatterns(objectiveId?: string): Promise<numbe
 
   const eligible = allStudies
     .filter(s => taxonMatches(s, taxon.scientificName))
-    .filter(s => COMMERCIAL_SAFE_LICENSES.includes(s.licenseType))
+    .filter(s => isCommercialSafeLicense(s.licenseType))
     .map(s => ({ study: s, distanceKm: haversineKm(lat, lon, s.lat as number, s.lon as number) }))
     .filter(s => s.distanceKm <= STUDY_SEARCH_RADIUS_KM)
     .sort((a, b) => a.distanceKm - b.distanceKm || b.study.numberOfIndividuals - a.study.numberOfIndividuals)
@@ -231,7 +231,7 @@ export async function computeCollarPatterns(objectiveId?: string): Promise<numbe
 
     let events: MovebankEvent[];
     try {
-      events = await fetchMovebankEvents(study.id);
+      events = await fetchMovebankEvents(study.id, study.licenseType);
     } catch (err) {
       console.error(`[collarPatterns] event fetch failed for study ${study.id}:`, err);
       continue;

@@ -2,8 +2,7 @@
 // Extracted from app/api/mip/brief/route.ts so server components can call it directly
 // instead of self-fetching the API route.
 import { createServiceClient } from '@/lib/supabase/server'
-import { findCollarPattern, calibrateCollarPattern, parseTempF } from '@/lib/swarm/agents/outdoor/collarCalibration'
-import { extractCurrentConditions } from '@/lib/sweep/patternDeviation/currentConditionsExtractor'
+import { getCollarBriefAugmentation, parseTempF } from '@/lib/swarm/agents/outdoor/collarCalibration'
 
 export type SignalChip = { label: string; value: string; status: 'ok' | 'warn' | 'critical' }
 export type TimeWindow = { window: string; action: string; priority: 'high' | 'medium' | 'low' }
@@ -223,38 +222,22 @@ export async function getMipBriefPayload(
   if ((terrainRows ?? []).length > 0) sources.push('USGS 3DEP Terrain')
   if (brief) sources.push('Strike Brief Engine')
 
-  // FF-093 — Movebank collar calibration. A collar lookup/calibration failure
-  // must never break the brief (Fix 6a), so the whole block is best-effort.
-  // The pattern lookup runs first; extractCurrentConditions (a DB query of
-  // its own) only runs when a pattern actually exists to calibrate, so an
-  // objective with no collar data pays nothing extra.
-  try {
-    if (profile?.taxonomy_key && profile.lat != null && profile.lon != null) {
-      const patternRow = await findCollarPattern(
-        profile.taxonomy_key as string,
-        Number(profile.lat),
-        Number(profile.lon),
-        new Date().getMonth() + 1
-      )
-
-      if (patternRow) {
-        const tempChip = signalChips.find(c => /temp/i.test(c.label))
-        const currentTempF = parseTempF(tempChip?.value)
-        const conditions = await extractCurrentConditions(String(profile.domain ?? 'elk_hunt'), null)
-
-        const calibration = calibrateCollarPattern(patternRow, {
-          droughtLevel: conditions.droughtLevel,
-          currentTempF,
-        })
-
-        for (const w of calibration.calibrated_windows) {
-          timeWindows.push({ window: w.window, action: w.action, priority: w.priority })
-        }
-        sources.push(calibration.data_credit)
-      }
-    }
-  } catch (err) {
-    console.error('[FF-093] collar calibration failed, continuing without it:', err)
+  // FF-093 — Movebank collar calibration (fail-open; see getCollarBriefAugmentation).
+  const tempChip = signalChips.find(c => /temp/i.test(c.label))
+  const collarAugmentation = await getCollarBriefAugmentation(
+    profile?.taxonomy_key as string | undefined,
+    profile?.lat,
+    profile?.lon,
+    profile?.domain as string | undefined,
+    parseTempF(tempChip?.value)
+  )
+  for (const w of collarAugmentation.windows) {
+    timeWindows.push(w)
+  }
+  // CC-BY requires attribution — de-duplicated so it doesn't double up if
+  // another source string already happens to match (Fix 4).
+  if (collarAugmentation.credit && !sources.includes(collarAugmentation.credit)) {
+    sources.push(collarAugmentation.credit)
   }
 
   const derivedTier = confidencePct > 0
