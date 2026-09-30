@@ -6,6 +6,7 @@ import { recordAndCheckSignal, recordEstimatedSignal } from './agentSignalHistor
 import { computeTerrainIntelligence } from '@/lib/swarm/agents/outdoor/terrain';
 import { computeHatchWindow } from '@/lib/swarm/agents/outdoor/fishingPhenology';
 import { computeSalmonRunProgression } from '@/lib/swarm/agents/outdoor/salmonRunProgression';
+import { computeCollarPatterns } from '@/lib/swarm/agents/outdoor/collarPatternExtractor';
 
 // Returns: number = value, null = known calculator but no data (→ miss), undefined = unknown key (→ error)
 async function runCalculated(calculatorKey: string, objectiveId?: string): Promise<number | null | undefined> {
@@ -18,6 +19,8 @@ async function runCalculated(calculatorKey: string, objectiveId?: string): Promi
       return computeHatchWindow();
     case 'salmon_run_progression':
       return computeSalmonRunProgression();
+    case 'movebank_collar_patterns':
+      return computeCollarPatterns(objectiveId);
     default:
       return undefined;
   }

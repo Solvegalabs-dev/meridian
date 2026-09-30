@@ -2,6 +2,7 @@
 // Extracted from app/api/mip/brief/route.ts so server components can call it directly
 // instead of self-fetching the API route.
 import { createServiceClient } from '@/lib/supabase/server'
+import { getCollarBriefAugmentation, parseTempF } from '@/lib/swarm/agents/outdoor/collarCalibration'
 
 export type SignalChip = { label: string; value: string; status: 'ok' | 'warn' | 'critical' }
 export type TimeWindow = { window: string; action: string; priority: 'high' | 'medium' | 'low' }
@@ -87,14 +88,14 @@ export async function getMipBriefPayload(
 
   let { data: profile } = await supabase
     .from('objective_profiles')
-    .select('id, objective_id, assigned_agents')
+    .select('id, objective_id, assigned_agents, taxonomy_key, lat, lon, domain')
     .eq('id', objectiveId)
     .maybeSingle()
 
   if (!profile) {
     const { data: byArcId } = await supabase
       .from('objective_profiles')
-      .select('id, objective_id, assigned_agents')
+      .select('id, objective_id, assigned_agents, taxonomy_key, lat, lon, domain')
       .eq('objective_id', objectiveId)
       .maybeSingle()
     profile = byArcId
@@ -220,6 +221,24 @@ export async function getMipBriefPayload(
   if (sweep) sources.push('Meridian Arc Swarm')
   if ((terrainRows ?? []).length > 0) sources.push('USGS 3DEP Terrain')
   if (brief) sources.push('Strike Brief Engine')
+
+  // FF-093 — Movebank collar calibration (fail-open; see getCollarBriefAugmentation).
+  const tempChip = signalChips.find(c => /temp/i.test(c.label))
+  const collarAugmentation = await getCollarBriefAugmentation(
+    profile?.taxonomy_key as string | undefined,
+    profile?.lat,
+    profile?.lon,
+    profile?.domain as string | undefined,
+    parseTempF(tempChip?.value)
+  )
+  for (const w of collarAugmentation.windows) {
+    timeWindows.push(w)
+  }
+  // CC-BY requires attribution — de-duplicated so it doesn't double up if
+  // another source string already happens to match (Fix 4).
+  if (collarAugmentation.credit && !sources.includes(collarAugmentation.credit)) {
+    sources.push(collarAugmentation.credit)
+  }
 
   const derivedTier = confidencePct > 0
     ? confidenceTier(confidencePct)

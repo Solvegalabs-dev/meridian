@@ -1,2 +1,3 @@
 .vercel
 .env*
+.hunt_unit_chunks
