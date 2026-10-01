@@ -101,3 +101,132 @@ describe('findCollarPattern (Fix 5 — species resolution via resolveMovebankTax
     expect(fromSpy).not.toHaveBeenCalled()
   })
 })
+
+// --- FF-093 Phase 2 Task 0 (A9) — compliance gate ---
+function makeChain(result: unknown) {
+  const chain: Record<string, unknown> = {}
+  ;['select', 'eq', 'like', 'limit', 'order'].forEach(m => { chain[m] = vi.fn(() => chain) })
+  chain.maybeSingle = vi.fn(async () => result)
+  return chain
+}
+
+describe('isCollarDisplayAllowed (Phase 2 Task 0 — A9 compliance gate)', () => {
+  it('returns false when there is no switch row for the state (missing = no display)', async () => {
+    const fromSpy = vi.fn((table: string) => {
+      if (table === 'collar_display_testers') return makeChain({ data: null })
+      if (table === 'collar_compliance_switch') return makeChain({ data: null })
+      throw new Error(`unexpected table ${table}`)
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: fromSpy }) }))
+    vi.resetModules()
+    const { isCollarDisplayAllowed } = await import('./collarCalibration')
+
+    expect(await isCollarDisplayAllowed('UT', undefined)).toBe(false)
+  })
+
+  it('returns false when the switch row exists but display_enabled is false', async () => {
+    const fromSpy = vi.fn((table: string) => {
+      if (table === 'collar_display_testers') return makeChain({ data: null })
+      if (table === 'collar_compliance_switch') return makeChain({ data: { display_enabled: false } })
+      throw new Error(`unexpected table ${table}`)
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: fromSpy }) }))
+    vi.resetModules()
+    const { isCollarDisplayAllowed } = await import('./collarCalibration')
+
+    expect(await isCollarDisplayAllowed('UT', undefined)).toBe(false)
+  })
+
+  it('returns true when the switch row has display_enabled true', async () => {
+    const fromSpy = vi.fn((table: string) => {
+      if (table === 'collar_display_testers') return makeChain({ data: null })
+      if (table === 'collar_compliance_switch') return makeChain({ data: { display_enabled: true } })
+      throw new Error(`unexpected table ${table}`)
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: fromSpy }) }))
+    vi.resetModules()
+    const { isCollarDisplayAllowed } = await import('./collarCalibration')
+
+    expect(await isCollarDisplayAllowed('UT', undefined)).toBe(true)
+  })
+
+  it('returns true for an approved tester regardless of the switch, without even checking it', async () => {
+    const fromSpy = vi.fn((table: string) => {
+      if (table === 'collar_display_testers') return makeChain({ data: { user_id: 'tester-1' } })
+      if (table === 'collar_compliance_switch') return makeChain({ data: { display_enabled: false } })
+      throw new Error(`unexpected table ${table}`)
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: fromSpy }) }))
+    vi.resetModules()
+    const { isCollarDisplayAllowed } = await import('./collarCalibration')
+
+    expect(await isCollarDisplayAllowed('UT', 'tester-1')).toBe(true)
+    expect(fromSpy).not.toHaveBeenCalledWith('collar_compliance_switch')
+  })
+
+  it('returns false when no stateCode is given and the viewer is not a tester', async () => {
+    const fromSpy = vi.fn((table: string) => {
+      if (table === 'collar_display_testers') return makeChain({ data: null })
+      throw new Error(`unexpected table ${table}`)
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: fromSpy }) }))
+    vi.resetModules()
+    const { isCollarDisplayAllowed } = await import('./collarCalibration')
+
+    expect(await isCollarDisplayAllowed(undefined, 'some-user')).toBe(false)
+  })
+})
+
+describe('getCollarBriefAugmentation (Phase 2 Task 0 — no window shown unless compliance allows it)', () => {
+  it('returns no windows and never queries collar_pattern_library when the switch is off (missing)', async () => {
+    const patternLibrarySpy = vi.fn()
+    const fromSpy = vi.fn((table: string) => {
+      if (table === 'collar_display_testers') return makeChain({ data: null })
+      if (table === 'collar_compliance_switch') return makeChain({ data: null })
+      if (table === 'collar_pattern_library') { patternLibrarySpy(); return makeChain({ data: null }) }
+      return makeChain({ data: null })
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: fromSpy }) }))
+    vi.resetModules()
+    const { getCollarBriefAugmentation } = await import('./collarCalibration')
+
+    const result = await getCollarBriefAugmentation('elk.bull.archery', 40.5, -110.0, 'elk_hunt', 'UT', undefined)
+
+    expect(result).toEqual({ windows: [], credit: null })
+    expect(patternLibrarySpy).not.toHaveBeenCalled() // compliance checked BEFORE the pattern lookup
+  })
+
+  it('returns no windows when the switch explicitly disables display for the state', async () => {
+    const patternLibrarySpy = vi.fn()
+    const fromSpy = vi.fn((table: string) => {
+      if (table === 'collar_display_testers') return makeChain({ data: null })
+      if (table === 'collar_compliance_switch') return makeChain({ data: { display_enabled: false } })
+      if (table === 'collar_pattern_library') { patternLibrarySpy(); return makeChain({ data: null }) }
+      return makeChain({ data: null })
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: fromSpy }) }))
+    vi.resetModules()
+    const { getCollarBriefAugmentation } = await import('./collarCalibration')
+
+    const result = await getCollarBriefAugmentation('elk.bull.archery', 40.5, -110.0, 'elk_hunt', 'UT', undefined)
+
+    expect(result).toEqual({ windows: [], credit: null })
+    expect(patternLibrarySpy).not.toHaveBeenCalled()
+  })
+
+  it('proceeds to look up a pattern when an approved tester views a state with display disabled', async () => {
+    const fromSpy = vi.fn((table: string) => {
+      if (table === 'collar_display_testers') return makeChain({ data: { user_id: 'tester-1' } })
+      if (table === 'collar_compliance_switch') return makeChain({ data: { display_enabled: false } })
+      if (table === 'collar_pattern_library') return makeChain({ data: null }) // no pattern found — but the lookup ran
+      return makeChain({ data: null })
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => ({ from: fromSpy }) }))
+    vi.resetModules()
+    const { getCollarBriefAugmentation } = await import('./collarCalibration')
+
+    await getCollarBriefAugmentation('elk.bull.archery', 40.5, -110.0, 'elk_hunt', 'UT', 'tester-1')
+
+    expect(fromSpy).toHaveBeenCalledWith('collar_pattern_library')
+  })
+})

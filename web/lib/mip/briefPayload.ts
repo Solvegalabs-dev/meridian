@@ -88,14 +88,14 @@ export async function getMipBriefPayload(
 
   let { data: profile } = await supabase
     .from('objective_profiles')
-    .select('id, objective_id, assigned_agents, taxonomy_key, lat, lon, domain')
+    .select('id, objective_id, user_id, assigned_agents, taxonomy_key, lat, lon, domain, state')
     .eq('id', objectiveId)
     .maybeSingle()
 
   if (!profile) {
     const { data: byArcId } = await supabase
       .from('objective_profiles')
-      .select('id, objective_id, assigned_agents, taxonomy_key, lat, lon, domain')
+      .select('id, objective_id, user_id, assigned_agents, taxonomy_key, lat, lon, domain, state')
       .eq('objective_id', objectiveId)
       .maybeSingle()
     profile = byArcId
@@ -229,6 +229,8 @@ export async function getMipBriefPayload(
     profile?.lat,
     profile?.lon,
     profile?.domain as string | undefined,
+    profile?.state as string | undefined,
+    profile?.user_id as string | undefined,
     parseTempF(tempChip?.value)
   )
   for (const w of collarAugmentation.windows) {
