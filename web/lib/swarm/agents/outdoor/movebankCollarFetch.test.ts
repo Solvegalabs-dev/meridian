@@ -466,3 +466,99 @@ describe('fetchMovebankIndividuals / fetchMovebankStudyMeta / fetchMovebankEvent
     expect(result.error).toBeDefined()
   })
 })
+
+describe('probeStudyAttribute (fix round item 3 — bisect diagnostics, HTTP class only)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    process.env.MOVEBANK_USERNAME = 'testuser'
+    process.env.MOVEBANK_PASSWORD = 'testpass'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('reports ok:true, http_status_class 2xx on a successful single-attribute request', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: 'id\n999\n' }))
+
+    const { probeStudyAttribute } = await import('./movebankCollarFetch')
+    const result = await probeStudyAttribute('999', 'id')
+
+    expect(result).toMatchObject({ ok: true, http_status_class: '2xx' })
+    expect(typeof result.elapsed_ms).toBe('number')
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('entity_type=study&study_id=999')
+    expect(url).toContain('attributes=id')
+  })
+
+  it('classifies a 4xx failure without throwing or including the response body', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ status: 404, body: 'not found' }))
+
+    const { probeStudyAttribute } = await import('./movebankCollarFetch')
+    const result = await probeStudyAttribute('999', 'bogus_attribute_name')
+
+    expect(result).toMatchObject({ ok: false, http_status_class: '4xx' })
+    expect(JSON.stringify(result)).not.toContain('not found')
+  })
+
+  it('classifies a 5xx failure', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ status: 503, body: 'service unavailable' }))
+
+    const { probeStudyAttribute } = await import('./movebankCollarFetch')
+    const result = await probeStudyAttribute('999', 'license_terms')
+
+    expect(result).toMatchObject({ ok: false, http_status_class: '5xx' })
+  })
+
+  it('never records a license acceptance, even if the account somehow demands the handshake for a metadata call', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fakeResponse({ headers: { 'accept-license': 'true' }, body: LICENSE_HTML }))
+      .mockResolvedValueOnce(fakeResponse({ body: 'id\n999\n' }))
+
+    const { probeStudyAttribute } = await import('./movebankCollarFetch')
+    const result = await probeStudyAttribute('999', 'id')
+
+    expect(result.ok).toBe(true)
+    expect(fromSpy).not.toHaveBeenCalled() // no `context` passed to movebankRequest — never recorded
+  })
+})
+
+describe('fetchMovebankEventsForWindow sensor filter toggle (fix round item 3)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.resetModules()
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    process.env.MOVEBANK_USERNAME = 'testuser'
+    process.env.MOVEBANK_PASSWORD = 'testpass'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('includes sensor_type_id by default (sensorFilter defaults true — production behavior unchanged)', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: 'individual_id,timestamp,location_lat,location_long,individual_taxon_canonical_name\n' }))
+
+    const { fetchMovebankEventsForWindow } = await import('./movebankCollarFetch')
+    await fetchMovebankEventsForWindow('999', new Date('2019-10-01T00:00:00Z'), new Date('2019-10-16T00:00:00Z'), 'CC_0', false)
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('sensor_type_id=653')
+  })
+
+  it('omits sensor_type_id when sensorFilter is explicitly false', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: 'individual_id,timestamp,location_lat,location_long,individual_taxon_canonical_name\n' }))
+
+    const { fetchMovebankEventsForWindow } = await import('./movebankCollarFetch')
+    await fetchMovebankEventsForWindow('999', new Date('2019-10-01T00:00:00Z'), new Date('2019-10-16T00:00:00Z'), 'CC_0', false, false)
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).not.toContain('sensor_type_id=')
+  })
+})

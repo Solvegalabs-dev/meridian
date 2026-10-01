@@ -235,8 +235,20 @@ export async function sampleElevations(events: Array<{ lat: number; lon: number 
 // account that already accepted a study's terms outside this app's control
 // — e.g. during an earlier diagnostic probe run with record=false — would
 // otherwise never get an audit row at all).
+//
+// Fail-closed (fix round item 2): if no acceptance row exists yet and
+// either the metadata fetch, the license text, or the insert itself is
+// unavailable, this does NOT fall through to fetching events anyway — the
+// caller must requeue the job as 'license_not_recorded' rather than ever
+// touch a study's tracking data without a recorded basis for having done
+// so. Only an existing row, or a freshly and successfully recorded one,
+// counts as ok.
 // ============================================================
-export async function ensureLicenseRecordedForStudy(studyId: string): Promise<void> {
+export type LicenseRecordResult = { ok: true } | { ok: false; reason: 'license_not_recorded' };
+
+const LICENSE_NOT_RECORDED: LicenseRecordResult = { ok: false, reason: 'license_not_recorded' };
+
+export async function ensureLicenseRecordedForStudy(studyId: string): Promise<LicenseRecordResult> {
   const supabase = createServiceClient();
   const { data: existing } = await supabase
     .from('movebank_license_acceptances')
@@ -244,24 +256,33 @@ export async function ensureLicenseRecordedForStudy(studyId: string): Promise<vo
     .eq('study_id', Number(studyId))
     .limit(1)
     .maybeSingle();
-  if (existing) return;
+  if (existing) return { ok: true };
 
   let meta;
   try {
     meta = await fetchMovebankStudyMeta(studyId);
   } catch (err) {
-    console.error(`[collar-worker] study metadata fetch failed for ${studyId}, cannot pre-record license:`, err instanceof Error ? err.message : err);
-    return; // not fatal — the event fetch's own handshake may still record it with source='handshake'
+    console.error(`[collar-worker] study metadata fetch failed for ${studyId}, cannot record license:`, err instanceof Error ? err.message : err);
+    return LICENSE_NOT_RECORDED;
   }
-  if (!meta?.licenseTerms) return;
+  if (!meta?.licenseTerms) {
+    console.error(`[collar-worker] study ${studyId} metadata has no license_terms — cannot record acceptance`);
+    return LICENSE_NOT_RECORDED;
+  }
 
   const md5 = createHash('md5').update(Buffer.from(meta.licenseTerms, 'utf-8')).digest('hex');
-  await supabase
+  const { error: upsertError } = await supabase
     .from('movebank_license_acceptances')
     .upsert(
       { study_id: Number(studyId), license_md5: md5, license_text: meta.licenseTerms, source: 'study_metadata' },
       { onConflict: 'study_id,license_md5', ignoreDuplicates: true }
     );
+  if (upsertError) {
+    console.error(`[collar-worker] failed to insert license acceptance for study ${studyId}:`, upsertError.message);
+    return LICENSE_NOT_RECORDED;
+  }
+
+  return { ok: true };
 }
 
 // ============================================================
@@ -383,7 +404,54 @@ async function writeAggregate(job: CollarJob, catalogRow: CatalogRow, binned: Bi
     }, { onConflict: 'study_id,geo_hash,local_tz,window_start,window_end' });
 }
 
-type ProcessOutcome = { status: 'done' | 'dead'; reason?: string };
+// Counts-only diagnostic summary written to collar_jobs.stats (fix round
+// item 1). Never raw rows, individual ids, coordinates, or license text —
+// just enough to tell what a job's event fetch actually saw.
+export type JobStats = {
+  rows_fetched: number;
+  rows_species_match: number;
+  rows_in_radius: number;
+  top_taxon_names: Array<{ name: string; count: number }>;
+  truncated: boolean;
+  handshake: string;
+  elapsed_ms: number;
+};
+
+export function topTaxonNameCounts(events: MovebankEventWithTaxon[], limit = 5): Array<{ name: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const e of events) {
+    const name = e.taxonCanonicalName || '(empty)';
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([name, count]) => ({ name, count }));
+}
+
+type ProcessOutcome = { status: 'done' | 'dead' | 'requeued'; reason?: string; stats?: JobStats };
+
+// Shared by both the Movebank-failure path and the A5 fail-closed path —
+// the same attempts/backoff/dead lifecycle regardless of which one tripped.
+async function requeueWithBackoffOrDie(job: CollarJob, reasonCode: string): Promise<void> {
+  const supabase = createServiceClient();
+
+  if (job.attempts >= job.max_attempts) {
+    await supabase
+      .from('collar_jobs')
+      .update({ status: 'dead', finished_at: new Date().toISOString(), locked_until: null, last_error: reasonCode })
+      .eq('id', job.id);
+    return;
+  }
+
+  const backoffIndex = Math.min(Math.max(0, job.attempts - 1), RETRY_BACKOFF_MINUTES.length - 1);
+  const runAfter = new Date(Date.now() + RETRY_BACKOFF_MINUTES[backoffIndex] * 60000).toISOString();
+
+  await supabase
+    .from('collar_jobs')
+    .update({ status: 'queued', locked_until: null, run_after: runAfter, last_error: reasonCode })
+    .eq('id', job.id);
+}
 
 async function processJob(job: CollarJob): Promise<ProcessOutcome> {
   const scientificNames = scientificNamesForSpeciesTaxonKey(job.species_taxon_key);
@@ -395,39 +463,58 @@ async function processJob(job: CollarJob): Promise<ProcessOutcome> {
     return { status: 'dead', reason: 'license_not_eligible' };
   }
 
-  await ensureLicenseRecordedForStudy(String(job.study_id));
+  // A5 fail-closed (fix round item 2) — never fetch events for a study
+  // whose license acceptance isn't recorded AND couldn't be recorded now.
+  const licenseResult = await ensureLicenseRecordedForStudy(String(job.study_id));
+  if (!licenseResult.ok) {
+    await requeueWithBackoffOrDie(job, licenseResult.reason);
+    return { status: 'requeued', reason: licenseResult.reason };
+  }
 
   const windowStart = new Date(job.window_start);
   const windowEnd = new Date(job.window_end);
 
+  const fetchStart = Date.now();
   const fetchResult = await fetchMovebankEventsForWindow(
     String(job.study_id), windowStart, windowEnd, catalogRow.license_type, true
   );
+  const stats: JobStats = {
+    rows_fetched: fetchResult.events.length,
+    rows_species_match: 0,
+    rows_in_radius: 0,
+    top_taxon_names: topTaxonNameCounts(fetchResult.events),
+    truncated: fetchResult.truncated,
+    handshake: fetchResult.handshake,
+    elapsed_ms: Date.now() - fetchStart,
+  };
 
   if (fetchResult.handshake === 'aborted_noncommercial') {
-    return { status: 'dead', reason: 'license_rejected' };
+    return { status: 'dead', reason: 'license_rejected', stats };
   }
 
   if (fetchResult.truncated) {
-    if (job.split_depth >= MAX_SPLIT_DEPTH) return { status: 'dead', reason: 'truncated_at_max_split' };
+    if (job.split_depth >= MAX_SPLIT_DEPTH) return { status: 'dead', reason: 'truncated_at_max_split', stats };
     const halves = splitWindowInHalf({ start: windowStart, end: windowEnd });
     await enqueueSplitJobs(job, halves);
-    return { status: 'done' }; // parent is done-with-split — no aggregate written for it
+    return { status: 'done', stats }; // parent is done-with-split — no aggregate written for it
   }
 
   const speciesFilter = await filterEventsBySpeciesForJob(
     String(job.study_id), catalogRow.taxon_ids ?? '', fetchResult.events, scientificNames, catalogRow.license_type
   );
-  if (speciesFilter.outcome === 'dead') return { status: 'dead', reason: speciesFilter.reason };
+  if (speciesFilter.outcome === 'dead') return { status: 'dead', reason: speciesFilter.reason, stats };
+
+  stats.rows_species_match = speciesFilter.events.length;
 
   const { lat: objLat, lon: objLon } = decodeGeohash(job.geo_hash);
   const geoFiltered = speciesFilter.events.filter(e => haversineKm(objLat, objLon, e.lat, e.lon) <= EVENT_RADIUS_KM);
+  stats.rows_in_radius = geoFiltered.length;
 
   const binned = binEventsForAggregate(geoFiltered, job.local_tz);
   const elevSamples = await sampleElevations(geoFiltered);
 
   await writeAggregate(job, catalogRow, binned, elevSamples);
-  return { status: 'done' };
+  return { status: 'done', stats };
 }
 
 async function finalizeJob(jobId: string, outcome: ProcessOutcome): Promise<void> {
@@ -439,14 +526,13 @@ async function finalizeJob(jobId: string, outcome: ProcessOutcome): Promise<void
       finished_at: new Date().toISOString(),
       locked_until: null,
       last_error: outcome.status === 'dead' ? (outcome.reason ?? 'dead') : null,
+      stats: outcome.stats ?? null,
     })
     .eq('id', jobId);
 }
 
 async function handleJobFailure(job: CollarJob, err: unknown): Promise<void> {
   const kind = classifyMovebankError(err);
-  const supabase = createServiceClient();
-
   if (kind !== 'other') {
     await registerMovebankFailure(kind);
   }
@@ -455,28 +541,17 @@ async function handleJobFailure(job: CollarJob, err: unknown): Promise<void> {
     ? `error: ${err instanceof Error ? err.message.slice(0, 180) : 'unknown error'}`
     : `movebank_${kind}`;
 
-  if (job.attempts >= job.max_attempts) {
-    await supabase
-      .from('collar_jobs')
-      .update({ status: 'dead', finished_at: new Date().toISOString(), locked_until: null, last_error: shortReason })
-      .eq('id', job.id);
-    return;
-  }
-
-  const backoffIndex = Math.min(Math.max(0, job.attempts - 1), RETRY_BACKOFF_MINUTES.length - 1);
-  const runAfter = new Date(Date.now() + RETRY_BACKOFF_MINUTES[backoffIndex] * 60000).toISOString();
-
-  await supabase
-    .from('collar_jobs')
-    .update({ status: 'queued', locked_until: null, run_after: runAfter, last_error: shortReason })
-    .eq('id', job.id);
+  await requeueWithBackoffOrDie(job, shortReason);
 }
 
-export type JobRunResult = { ran: boolean; jobId?: string; status?: 'done' | 'dead' | 'failed'; reason?: string };
+export type JobRunResult = { ran: boolean; jobId?: string; status?: 'done' | 'dead' | 'requeued' | 'failed'; reason?: string };
 
 // One invocation = requeue any stale `running` jobs, then claim and process
 // exactly one job. The caller (the cron route) holds the movebank_lease for
-// the whole call and always releases it in a finally.
+// the whole call and always releases it in a finally. A 'requeued' outcome
+// already wrote its own DB update (via requeueWithBackoffOrDie), so it must
+// NOT also go through finalizeJob (which would stamp over it with a
+// done/dead status the job never actually reached).
 export async function runOneJob(): Promise<JobRunResult> {
   await requeueStaleJobs();
 
@@ -485,7 +560,9 @@ export async function runOneJob(): Promise<JobRunResult> {
 
   try {
     const outcome = await processJob(job);
-    await finalizeJob(job.id, outcome);
+    if (outcome.status !== 'requeued') {
+      await finalizeJob(job.id, outcome);
+    }
     return { ran: true, jobId: job.id, status: outcome.status, reason: outcome.reason };
   } catch (err) {
     await handleJobFailure(job, err);

@@ -503,11 +503,13 @@ export async function fetchMovebankEventsForWindow(
   windowStart: Date,
   windowEnd: Date,
   licenseType?: string,
-  record: boolean = true
+  record: boolean = true,
+  sensorFilter: boolean = true // fix round item 3 — the admin probe needs to test with the GPS sensor filter OFF; every real production call keeps the default (true)
 ): Promise<MovebankWindowedEventResult> {
-  const url = 'https://www.movebank.org/movebank/service/direct-read'
-    + `?entity_type=event&study_id=${studyId}&sensor_type_id=${GPS_SENSOR_TYPE_ID}`
-    + `&timestamp_start=${movebankTimestampParam(windowStart)}`
+  let url = 'https://www.movebank.org/movebank/service/direct-read'
+    + `?entity_type=event&study_id=${studyId}`;
+  if (sensorFilter) url += `&sensor_type_id=${GPS_SENSOR_TYPE_ID}`;
+  url += `&timestamp_start=${movebankTimestampParam(windowStart)}`
     + `&timestamp_end=${movebankTimestampParam(windowEnd)}`
     + '&attributes=individual_id,timestamp,location_lat,location_long,individual_taxon_canonical_name';
 
@@ -591,10 +593,23 @@ export type MovebankStudyMeta = {
   licenseTerms: string; // Phase 2 A5 — the actual license TEXT (not license_type), confirmed real study attribute
 };
 
+// Single source of truth for the study-meta attribute list, so the fix-round
+// bisect probe (probeStudyAttribute, below) tests exactly the attributes
+// fetchMovebankStudyMeta actually requests — not a second, driftable copy.
+export const STUDY_META_ATTRIBUTES = [
+  'timestamp_first_deployed_location',
+  'timestamp_last_deployed_location',
+  'number_of_deployed_locations',
+  'sensor_type_ids',
+  'taxon_ids',
+  'number_of_individuals',
+  'license_terms',
+];
+
 export async function fetchMovebankStudyMeta(studyId: string): Promise<MovebankStudyMeta | null> {
   const url = 'https://www.movebank.org/movebank/service/direct-read'
     + `?entity_type=study&study_id=${studyId}`
-    + '&attributes=timestamp_first_deployed_location,timestamp_last_deployed_location,number_of_deployed_locations,sensor_type_ids,taxon_ids,number_of_individuals,license_terms';
+    + `&attributes=${STUDY_META_ATTRIBUTES.join(',')}`;
 
   const { text } = await movebankRequest(url, MAX_RESPONSE_BYTES);
   const rows = parseCsv(text, 10);
@@ -682,6 +697,39 @@ export async function fetchMovebankEventsVariant(
       handshake: 'error',
       elapsed_ms: Date.now() - start,
       error: err instanceof Error ? err.message : 'unknown error',
+    };
+  }
+}
+
+// --- Single-attribute study probe (fix round item 3 — "bisect" diagnostics) ---
+// Isolates whether ONE study attribute name is usable by a live account,
+// reporting only the HTTP status CLASS (2xx/4xx/5xx) — never the response
+// body, so no license text or data ever surfaces through this path. Goes
+// through the same movebankRequest choke point as every other call in this
+// module, so it automatically inherits the real rate limit + single-flight
+// serialization ("the normal spacing") — no separate throttling needed here.
+export type StudyAttributeProbeResult = {
+  ok: boolean;
+  http_status_class: '2xx' | '4xx' | '5xx' | 'error';
+  elapsed_ms: number;
+};
+
+export async function probeStudyAttribute(studyId: string, attributes: string): Promise<StudyAttributeProbeResult> {
+  const start = Date.now();
+  const url = 'https://www.movebank.org/movebank/service/direct-read'
+    + `?entity_type=study&study_id=${studyId}&attributes=${attributes}`;
+  try {
+    // No `context` passed — a study-attribute probe is metadata, never
+    // recorded as a license acceptance (matches fetchMovebankStudyMeta).
+    await movebankRequest(url, MAX_RESPONSE_BYTES);
+    return { ok: true, http_status_class: '2xx', elapsed_ms: Date.now() - start };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '';
+    const match = /Movebank HTTP ([45])\d\d/.exec(message);
+    return {
+      ok: false,
+      http_status_class: match ? (`${match[1]}xx` as '4xx' | '5xx') : 'error',
+      elapsed_ms: Date.now() - start,
     };
   }
 }

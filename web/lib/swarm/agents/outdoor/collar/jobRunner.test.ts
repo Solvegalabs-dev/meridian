@@ -5,8 +5,10 @@ import {
   binEventsForAggregate,
   classifyMovebankError,
   filterEventsBySpeciesForJob,
+  topTaxonNameCounts,
 } from './jobRunner'
 import type { MovebankEventWithTaxon, MovebankIndividual } from '../movebankCollarFetch'
+import { decodeGeohash } from '@/lib/geo/geohash'
 
 const { fetchMovebankStudyMetaMock } = vi.hoisted(() => ({ fetchMovebankStudyMetaMock: vi.fn() }))
 
@@ -276,6 +278,33 @@ describe('filterEventsBySpeciesForJob (A2 — multi-species study, never mix spe
   })
 })
 
+describe('topTaxonNameCounts (fix round item 1 — stats diagnostics, counts only)', () => {
+  it('returns the top 5 distinct names sorted by count, descending', () => {
+    const events = [
+      ...Array(10).fill(0).map(() => event('2020-01-01T00:00:00Z', 'i', 'Cervus elaphus')),
+      ...Array(5).fill(0).map(() => event('2020-01-01T00:00:00Z', 'i', 'Odocoileus hemionus')),
+      ...Array(3).fill(0).map(() => event('2020-01-01T00:00:00Z', 'i', 'Antilocapra americana')),
+      ...Array(2).fill(0).map(() => event('2020-01-01T00:00:00Z', 'i', 'Canis latrans')),
+      ...Array(1).fill(0).map(() => event('2020-01-01T00:00:00Z', 'i', 'Puma concolor')),
+      ...Array(1).fill(0).map(() => event('2020-01-01T00:00:00Z', 'i', 'Ursus americanus')), // 6th distinct name, must be dropped
+    ]
+    const result = topTaxonNameCounts(events)
+    expect(result).toHaveLength(5)
+    expect(result[0]).toEqual({ name: 'Cervus elaphus', count: 10 })
+    expect(result[4]).toEqual({ name: 'Puma concolor', count: 1 })
+    expect(result.some(r => r.name === 'Ursus americanus')).toBe(false)
+  })
+
+  it('groups a missing/empty taxon name under "(empty)"', () => {
+    const events = [event('2020-01-01T00:00:00Z', 'i', ''), event('2020-01-01T00:00:00Z', 'i', '')]
+    expect(topTaxonNameCounts(events)).toEqual([{ name: '(empty)', count: 2 }])
+  })
+
+  it('returns [] for an empty event list', () => {
+    expect(topTaxonNameCounts([])).toEqual([])
+  })
+})
+
 describe('claimJob / requeueStaleJobs (DB-level atomic claim)', () => {
   // The true FOR UPDATE SKIP LOCKED concurrency guarantee is enforced by
   // Postgres inside claim_collar_job() (migration 20261001) — not
@@ -344,9 +373,10 @@ describe('ensureLicenseRecordedForStudy (A5 — record on first use, not only on
     vi.resetModules()
 
     const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
-    await ensureLicenseRecordedForStudy('123')
+    const result = await ensureLicenseRecordedForStudy('123')
 
     expect(fetchMovebankStudyMetaMock).not.toHaveBeenCalled()
+    expect(result).toEqual({ ok: true })
   })
 
   it('fetches study metadata and inserts once with source=study_metadata when no row exists', async () => {
@@ -363,12 +393,13 @@ describe('ensureLicenseRecordedForStudy (A5 — record on first use, not only on
     vi.resetModules()
 
     const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
-    await ensureLicenseRecordedForStudy('123')
+    const result = await ensureLicenseRecordedForStudy('123')
 
     expect(fetchMovebankStudyMetaMock).toHaveBeenCalledTimes(1)
     const upsertCall = recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')
     expect(upsertCall?.args[0]).toMatchObject({ study_id: 123, source: 'study_metadata' })
     expect(JSON.stringify(upsertCall?.args)).not.toContain('testuser') // sanity: no credentials ever flow through this path
+    expect(result).toEqual({ ok: true })
   })
 
   it('does not insert when the study metadata has no license_terms', async () => {
@@ -385,9 +416,60 @@ describe('ensureLicenseRecordedForStudy (A5 — record on first use, not only on
     vi.resetModules()
 
     const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
-    await ensureLicenseRecordedForStudy('123')
+    const result = await ensureLicenseRecordedForStudy('123')
 
     expect(recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')).toBeUndefined()
+    expect(result).toEqual({ ok: false, reason: 'license_not_recorded' })
+  })
+
+  it('fails closed (does not throw) when the study metadata fetch itself rejects', async () => {
+    fetchMovebankStudyMetaMock.mockRejectedValue(new Error('Movebank HTTP 500'))
+    const { client, recorder } = makeMockSupabase({ licenseAcceptanceExists: false })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+    vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+      return { ...actual, fetchMovebankStudyMeta: fetchMovebankStudyMetaMock }
+    })
+    vi.resetModules()
+
+    const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
+    const result = await ensureLicenseRecordedForStudy('123')
+
+    expect(recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')).toBeUndefined()
+    expect(result).toEqual({ ok: false, reason: 'license_not_recorded' })
+  })
+
+  it('fails closed when the insert itself errors', async () => {
+    fetchMovebankStudyMetaMock.mockResolvedValue({
+      timestampFirstDeployedLocation: '', timestampLastDeployedLocation: '', numberOfDeployedLocations: '',
+      sensorTypeIds: '', taxonIds: '', numberOfIndividuals: '', licenseTerms: 'You may use this data for...',
+    })
+    const { client } = makeMockSupabase({ licenseAcceptanceExists: false })
+    const originalFrom = client.from
+    const patchedFrom = (table: string) => {
+      if (table === 'movebank_license_acceptances') {
+        return {
+          select: function () { return this },
+          eq: function () { return this },
+          limit: function () { return this },
+          maybeSingle: async () => ({ data: null }),
+          upsert: () => ({ then: (onFulfilled: (v: unknown) => unknown) => Promise.resolve({ error: { message: 'duplicate key' } }).then(onFulfilled) }),
+        }
+      }
+      return originalFrom(table)
+    }
+    client.from = patchedFrom as unknown as typeof client.from
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+    vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+      return { ...actual, fetchMovebankStudyMeta: fetchMovebankStudyMetaMock }
+    })
+    vi.resetModules()
+
+    const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
+    const result = await ensureLicenseRecordedForStudy('123')
+
+    expect(result).toEqual({ ok: false, reason: 'license_not_recorded' })
   })
 })
 
@@ -480,11 +562,20 @@ describe('runOneJob integration (truncation split + no-overlap guarantee)', () =
 
     let inFlight = 0
     let maxInFlight = 0
-    fetchMock.mockImplementation(async () => {
+    fetchMock.mockImplementation(async (url: string) => {
       inFlight++
       maxInFlight = Math.max(maxInFlight, inFlight)
       await new Promise(r => setTimeout(r, 5)) // hold the "connection" open briefly
       inFlight--
+      // The study-metadata call must report real license_terms so the A5
+      // fail-closed check passes and processing actually reaches the event
+      // fetch — otherwise this test would only ever see 1 real call.
+      if (url.includes('entity_type=study')) {
+        return fakeCsvResponse(
+          'timestamp_first_deployed_location,timestamp_last_deployed_location,number_of_deployed_locations,sensor_type_ids,taxon_ids,number_of_individuals,license_terms\n'
+          + '2019-01-01,2020-05-16,1000,GPS,Cervus elaphus,2695,"You may use this data for..."\n'
+        )
+      }
       return fakeCsvResponse('individual_id,timestamp,location_lat,location_long,individual_taxon_canonical_name\n')
     })
 
@@ -495,5 +586,134 @@ describe('runOneJob integration (truncation split + no-overlap guarantee)', () =
     // point (serialize()) — this proves they never overlapped.
     expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2)
     expect(maxInFlight).toBe(1)
+  })
+
+  it('A5 fail-closed: requeues (not dead) when license recording fails, and never fetches events', async () => {
+    const job = {
+      id: 'job-1', objective_id: 'obj-1', species_taxon_key: 'elk.bull', role: 'primary' as const,
+      study_id: 123, geo_hash: '9xyz5', local_tz: 'America/Denver',
+      window_start: '2019-10-01T00:00:00.000Z', window_end: '2019-10-16T00:00:00.000Z',
+      split_depth: 0, status: 'running', attempts: 1, max_attempts: 3,
+      run_after: '2019-10-01T00:00:00.000Z', locked_until: null, last_error: null,
+    }
+    const { client, recorder } = makeMockSupabase({
+      rpcResult: { data: job, error: null },
+      licenseAcceptanceExists: false, // forces an attempt to record the license before any event fetch
+      catalogRow: { license_type: 'CC_0', taxon_ids: 'Cervus elaphus', citation: '' },
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+
+    const fetchEventsMock = vi.fn()
+    vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+      return {
+        ...actual,
+        fetchMovebankStudyMeta: vi.fn().mockRejectedValue(new Error('Movebank HTTP 500')),
+        fetchMovebankEventsForWindow: fetchEventsMock,
+      }
+    })
+    vi.resetModules()
+
+    const { runOneJob } = await import('./jobRunner')
+    const result = await runOneJob()
+
+    expect(result.status).toBe('requeued')
+    expect(result.reason).toBe('license_not_recorded')
+    expect(fetchEventsMock).not.toHaveBeenCalled()
+
+    // requeueStaleJobs() (called first by runOneJob) also issues a
+    // collar_jobs.update — the one under test here is the LAST one, written
+    // by requeueWithBackoffOrDie after the license-recording failure.
+    const updateCalls = recorder.calls.filter(c => c.method === 'collar_jobs.update')
+    const update = updateCalls[updateCalls.length - 1]
+    expect(update?.args[0]).toMatchObject({ status: 'queued', last_error: 'license_not_recorded' })
+    expect(update?.args[0]).toHaveProperty('run_after')
+  })
+
+  it('A5 fail-closed: marks the job dead once attempts reach max_attempts, still without fetching events', async () => {
+    const job = {
+      id: 'job-1', objective_id: 'obj-1', species_taxon_key: 'elk.bull', role: 'primary' as const,
+      study_id: 123, geo_hash: '9xyz5', local_tz: 'America/Denver',
+      window_start: '2019-10-01T00:00:00.000Z', window_end: '2019-10-16T00:00:00.000Z',
+      split_depth: 0, status: 'running', attempts: 3, max_attempts: 3,
+      run_after: '2019-10-01T00:00:00.000Z', locked_until: null, last_error: null,
+    }
+    const { client, recorder } = makeMockSupabase({
+      rpcResult: { data: job, error: null },
+      licenseAcceptanceExists: false,
+      catalogRow: { license_type: 'CC_0', taxon_ids: 'Cervus elaphus', citation: '' },
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+
+    const fetchEventsMock = vi.fn()
+    vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+      return {
+        ...actual,
+        fetchMovebankStudyMeta: vi.fn().mockRejectedValue(new Error('Movebank HTTP 500')),
+        fetchMovebankEventsForWindow: fetchEventsMock,
+      }
+    })
+    vi.resetModules()
+
+    const { runOneJob } = await import('./jobRunner')
+    await runOneJob()
+
+    expect(fetchEventsMock).not.toHaveBeenCalled()
+    const updateCalls = recorder.calls.filter(c => c.method === 'collar_jobs.update')
+    const update = updateCalls[updateCalls.length - 1]
+    expect(update?.args[0]).toMatchObject({ status: 'dead', last_error: 'license_not_recorded' })
+  })
+
+  it('writes stats (counts only, no raw rows/license text) to collar_jobs on a successful run', async () => {
+    const job = {
+      id: 'job-1', objective_id: 'obj-1', species_taxon_key: 'elk.bull', role: 'primary' as const,
+      study_id: 123, geo_hash: '9xyz5', local_tz: 'America/Denver',
+      window_start: '2019-10-01T00:00:00.000Z', window_end: '2019-10-16T00:00:00.000Z',
+      split_depth: 0, status: 'running', attempts: 1, max_attempts: 3,
+      run_after: '2019-10-01T00:00:00.000Z', locked_until: null, last_error: null,
+    }
+    const { client, recorder } = makeMockSupabase({
+      rpcResult: { data: job, error: null },
+      licenseAcceptanceExists: true, // skip the metadata fetch for this test
+      catalogRow: { license_type: 'CC_0', taxon_ids: 'Cervus elaphus', citation: 'Test (2020)' },
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+
+    // Decode the job's actual geo_hash so the "near" events land inside the
+    // real 150km radius guard and the "far" one lands well outside it,
+    // rather than guessing coordinates against an opaque geohash string.
+    const { lat: objLat, lon: objLon } = decodeGeohash(job.geo_hash)
+    const events = [
+      { individualId: 'i1', timestamp: '2019-10-01 08:00:00', lat: objLat, lon: objLon, taxonCanonicalName: 'Cervus elaphus' },
+      { individualId: 'i2', timestamp: '2019-10-02 08:00:00', lat: objLat, lon: objLon, taxonCanonicalName: 'Cervus elaphus' },
+      { individualId: 'i3', timestamp: '2019-10-03 08:00:00', lat: objLat + 5, lon: objLon, taxonCanonicalName: 'Cervus elaphus' }, // ~555km north, well outside the 150km radius
+    ]
+    vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+      return {
+        ...actual,
+        fetchMovebankEventsForWindow: vi.fn().mockResolvedValue({ events, handshake: 'not_required', truncated: false }),
+      }
+    })
+    vi.resetModules()
+
+    const { runOneJob } = await import('./jobRunner')
+    const result = await runOneJob()
+
+    expect(result.status).toBe('done')
+    const updateCalls = recorder.calls.filter(c => c.method === 'collar_jobs.update')
+    const update = updateCalls[updateCalls.length - 1]
+    const stats = (update?.args[0] as { stats: Record<string, unknown> }).stats
+    expect(stats).toMatchObject({
+      rows_fetched: 3,
+      rows_species_match: 3,
+      rows_in_radius: 2,
+      truncated: false,
+      handshake: 'not_required',
+      top_taxon_names: [{ name: 'Cervus elaphus', count: 3 }],
+    })
+    expect(typeof stats.elapsed_ms).toBe('number')
+    expect(JSON.stringify(stats)).not.toContain('license') // no raw license text ever stored here
   })
 })
