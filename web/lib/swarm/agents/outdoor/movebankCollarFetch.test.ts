@@ -388,9 +388,9 @@ describe('fetchMovebankIndividuals / fetchMovebankStudyMeta / fetchMovebankEvent
     expect(fromSpy).not.toHaveBeenCalled()
   })
 
-  it('fetchMovebankStudyMeta requests the six diagnostic attributes and no names/citation', async () => {
-    const csv = 'timestamp_first_deployed_location,timestamp_last_deployed_location,number_of_deployed_locations,sensor_type_ids,taxon_ids,number_of_individuals\n'
-      + '2018-01-01,2025-01-01,5000,GPS,Cervus elaphus,50\n'
+  it('fetchMovebankStudyMeta requests the diagnostic attributes (incl. license_terms) and no names/citation', async () => {
+    const csv = 'timestamp_first_deployed_location,timestamp_last_deployed_location,number_of_deployed_locations,sensor_type_ids,taxon_ids,number_of_individuals,license_terms\n'
+      + '2018-01-01,2025-01-01,5000,GPS,Cervus elaphus,50,"You may use this data for..."\n'
     fetchMock.mockResolvedValueOnce(fakeResponse({ body: csv }))
 
     const { fetchMovebankStudyMeta } = await import('./movebankCollarFetch')
@@ -403,9 +403,11 @@ describe('fetchMovebankIndividuals / fetchMovebankStudyMeta / fetchMovebankEvent
       sensorTypeIds: 'GPS',
       taxonIds: 'Cervus elaphus',
       numberOfIndividuals: '50',
+      licenseTerms: 'You may use this data for...',
     })
     const url = fetchMock.mock.calls[0][0] as string
     expect(url).toContain('entity_type=study&study_id=999')
+    expect(url).toContain('license_terms')
     expect(url).not.toContain('name')
     expect(url).not.toContain('citation')
   })
