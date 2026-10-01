@@ -46,7 +46,9 @@ async function mapBriefRow(
     objective.taxonomy_key as string | undefined,
     (objective.lat as number | string | null | undefined),
     (objective.lon as number | string | null | undefined),
-    objective.domain as string | undefined
+    objective.domain as string | undefined,
+    objective.state as string | undefined,
+    objective.user_id as string | undefined
   )
 
   if (!row) {

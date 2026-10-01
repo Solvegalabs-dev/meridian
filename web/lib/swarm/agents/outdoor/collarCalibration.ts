@@ -179,6 +179,45 @@ export function calibrateCollarPattern(
 
 export { EMPTY_OUTPUT as EMPTY_COLLAR_CALIBRATION };
 
+// --- FF-093 Phase 2 Task 0 (A9) — compliance gate ---
+// Utah Admin. Code R657-5-7(4)(c)(v) prohibits using "protected" GPS/radio-
+// collar data to locate, track, take, or retrieve big game; whether UDWR's
+// dataset is "protected" under GRAMA 63G-2-305 is UNVERIFIED. Until that's
+// answered, ingest/aggregation (collarPatternExtractor.ts) may run
+// regardless, but no collar-derived window may be SHOWN unless this switch
+// allows it for the hunt's state, or the viewer is an approved tester.
+// Live positions and individual tracks are never stored or shown in this
+// phase at all, regardless of this switch — only aggregated_patterns (what
+// collar_pattern_library actually holds) is ever gated here.
+export async function isCollarDisplayAllowed(
+  stateCode: string | null | undefined,
+  userId: string | null | undefined
+): Promise<boolean> {
+  const supabase = createServiceClient();
+
+  if (userId) {
+    const { data: tester } = await supabase
+      .from('collar_display_testers')
+      .select('user_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (tester) return true;
+  }
+
+  // No state = no way to look up a switch row = no display. Conservative
+  // default, matching "no row ... means nothing is shown."
+  if (!stateCode) return false;
+
+  const { data: switchRow } = await supabase
+    .from('collar_compliance_switch')
+    .select('display_enabled')
+    .eq('state_code', stateCode.toUpperCase())
+    .eq('use_type', 'aggregated_patterns')
+    .maybeSingle();
+
+  return !!switchRow?.display_enabled;
+}
+
 export type CollarBriefAugmentation = {
   windows: Array<{ window: string; action: string; priority: 'high' | 'medium' | 'low' }>;
   credit: string | null;
@@ -196,11 +235,19 @@ export async function getCollarBriefAugmentation(
   lat: number | string | null | undefined,
   lon: number | string | null | undefined,
   domain: string | null | undefined,
+  stateCode: string | null | undefined,
+  userId: string | null | undefined,
   currentTempF?: number
 ): Promise<CollarBriefAugmentation> {
   if (!taxonomyKey || lat == null || lon == null) return NO_AUGMENTATION;
 
   try {
+    // Checked first, before any pattern lookup — a state with display
+    // disabled (the default everywhere right now) pays for exactly one
+    // cheap check instead of a geohash-stepped pattern query too.
+    const displayAllowed = await isCollarDisplayAllowed(stateCode, userId);
+    if (!displayAllowed) return NO_AUGMENTATION;
+
     const patternRow = await findCollarPattern(taxonomyKey, Number(lat), Number(lon), new Date().getMonth() + 1);
     if (!patternRow) return NO_AUGMENTATION;
 
