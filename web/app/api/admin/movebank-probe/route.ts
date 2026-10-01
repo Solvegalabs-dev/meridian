@@ -14,6 +14,7 @@ import {
   MOVEBANK_TAXON_NAMES,
   STUDY_QUERY_PARAM_NAMES,
   STUDY_META_ATTRIBUTES,
+  STUDY_PARAM_SHAPES,
   type MovebankStudy,
   type MovebankEventVariantOptions,
   type MovebankEventWithTaxon,
@@ -293,6 +294,55 @@ export async function GET(request: Request) {
       attributeResults[attr] = await probeStudyAttribute(directStudyId, attr);
     }
     report.attributes = attributeResults;
+    report.elapsed_ms = Date.now() - start;
+    return NextResponse.json(report);
+  }
+
+  // Fix round #2 — bisect=study_meta_params: the attribute-name bisection
+  // above keeps the request SHAPE fixed; this instead varies the shape
+  // while keeping the attribute fixed (taxon_ids), to isolate whether the
+  // live HTTP 500s are caused by a missing `i_have_download_access=true`
+  // and/or by filtering on `study_id=X` instead of `id=X`. Shapes run
+  // serially in order A, B, C — each through probeStudyAttribute's own
+  // movebankRequest call, so they inherit the same rate limit/serialization
+  // as every other call in this codebase. The first shape that returns
+  // ok:true is treated as "the shape that worked" and is re-tested once
+  // more with license_terms. Still reports HTTP status class only, never a
+  // response body.
+  if (bisect === 'study_meta_params') {
+    if (!directStudyId) {
+      report.error = 'bisect=study_meta_params requires a study_id parameter';
+      return NextResponse.json(report, { status: 400 });
+    }
+
+    report.mode = 'bisect_study_meta_params';
+    report.study_id = directStudyId;
+    report.shape_definitions = {
+      A: 'study_id=<id> + i_have_download_access=true',
+      B: 'id=<id> instead of study_id=<id>',
+      C: 'id=<id> + i_have_download_access=true',
+    };
+
+    const shapeIds: Array<'A' | 'B' | 'C'> = ['A', 'B', 'C'];
+    const taxonResultsByShape: Record<string, StudyAttributeProbeResult> = {};
+    let workingShapeId: 'A' | 'B' | 'C' | null = null;
+
+    for (const shapeId of shapeIds) {
+      const result = await probeStudyAttribute(directStudyId, 'taxon_ids', STUDY_PARAM_SHAPES[shapeId]);
+      taxonResultsByShape[shapeId] = result;
+      if (result.ok && !workingShapeId) workingShapeId = shapeId;
+    }
+    report.taxon_ids_by_shape = taxonResultsByShape;
+    report.working_shape = workingShapeId;
+
+    if (!workingShapeId) {
+      report.note = 'None of shapes A/B/C changed the outcome for taxon_ids — the request shape is not what caused the earlier HTTP 500s.';
+      report.elapsed_ms = Date.now() - start;
+      return NextResponse.json(report);
+    }
+
+    report.license_terms_result = await probeStudyAttribute(directStudyId, 'license_terms', STUDY_PARAM_SHAPES[workingShapeId]);
+    report.note = `Shape ${workingShapeId} worked for taxon_ids. fetchMovebankStudyMeta/fetchMovebankIndividuals have NOT been switched to it automatically — report this result back so that one-line production change (and the same shape on the individuals call) can be made with live confirmation rather than a guess.`;
     report.elapsed_ms = Date.now() - start;
     return NextResponse.json(report);
   }

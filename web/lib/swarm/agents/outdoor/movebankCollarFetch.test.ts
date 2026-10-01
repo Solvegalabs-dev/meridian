@@ -525,6 +525,52 @@ describe('probeStudyAttribute (fix round item 3 — bisect diagnostics, HTTP cla
     expect(result.ok).toBe(true)
     expect(fromSpy).not.toHaveBeenCalled() // no `context` passed to movebankRequest — never recorded
   })
+
+  it('applies shape A (i_have_download_access=true, study_id kept) to the request URL', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: 'taxon_ids\nCervus elaphus\n' }))
+
+    const { probeStudyAttribute, STUDY_PARAM_SHAPES } = await import('./movebankCollarFetch')
+    await probeStudyAttribute('999', 'taxon_ids', STUDY_PARAM_SHAPES.A)
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('entity_type=study&study_id=999')
+    expect(url).toContain('i_have_download_access=true')
+    expect(url).not.toContain('&id=999')
+  })
+
+  it('applies shape B (id= instead of study_id=, no download-access param) to the request URL', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: 'taxon_ids\nCervus elaphus\n' }))
+
+    const { probeStudyAttribute, STUDY_PARAM_SHAPES } = await import('./movebankCollarFetch')
+    await probeStudyAttribute('999', 'taxon_ids', STUDY_PARAM_SHAPES.B)
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('entity_type=study&id=999')
+    expect(url).not.toContain('study_id=999')
+    expect(url).not.toContain('i_have_download_access')
+  })
+
+  it('applies shape C (id= AND i_have_download_access=true) to the request URL', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: 'taxon_ids\nCervus elaphus\n' }))
+
+    const { probeStudyAttribute, STUDY_PARAM_SHAPES } = await import('./movebankCollarFetch')
+    await probeStudyAttribute('999', 'taxon_ids', STUDY_PARAM_SHAPES.C)
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('entity_type=study&id=999')
+    expect(url).not.toContain('study_id=999')
+    expect(url).toContain('i_have_download_access=true')
+  })
+
+  it('without a shape argument, the request is byte-for-byte identical to the pre-existing default (no regression for bisect=study_meta)', async () => {
+    fetchMock.mockResolvedValueOnce(fakeResponse({ body: 'id\n999\n' }))
+
+    const { probeStudyAttribute } = await import('./movebankCollarFetch')
+    await probeStudyAttribute('999', 'id')
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toBe('https://www.movebank.org/movebank/service/direct-read?entity_type=study&study_id=999&attributes=id')
+  })
 })
 
 describe('fetchMovebankEventsForWindow sensor filter toggle (fix round item 3)', () => {

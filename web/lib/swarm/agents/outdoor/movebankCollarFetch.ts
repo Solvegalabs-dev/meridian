@@ -714,10 +714,35 @@ export type StudyAttributeProbeResult = {
   elapsed_ms: number;
 };
 
-export async function probeStudyAttribute(studyId: string, attributes: string): Promise<StudyAttributeProbeResult> {
+// Request-SHAPE knobs for a single-study query (fix round #2 —
+// "bisect=study_meta_params"). The attribute-name bisection above
+// (probeStudyAttribute with no `shape`) keeps the request shape fixed at
+// `entity_type=study&study_id=X`; this instead varies the shape itself:
+// whether `i_have_download_access=true` is present (the one param the
+// catalog discovery query uses that no single-entity call does) and
+// whether the study is scoped via `id=X` instead of `study_id=X`.
+export type StudyParamShape = {
+  idParam: 'study_id' | 'id';
+  includeDownloadAccess: boolean;
+};
+
+export const STUDY_PARAM_SHAPES: Record<'A' | 'B' | 'C', StudyParamShape> = {
+  A: { idParam: 'study_id', includeDownloadAccess: true },
+  B: { idParam: 'id', includeDownloadAccess: false },
+  C: { idParam: 'id', includeDownloadAccess: true },
+};
+
+// `shape` is optional so every existing caller (the attribute-name
+// bisection, which never passes one) keeps the exact original request:
+// `entity_type=study&study_id=X&attributes=...`, with no
+// `i_have_download_access` param.
+export async function probeStudyAttribute(studyId: string, attributes: string, shape?: StudyParamShape): Promise<StudyAttributeProbeResult> {
   const start = Date.now();
-  const url = 'https://www.movebank.org/movebank/service/direct-read'
-    + `?entity_type=study&study_id=${studyId}&attributes=${attributes}`;
+  const idParam = shape?.idParam ?? 'study_id';
+  let url = 'https://www.movebank.org/movebank/service/direct-read'
+    + `?entity_type=study&${idParam}=${studyId}`;
+  if (shape?.includeDownloadAccess) url += '&i_have_download_access=true';
+  url += `&attributes=${attributes}`;
   try {
     // No `context` passed — a study-attribute probe is metadata, never
     // recorded as a license acceptance (matches fetchMovebankStudyMeta).

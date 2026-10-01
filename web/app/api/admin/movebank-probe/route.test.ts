@@ -392,6 +392,97 @@ describe('GET /api/admin/movebank-probe', () => {
     })
   })
 
+  describe('fix round #2: bisect=study_meta_params', () => {
+    it('requires a study_id', async () => {
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta_params',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toMatch(/study_id/)
+      expect(probeStudyAttributeMock).not.toHaveBeenCalled()
+    })
+
+    it('tests shapes A, B, C serially with taxon_ids, and reports working_shape:null + stops when none work', async () => {
+      probeStudyAttributeMock.mockResolvedValue({ ok: false, http_status_class: '5xx', elapsed_ms: 15 })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta_params&study_id=7364502758',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(body.mode).toBe('bisect_study_meta_params')
+      // Exactly 3 calls (A, B, C), each with 'taxon_ids' — no license_terms call, since nothing worked.
+      expect(probeStudyAttributeMock).toHaveBeenCalledTimes(3)
+      expect(probeStudyAttributeMock).toHaveBeenNthCalledWith(1, '7364502758', 'taxon_ids', { idParam: 'study_id', includeDownloadAccess: true })
+      expect(probeStudyAttributeMock).toHaveBeenNthCalledWith(2, '7364502758', 'taxon_ids', { idParam: 'id', includeDownloadAccess: false })
+      expect(probeStudyAttributeMock).toHaveBeenNthCalledWith(3, '7364502758', 'taxon_ids', { idParam: 'id', includeDownloadAccess: true })
+      expect(body.taxon_ids_by_shape).toEqual({
+        A: { ok: false, http_status_class: '5xx', elapsed_ms: 15 },
+        B: { ok: false, http_status_class: '5xx', elapsed_ms: 15 },
+        C: { ok: false, http_status_class: '5xx', elapsed_ms: 15 },
+      })
+      expect(body.working_shape).toBeNull()
+      expect(body.license_terms_result).toBeUndefined()
+      expect(body.note).toMatch(/not what caused/)
+    })
+
+    it('tests all three shapes (A, B, C) even once A already works, picks A as working_shape, and retests license_terms under it', async () => {
+      probeStudyAttributeMock.mockImplementation(async (_studyId: string, attributes: string) => {
+        if (attributes === 'license_terms') return { ok: true, http_status_class: '2xx', elapsed_ms: 8 }
+        return { ok: true, http_status_class: '2xx', elapsed_ms: 10 } // all three shapes happen to succeed
+      })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta_params&study_id=999',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(body.working_shape).toBe('A') // first shape that worked, in A/B/C order
+      // A, B, C always all tested (so Jason sees all 3 results), then one more call for license_terms under the winning shape (A).
+      expect(probeStudyAttributeMock).toHaveBeenCalledTimes(4)
+      expect(probeStudyAttributeMock).toHaveBeenNthCalledWith(4, '999', 'license_terms', { idParam: 'study_id', includeDownloadAccess: true })
+      expect(body.taxon_ids_by_shape).toEqual({
+        A: { ok: true, http_status_class: '2xx', elapsed_ms: 10 },
+        B: { ok: true, http_status_class: '2xx', elapsed_ms: 10 },
+        C: { ok: true, http_status_class: '2xx', elapsed_ms: 10 },
+      })
+      expect(body.license_terms_result).toEqual({ ok: true, http_status_class: '2xx', elapsed_ms: 8 })
+      expect(body.note).toMatch(/Shape A worked/)
+      expect(body.note).toMatch(/NOT been switched/)
+    })
+
+    it('picks shape B as working when A fails but B succeeds, and never reports a response body', async () => {
+      probeStudyAttributeMock.mockImplementation(async (_studyId: string, attributes: string, shape?: { idParam: string }) => {
+        if (attributes === 'license_terms') return { ok: true, http_status_class: '2xx', elapsed_ms: 9 }
+        if (shape?.idParam === 'study_id') return { ok: false, http_status_class: '5xx', elapsed_ms: 11 } // shape A fails
+        return { ok: true, http_status_class: '2xx', elapsed_ms: 12 } // shape B (and C) succeed
+      })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta_params&study_id=999',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(body.working_shape).toBe('B')
+      expect(body.taxon_ids_by_shape.A.ok).toBe(false)
+      expect(body.taxon_ids_by_shape.B.ok).toBe(true)
+      expect(probeStudyAttributeMock).toHaveBeenLastCalledWith('999', 'license_terms', { idParam: 'id', includeDownloadAccess: false })
+
+      const bodyText = JSON.stringify(body)
+      expect(bodyText).not.toContain('super-secret-password')
+    })
+  })
+
   describe('fix round item 3: windowed probe (window_start/window_end/sensor) in direct study_id mode', () => {
     beforeEach(() => {
       fetchMovebankEventsDetailedMock.mockResolvedValue({ events: [], handshake: 'not_required' })
