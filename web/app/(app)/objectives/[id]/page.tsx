@@ -8,6 +8,7 @@ import ObjectiveDetailClient from './ObjectiveDetailClient'
 import ObjectiveTabs from './ObjectiveTabs'
 import { getConfidenceStatus } from '@/lib/utils/confidenceStatus'
 import AskMeridianLoader from '@/components/AskMeridianLoader'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 const EXPERIMENT_START = new Date('2026-06-23')
 
@@ -133,7 +134,7 @@ export default async function ObjectiveDetailPage({ params }: { params: { id: st
         </div>
         <p className="text-[12px] mb-6" style={{ color: 'var(--ov-text-dim)' }}>
           {obj.target_date
-            ? `Target: ${new Date(obj.target_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · `
+            ? `Target: ${formatDateOnly(obj.target_date, { month: 'short', day: 'numeric', year: 'numeric' })} · `
             : ''}
           Started: Week {startWeek}
         </p>

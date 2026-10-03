@@ -1,6 +1,7 @@
 // Deterministic brief for a hunt that is over (season_closed / trip_ended).
 // No model call, no LLM text. The code owns this decision.
-import type { WindowEvaluation } from '@/lib/objectives/windowState'
+import { isEndedWindowState, type WindowEvaluation } from '@/lib/objectives/windowState'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 // Mirrors the CHECK constraints on strike_briefs. Keep in sync with
 // supabase/migrations/20261002_ff089_p0_season_lifecycle.sql.
@@ -16,11 +17,7 @@ export const CLOSED_BRIEF_TIME_WINDOW = '0600'
 export type ClosedWindowState = 'season_closed' | 'trip_ended'
 
 export function formatBriefDate(isoDate: string): string {
-  return new Date(`${isoDate}T12:00:00Z`).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    timeZone: 'UTC',
-  })
+  return formatDateOnly(isoDate)
 }
 
 const CLOSED_TAIL = 'This hunt is over; Meridian has paused daily briefs for it. Reactivate or start a new objective whenever you are ready.'
@@ -70,4 +67,33 @@ export function buildClosedBriefFields(evaluation: WindowEvaluation): ClosedBrie
     terrain_intel: null,
     terrain_source: null,
   }
+}
+
+// An ended unit, as the list and detail pages show it. Null when the hunt is live.
+export type EndedNotice = { reason: ClosedWindowState; date: string | null }
+
+// Evaluated window state wins. Stored status (unit expired, or profile completed)
+// is an extra trigger, so a stale 'active' row cannot keep a finished hunt looking live.
+// Stored-only endings carry no date: the lifecycle has not confirmed the end yet.
+export function resolveEndedNotice(input: {
+  evaluation: WindowEvaluation | null
+  unitStatus?: string | null
+  profileStatus?: string | null
+  endedReason?: string | null
+}): EndedNotice | null {
+  const ev = input.evaluation
+  if (ev && isEndedWindowState(ev.state)) {
+    return ev.state === 'season_closed'
+      ? { reason: 'season_closed', date: ev.detail.season_end ?? null }
+      : { reason: 'trip_ended', date: ev.detail.trip_end ?? null }
+  }
+  const storedEnded = input.unitStatus === 'expired' || input.profileStatus === 'completed'
+  if (!storedEnded) return null
+  return { reason: input.endedReason === 'season_closed' ? 'season_closed' : 'trip_ended', date: null }
+}
+
+// "Season closed on Sep 30" / "Trip ended on Sep 30" (the date is optional).
+export function endedNoticeLabel(notice: EndedNotice): string {
+  const on = notice.date ? ` on ${formatBriefDate(notice.date)}` : ''
+  return notice.reason === 'season_closed' ? `Season closed${on}` : `Trip ended${on}`
 }

@@ -2,6 +2,7 @@
 
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import type { ScoredPrediction } from '@/lib/predictions/trackRecord'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 interface Props {
   predictions: ScoredPrediction[]
@@ -44,7 +45,7 @@ export function ConfidenceAccuracyChart({ predictions }: Props) {
       y: p.filed_confidence,
       status: p.outcome_type,
       label: p.objective_title ?? p.statement.slice(0, 48) + (p.statement.length > 48 ? '…' : ''),
-      horizon: new Date(p.horizon_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      horizon: formatDateOnly(p.horizon_date, { month: 'short', day: 'numeric', year: 'numeric' }),
     }))
 
   return (

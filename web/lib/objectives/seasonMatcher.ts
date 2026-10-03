@@ -105,6 +105,9 @@ export async function findSeasonRows(
   const state = profile.state?.toUpperCase() ?? null
   if (!tax || !state) return []
 
+  // KNOWN QUIRK (FF-089 addendum 2, item 4; not fixed here): the season year is today's calendar year.
+  // A season that crosses into January (e.g. Utah private-lands antlerless, Aug 1 to Jan 31) finds no
+  // rows in January, so it resolves to "season unknown" and the trip window decides. Fix later.
   const seasonYear = Number(today.slice(0, 4))
   const { data, error } = await supabase
     .from('hunt_seasons')

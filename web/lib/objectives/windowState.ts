@@ -15,6 +15,11 @@ export type WindowState =
   | 'trip_ended'      // today is after trip_end
   | 'no_dates'        // timing has no usable dates; season unknown
 
+// The hunt is over for good: the season or the trip window has passed.
+export function isEndedWindowState(state: WindowState): boolean {
+  return state === 'season_closed' || state === 'trip_ended'
+}
+
 export type SeasonWindow = {
   season_start: string // YYYY-MM-DD
   season_end: string   // YYYY-MM-DD

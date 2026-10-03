@@ -12,7 +12,7 @@
 // Profiles that were completed by hand (ended_at null) are never reactivated here.
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { evaluateWindowState, localDateIn, type WindowEvaluation, type TripTiming } from './windowState'
-import { findSeasonRows, objectiveTimezone } from './seasonMatcher'
+import { findSeasonRows, matchSeasonRows, objectiveTimezone, parseTaxonomyKey, type HuntSeasonRow } from './seasonMatcher'
 
 export type EndedReason = 'trip_ended' | 'season_closed'
 
@@ -77,6 +77,52 @@ export async function loadObjectiveWindow(
   const profile = data as unknown as ObjectiveWindowProfile
   const { evaluation } = await evaluateProfileWindow(supabase, profile, now)
   return { profile, evaluation }
+}
+
+// Batch form of evaluateProfileWindow for list views. One hunt_seasons query for
+// the whole set (not one per profile). Keyed by objective_id. Read-only.
+// A failed season read fails open: profiles fall back to their trip window.
+export async function evaluateProfilesWindow(
+  supabase: SupabaseClient,
+  profiles: ObjectiveWindowProfile[],
+  now: Date = new Date()
+): Promise<Map<string, WindowEvaluation>> {
+  const result = new Map<string, WindowEvaluation>()
+  if (profiles.length === 0) return result
+
+  const local = profiles.map(profile => {
+    const tz = objectiveTimezone(profile)
+    const today = localDateIn(now, tz)
+    // Season year = today's calendar year. Same January quirk as findSeasonRows (seasonMatcher.ts).
+    return { profile, tz, today, year: Number(today.slice(0, 4)) }
+  })
+
+  const states = Array.from(new Set(local.map(l => l.profile.state?.toUpperCase()).filter((s): s is string => !!s)))
+  const species = Array.from(new Set(local.map(l => parseTaxonomyKey(l.profile.taxonomy_key)?.species).filter((s): s is string => !!s)))
+  const years = Array.from(new Set(local.map(l => l.year)))
+
+  let rows: HuntSeasonRow[] = []
+  if (states.length > 0 && species.length > 0) {
+    const { data, error } = await supabase
+      .from('hunt_seasons')
+      .select('*')
+      .in('state', states)
+      .in('species', species)
+      .in('season_year', years)
+    if (error) console.error('[seasonMatcher] hunt_seasons batch read failed:', error.message)
+    else rows = (data ?? []) as HuntSeasonRow[]
+  }
+
+  for (const l of local) {
+    const seasonRows = matchSeasonRows(l.profile, rows, l.year)
+    result.set(l.profile.objective_id, evaluateWindowState({
+      timing: l.profile.timing,
+      seasonRows,
+      today: l.today,
+      tz: l.tz,
+    }))
+  }
+  return result
 }
 
 // Applies the transition for one profile. Returns what changed.

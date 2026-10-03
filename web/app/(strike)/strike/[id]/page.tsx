@@ -3,7 +3,14 @@ import { createServiceClient } from '@/lib/supabase/server'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
 import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
 import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
-import { windowOpensBanner } from '@/lib/strikeBrief/closedBrief'
+import { isEndedWindowState } from '@/lib/objectives/windowState'
+import {
+  closedSynthesis,
+  endedNoticeLabel,
+  formatBriefDate,
+  resolveEndedNotice,
+  windowOpensBanner,
+} from '@/lib/strikeBrief/closedBrief'
 
 export const dynamic = 'force-dynamic'
 
@@ -186,10 +193,57 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   const brief = await mapBriefRow(briefRow, arcObjectiveId, objective as Record<string, unknown>)
 
+  // FF-089 P0: window state is evaluated at render time. The sweep is not the only trigger.
+  const windowCheck = await loadObjectiveWindow(supabase, arcObjectiveId)
+  const evaluation = windowCheck?.evaluation ?? null
+  const ended = resolveEndedNotice({
+    evaluation,
+    profileStatus: objective.status as string | null,
+    endedReason: objective.ended_reason as string | null,
+  })
+
+  if (ended) {
+    // The hunt is over: no GO verdict, no windows. The stored brief stays as labeled history only.
+    const closedText = evaluation && isEndedWindowState(evaluation.state)
+      ? closedSynthesis(evaluation)
+      : `${endedNoticeLabel(ended)}.`
+    const lastBriefDate = briefRow ? (briefRow.brief_date as string | null) : null
+    const lastGoNoGo = briefRow ? (briefRow.go_no_go as string | null) : null
+    const closedBrief = {
+      ...brief,
+      go_no_go: 'CLOSED',
+      confidence_tier: null,
+      time_windows: [],
+      signal_chips: [],
+      lead_signal: null,
+      summary: null,
+    }
+
+    return (
+      <>
+        <div className="mx-4 mt-4 rounded-lg px-4 py-3 text-sm bg-slate-800 border border-slate-600 text-slate-200">
+          {closedText}
+        </div>
+        {briefRow && (
+          <div className="mx-4 mt-3 rounded-lg px-4 py-3 text-xs bg-slate-800/50 border border-slate-700 text-slate-400">
+            <div>
+              Last brief{lastBriefDate ? `, ${formatBriefDate(lastBriefDate)}` : ''}
+              {lastGoNoGo ? ` · ${lastGoNoGo}` : ''}
+            </div>
+            {typeof brief.summary === 'string' && <p className="mt-1 leading-relaxed">{brief.summary}</p>}
+          </div>
+        )}
+        <StrikeBriefClient
+          brief={closedBrief}
+          objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
+        />
+      </>
+    )
+  }
+
   // FF-089 P0: "Season opens {date}" / "Trip opens {date}" banner, rendered server-side
   // so the partner API keeps its single additive field (objective_state).
-  const windowCheck = await loadObjectiveWindow(supabase, arcObjectiveId)
-  const banner = windowOpensBanner(windowCheck?.evaluation ?? null)
+  const banner = windowOpensBanner(evaluation)
 
   return (
     <>

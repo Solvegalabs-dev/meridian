@@ -3,6 +3,8 @@ import { cookies } from 'next/headers'
 import { createServerClient } from '@supabase/ssr'
 import { createServiceClient } from '@/lib/supabase/server'
 import CampaignView from '@/components/strike/CampaignView'
+import { evaluateProfilesWindow, PROFILE_WINDOW_COLUMNS, type ObjectiveWindowProfile } from '@/lib/objectives/objectiveWindow'
+import { resolveEndedNotice } from '@/lib/strikeBrief/closedBrief'
 
 export const dynamic = 'force-dynamic'
 
@@ -51,7 +53,7 @@ export default async function StrikePage() {
     allObjectiveIds.length > 0
       ? supabase
           .from('objective_profiles')
-          .select('id, objective_id, geo, timing, agent_build_status, status, ended_reason, ended_at')
+          .select(`${PROFILE_WINDOW_COLUMNS}, geo, agent_build_status`)
           .in('objective_id', allObjectiveIds)
       : Promise.resolve({ data: [] as unknown[] }),
     allObjectiveIds.length > 0
@@ -67,6 +69,10 @@ export default async function StrikePage() {
     ((profileResult.data ?? []) as Array<Record<string, unknown>>)
       .map(p => [p.objective_id as string, p])
   )
+
+  // FF-089 P0: window state is evaluated now, not read from the last sweep. One batched season read.
+  const profileRows = (profileResult.data ?? []) as unknown as ObjectiveWindowProfile[]
+  const windowStates = await evaluateProfilesWindow(supabase, profileRows)
 
   const briefMap = new Map<string, { confidence_tier?: string; go_no_go?: string }>()
   for (const b of (briefResult.data ?? []) as Array<{ objective_id: string; confidence_tier?: string; go_no_go?: string }>) {
@@ -85,6 +91,12 @@ export default async function StrikePage() {
         ...u,
         profile: profileMap.get(u.objective_id) ?? null,
         brief: briefMap.get(u.objective_id) ?? null,
+        ended: resolveEndedNotice({
+          evaluation: windowStates.get(u.objective_id) ?? null,
+          unitStatus: u.status,
+          profileStatus: profileMap.get(u.objective_id)?.status as string | undefined,
+          endedReason: profileMap.get(u.objective_id)?.ended_reason as string | undefined,
+        }),
       })),
   }))
 

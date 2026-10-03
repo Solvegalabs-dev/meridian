@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
 import { goNoGoKind } from '@/lib/strikeBrief/goNoGo'
+import { endedNoticeLabel, type EndedNotice } from '@/lib/strikeBrief/closedBrief'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 type UnitProfile = {
   id?: string
@@ -12,7 +14,6 @@ type UnitProfile = {
   timing?: { trip_start?: string; trip_end?: string } | null
   agent_build_status?: string
   status?: string
-  ended_reason?: 'trip_ended' | 'season_closed' | null
 } | null
 
 type UnitBrief = {
@@ -31,6 +32,8 @@ type EnrichedUnit = {
   pivot_reason: string | null
   profile: UnitProfile
   brief: UnitBrief
+  // Resolved on the server from the evaluated window (render time) and stored status.
+  ended: EndedNotice | null
 }
 
 type Campaign = {
@@ -42,15 +45,17 @@ type Campaign = {
   units: EnrichedUnit[]
 }
 
-// FF-089 P0: a campaign is closed when hunt_campaigns.status is 'closed'.
+// A campaign is closed when hunt_campaigns.status is 'closed', or when every unit has ended.
 // Closed campaigns stay visible, read-only, sorted to the bottom.
 function isClosedCampaign(c: Campaign): boolean {
-  return c.status === 'closed'
+  if (c.status === 'closed') return true
+  return c.units.length > 0 && c.units.every(u => u.ended !== null)
 }
 
-// A unit is ended when the lifecycle expired it or its profile is completed by it.
-function isEndedUnit(unit: EnrichedUnit): boolean {
-  return unit.status === 'expired' || unit.profile?.status === 'completed'
+// Pivot cards are for live hunts only. If the primary is over, no shift is recommended.
+function livePivotUnits(c: Campaign): EnrichedUnit[] {
+  if (c.units.some(u => u.role === 'primary' && u.ended)) return []
+  return c.units.filter(u => u.pivot_recommended && !u.ended)
 }
 
 function formatRole(role: string): string {
@@ -100,12 +105,11 @@ function gnoBadge(gno?: string) {
 
 type UnitTiming = { trip_start?: string; trip_end?: string } | null | undefined
 
+// Trip dates are date-only strings: formatted as written, never shifted by the viewer's zone.
 function formatDates(timing: UnitTiming): string {
   if (!timing?.trip_start) return ''
-  const start = new Date(timing.trip_start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-  const end = timing.trip_end
-    ? new Date(timing.trip_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-    : null
+  const start = formatDateOnly(timing.trip_start)
+  const end = timing.trip_end ? formatDateOnly(timing.trip_end) : null
   return end ? `${start} – ${end}` : start
 }
 
@@ -118,10 +122,9 @@ function UnitRow({ unit, isFishing }: { unit: EnrichedUnit; isFishing?: boolean 
   const dates = formatDates(unit.profile?.timing)
   const dateLabel = isFishing && dates ? `Season window: ${dates}` : dates
   const isMissed = unit.status === 'missed' || unit.role?.toUpperCase() === 'MISSED'
-  const ended = isEndedUnit(unit)
-  const endedLabel = ended
-    ? unit.profile?.ended_reason === 'season_closed' ? 'Season closed' : 'Trip ended'
-    : null
+  // An ended unit shows only the closed label: no GO, CONDITIONAL or tier badge from a stored brief.
+  const ended = unit.ended !== null
+  const endedLabel = unit.ended ? endedNoticeLabel(unit.ended) : null
 
   return (
     <button
@@ -142,8 +145,8 @@ function UnitRow({ unit, isFishing }: { unit: EnrichedUnit; isFishing?: boolean 
         )}
       </div>
       <div className="flex items-center gap-1.5 flex-shrink-0">
-        {tierBadge(unit.brief?.confidence_tier)}
-        {gnoBadge(unit.brief?.go_no_go)}
+        {!ended && tierBadge(unit.brief?.confidence_tier)}
+        {!ended && gnoBadge(unit.brief?.go_no_go)}
         <span className="text-slate-500 text-xs">›</span>
       </div>
     </button>
@@ -197,7 +200,7 @@ export default function CampaignView({ campaigns }: { campaigns: Campaign[] }) {
         ) : (
           [...campaigns].sort((a, b) => Number(isClosedCampaign(a)) - Number(isClosedCampaign(b))).map(campaign => {
             const isFishing = isFishingTaxonomyKey(campaign.taxonomy_key ?? '')
-            const pivotUnits = campaign.units.filter(u => u.pivot_recommended)
+            const pivotUnits = livePivotUnits(campaign)
             return (
               <div key={campaign.id}>
                 {/* Campaign header */}

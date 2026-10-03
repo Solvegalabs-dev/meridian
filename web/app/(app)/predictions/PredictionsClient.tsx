@@ -7,6 +7,7 @@ import { ConfidenceAccuracyChart } from '@/components/predictions/ConfidenceAccu
 import { PredictionHistoryList } from '@/components/predictions/PredictionHistoryList'
 import type { TrackRecordSummary, ScoredPrediction } from '@/lib/predictions/trackRecord'
 import { ObjectivePopover, ObjectiveSummaryInline } from '@/components/predictions/ObjectivePopover'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 interface PredictionScore {
   accuracy_score: number
@@ -359,7 +360,7 @@ export default function PredictionsClient({ initialPredictions, objectives, trac
                     </td>
                     <td className="px-4 py-3 font-medium text-[var(--text)]">{p.confidence_pct}%</td>
                     <td className="px-4 py-3 text-[var(--text2)]">
-                      {new Date(p.horizon_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      {formatDateOnly(p.horizon_date, { month: 'short', day: 'numeric', year: 'numeric' })}
                     </td>
                     <td className="px-4 py-3">
                       {status === 'due' ? (

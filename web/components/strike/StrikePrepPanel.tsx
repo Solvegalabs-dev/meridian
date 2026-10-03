@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { isFishingTaxonomyKey, FISHING_PREP_PHASES } from '@/lib/strike/config/fishing-taxonomy'
+import { addDaysDateOnly, formatDateOnly } from '@/lib/utils/dateOnly'
 
 type Cadence = 'monthly' | 'biweekly' | 'weekly'
 
@@ -12,20 +13,17 @@ type Props = {
 
 type ArcStep = { label: string; icon: string; status: 'done' | 'active' | 'future' }
 
-function fmt(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+// trip_start / trip_end are date-only strings: shown as written, never shifted by the viewer's zone.
+function fmt(d: string): string {
+  return formatDateOnly(d)
 }
 
 function dateMinusDays(base: string, days: number): string {
-  const d = new Date(base)
-  d.setDate(d.getDate() - days)
-  return fmt(d)
+  return fmt(addDaysDateOnly(base, -days) ?? base)
 }
 
 function datePlusDays(base: string, days: number): string {
-  const d = new Date(base)
-  d.setDate(d.getDate() + days)
-  return fmt(d)
+  return fmt(addDaysDateOnly(base, days) ?? base)
 }
 
 // ─── Fishing prep ────────────────────────────────────────────────────────────
@@ -276,7 +274,7 @@ const PHASE_DEFS = {
   },
   opener: {
     label: 'Opener',
-    dateRange: (t: string) => `${fmt(new Date(t))} – ${datePlusDays(t, 7)}`,
+    dateRange: (t: string) => `${fmt(t)} – ${datePlusDays(t, 7)}`,
     description: 'Early rut transition. Bulls locating cows, not yet committed.',
     tasks: [
       'Glass upper basin water sources dawn and dusk',
