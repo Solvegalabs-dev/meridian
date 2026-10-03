@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import type { ScoredPrediction, OutcomeType } from '@/lib/predictions/trackRecord'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 interface Props {
   predictions: ScoredPrediction[]
@@ -52,7 +53,7 @@ export function PredictionHistoryList({ predictions }: Props) {
       {predictions.map((pred) => {
         const badge = OUTCOME_BADGE[pred.outcome_type]
         const isExpanded = expandedId === pred.id
-        const horizonDate = new Date(pred.horizon_date).toLocaleDateString('en-US', {
+        const horizonDate = formatDateOnly(pred.horizon_date, {
           month: 'short', day: 'numeric', year: 'numeric',
         })
 

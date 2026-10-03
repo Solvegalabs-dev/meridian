@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 interface ObjectiveSummary {
   obj_id: string
@@ -92,7 +93,7 @@ export function ObjectivePopover({ objectiveId, objId }: ObjectivePopoverProps) 
               {summary.target_date && (
                 <p className="text-[11px]" style={{ color: 'var(--text3)' }}>
                   Target:{' '}
-                  {new Date(summary.target_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  {formatDateOnly(summary.target_date, { month: 'short', day: 'numeric', year: 'numeric' })}
                 </p>
               )}
               <a

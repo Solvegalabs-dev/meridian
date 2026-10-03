@@ -5,6 +5,7 @@ import { Objective } from '@/lib/utils/types'
 import ConfidenceMeter from './ConfidenceMeter'
 import { Calendar, ChevronRight } from 'lucide-react'
 import { CATEGORY_COLORS as CAT_COLORS } from '@/lib/utils/categories'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 const CATEGORY_COLORS: Record<string, string> = {
   ...CAT_COLORS,
@@ -62,7 +63,7 @@ export default function ObjectiveCard({ obj, hasAlert }: { obj: Objective; hasAl
         {obj.target_date && (
           <div className="flex items-center gap-1.5 text-[11px] text-[var(--text3)]">
             <Calendar size={11} />
-            {new Date(obj.target_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            {formatDateOnly(obj.target_date, { month: 'short', day: 'numeric', year: 'numeric' })}
           </div>
         )}
         <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize ${STATUS_STYLES[obj.status] ?? STATUS_STYLES.active}`}>

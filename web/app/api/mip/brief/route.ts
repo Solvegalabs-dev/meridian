@@ -6,6 +6,8 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/server'
 import { getMipBriefPayload } from '@/lib/mip/briefPayload'
+import { loadObjectiveWindow, isEndedState } from '@/lib/objectives/objectiveWindow'
+import { closedSynthesis } from '@/lib/strikeBrief/closedBrief'
 
 export const dynamic = 'force-dynamic'
 
@@ -137,6 +139,11 @@ async function handleStrikeBrief(
   const stripped = rawSynthesis.replace(/ \(T[1-4]: [^)]+\)/g, '').trim()
   const cleanSummary = stripped || rawSynthesis.trim() || null
 
+  // FF-089 P0: an ended hunt shows no windows and states that it is closed.
+  const windowCheck = await loadObjectiveWindow(supabase, objectiveId)
+  const ended = windowCheck && isEndedState(windowCheck.evaluation.state) ? windowCheck.evaluation : null
+  const closed = ended !== null || brief.go_no_go === 'CLOSED'
+
   return NextResponse.json({
     objective_id: objectiveId,
     brief_date: (brief.brief_date as string) ?? today,
@@ -144,13 +151,14 @@ async function handleStrikeBrief(
     confidence_tier: tierStr,
     confidence_pct: confidencePct,
     go_no_go: (brief.go_no_go as string) ?? 'NO-GO',
-    summary: cleanSummary,
+    summary: ended ? closedSynthesis(ended) : cleanSummary,
     lead_signal: (brief.lead_signal as string | null) ?? null,
-    time_windows: timeWindows,
+    time_windows: closed ? [] : timeWindows,
     signal_chips: signalChips,
     sources,
     attribution: 'Powered by Meridian Arc',
     objective: objectiveBlock,
+    ...(windowCheck ? { objective_state: windowCheck.evaluation.state } : {}),
   }, { headers })
 }
 

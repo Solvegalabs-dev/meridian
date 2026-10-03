@@ -21,6 +21,7 @@ import { runPatternDeviationEngine } from '@/lib/sweep/patternDeviation/patternD
 import { getDomainProfile } from '@/lib/sweep/domainBaseline/domainProfileManager'
 import { bindObjectiveToAgents } from '@/lib/agents/agentContextResolver'
 import { generateStrikeBrief } from '@/lib/strikeBrief/strikeBriefGenerator'
+import { applyWindowLifecycleForUser } from '@/lib/objectives/objectiveWindow'
 
 export interface SweepObjectiveResult {
   id: string
@@ -169,6 +170,10 @@ export async function runSweepForUser(
     .eq('id', userId)
     .single()
 
+  // FF-089 P0: transition ended hunts (season closed / trip ended) once, and reactivate
+  // any that a window edit has made current again. Ended objectives are skipped below.
+  const endedObjectiveIds = await applyWindowLifecycleForUser(supabase, userId)
+
   // 3. Load objectives
   let objectivesQuery = supabase
     .from('objectives')
@@ -181,8 +186,9 @@ export async function runSweepForUser(
     objectivesQuery = objectivesQuery.in('id', options.objectiveIds)
   }
 
-  const { data: objectives } = await objectivesQuery
-  if (!objectives || objectives.length === 0) {
+  const { data: loadedObjectives } = await objectivesQuery
+  const objectives = (loadedObjectives ?? []).filter(o => !endedObjectiveIds.has(o.id))
+  if (objectives.length === 0) {
     return { ...empty, userEmail, error: 'No active objectives found' }
   }
 
@@ -504,12 +510,14 @@ export async function runSweepForUser(
     // only (not in the objectives table), so the domain-detected loop above skips them.
     // User_id comes from objective_profiles, not the sweep's userId, so stale objectives
     // rows with wrong user_ids cannot poison the brief authorship.
+    // Ended hunts (lifecycle status 'completed', ended_at set) stay in this list so they get
+    // their deterministic CLOSED brief. The generator makes no model call for them.
     const { data: strikeProfiles } = await supabase
       .from('objective_profiles')
       .select('objective_id, user_id, domain')
       .eq('user_id', userId)
       .eq('org_source', 'strike')
-      .eq('status', 'active')
+      .or('status.eq.active,ended_at.not.is.null')
       .not('objective_id', 'is', null)
 
     console.log('[sweep:strikeBrief] Strike profiles found:', strikeProfiles?.length ?? 0, JSON.stringify(strikeProfiles?.map(sp => sp.objective_id)))
@@ -518,6 +526,7 @@ export async function runSweepForUser(
       // FF-088: bind agents to Strike objectives (hunting + fishing) before brief generation
       await Promise.allSettled(
         strikeProfiles.map(async (sp) => {
+          if (endedObjectiveIds.has(sp.objective_id as string)) return // FF-089 P0: no agent binding for ended hunts
           const spDomain = (sp.domain as string | null) ?? 'elk_hunt'
           await bindObjectiveToAgents(sp.objective_id as string, sp.user_id as string, spDomain).catch(err =>
             console.error(`[sweep:agentBind] bindObjectiveToAgents failed for Strike profile ${sp.objective_id}:`, err)

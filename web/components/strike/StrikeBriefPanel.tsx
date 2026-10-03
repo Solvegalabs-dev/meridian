@@ -74,7 +74,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh }: Props) 
         </div>
         {time_windows.length === 0 ? (
           <div className="bg-slate-800/60 rounded-lg px-4 py-3 text-slate-400 text-sm">
-            Brief generating — check back shortly
+            {brief.go_no_go === 'CLOSED' ? 'Hunt closed — no time windows' : 'Brief generating — check back shortly'}
           </div>
         ) : (
           <div className="space-y-2">

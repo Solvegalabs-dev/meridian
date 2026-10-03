@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { getConfidenceStatus, STATUS_COLORS, STATUS_LABELS } from '@/lib/utils/confidenceStatus'
 import { timeAgo } from '@/lib/utils/timeAgo'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 interface GoalCardObjective {
   id: string
@@ -63,7 +64,7 @@ export default function GoalCard({ objective, newSignalCount }: GoalCardProps) {
         <div className="flex items-center justify-between mt-3 pt-3" style={{ borderTop: '1px solid var(--ov-border)' }}>
           <span className="text-[11px]" style={{ color: 'var(--ov-text-dim)' }}>
             {objective.target_date
-              ? `By ${new Date(objective.target_date).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`
+              ? `By ${formatDateOnly(objective.target_date, { month: 'short', year: 'numeric' })}`
               : 'No target date'}
           </span>
           {newSignalCount > 0 ? (

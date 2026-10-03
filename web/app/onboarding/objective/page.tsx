@@ -6,6 +6,7 @@ import MeridianBeacon from '@/components/brand/MeridianBeacon'
 import { Check, Pencil, X } from 'lucide-react'
 import { getCategoriesForAccount, CATEGORY_COLORS } from '@/lib/utils/categories'
 import { createClient } from '@/lib/supabase/client'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 // Career Transition Template — 5 pre-built draft objectives
 const CAREER_TRANSITION_TEMPLATE: ExtractedGoal[] = [
@@ -525,7 +526,7 @@ function OnboardingObjectivePageInner() {
                         </span>
                         {goal.target_date && (
                           <span className="text-[10px] text-[var(--text3)]">
-                            By {new Date(goal.target_date).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+                            By {formatDateOnly(goal.target_date, { month: 'short', year: 'numeric' })}
                           </span>
                         )}
                       </div>

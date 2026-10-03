@@ -2,6 +2,16 @@ import { notFound } from 'next/navigation'
 import { createServiceClient } from '@/lib/supabase/server'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
 import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
+import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
+import { isEndedWindowState } from '@/lib/objectives/windowState'
+import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
+import {
+  closedSynthesis,
+  endedNoticeLabel,
+  formatBriefDate,
+  resolveEndedNotice,
+  windowOpensBanner,
+} from '@/lib/strikeBrief/closedBrief'
 
 export const dynamic = 'force-dynamic'
 
@@ -61,7 +71,8 @@ async function mapBriefRow(
       go_no_go: 'NO-GO',
       summary: null,
       lead_signal: null,
-      time_windows: collarAugmentation.windows.length > 0
+      // FF-089 P0: an ended hunt (ended_at set) shows no windows, even before its CLOSED row exists.
+      time_windows: collarAugmentation.windows.length > 0 && objective.ended_at == null
         ? collarAugmentation.windows.map(w => ({
             window: w.window, action: w.action, priority: w.priority,
             probability: PRIORITY_TO_PROBABILITY[w.priority], confidence_tier: 'T4',
@@ -183,10 +194,66 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   const brief = await mapBriefRow(briefRow, arcObjectiveId, objective as Record<string, unknown>)
 
+  // FF-089 P0: window state is evaluated at render time. The sweep is not the only trigger.
+  const windowCheck = await loadObjectiveWindow(supabase, arcObjectiveId)
+  const evaluation = windowCheck?.evaluation ?? null
+  const ended = resolveEndedNotice({
+    evaluation,
+    profileStatus: objective.status as string | null,
+    endedReason: objective.ended_reason as string | null,
+  })
+
+  if (ended) {
+    // The hunt is over: no GO verdict, no windows. The stored brief stays as labeled history only.
+    const closedText = evaluation && isEndedWindowState(evaluation.state)
+      ? closedSynthesis(evaluation)
+      : `${endedNoticeLabel(ended)}.`
+    const lastBriefDate = briefRow ? (briefRow.brief_date as string | null) : null
+    const lastGoNoGo = briefRow ? (briefRow.go_no_go as string | null) : null
+    const closedBrief = {
+      ...brief,
+      go_no_go: 'CLOSED',
+      confidence_tier: null,
+      time_windows: [],
+      signal_chips: [],
+      lead_signal: null,
+      summary: null,
+    }
+
+    // Notices sit inside the dark page container, so they never land on the white strip above it.
+    return (
+      <div className="bg-slate-900 text-white">
+        <div className={NOTICE_CLASSES.closed}>
+          {closedText}
+        </div>
+        {briefRow && (
+          <div className={NOTICE_CLASSES.history}>
+            <div className={NOTICE_CLASSES.historyHeading}>
+              Last brief{lastBriefDate ? `, ${formatBriefDate(lastBriefDate)}` : ''}
+              {lastGoNoGo ? ` · ${lastGoNoGo}` : ''}
+            </div>
+            {typeof brief.summary === 'string' && <p className="mt-1 leading-relaxed">{brief.summary}</p>}
+          </div>
+        )}
+        <StrikeBriefClient
+          brief={closedBrief}
+          objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
+        />
+      </div>
+    )
+  }
+
+  // FF-089 P0: "Season opens {date}" / "Trip opens {date}" banner, rendered server-side
+  // so the partner API keeps its single additive field (objective_state).
+  const banner = windowOpensBanner(evaluation)
+
   return (
-    <StrikeBriefClient
-      brief={brief}
-      objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
-    />
+    <div className="bg-slate-900 text-white">
+      {banner && <div className={NOTICE_CLASSES.opens}>{banner}</div>}
+      <StrikeBriefClient
+        brief={brief}
+        objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
+      />
+    </div>
   )
 }
