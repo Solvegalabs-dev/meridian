@@ -46,6 +46,8 @@ describe('CampaignView: ended units', () => {
     expect(html).toContain('Trip ended on Oct 2')
     expect(html).not.toContain('>GO<')
     expect(html).not.toContain('HIGH')
+    // The ended row is muted by colour only: no opacity anywhere, so the label stays fully readable.
+    expect(html).not.toMatch(/opacity-/)
   })
 
   it('shows "Season closed on {date}" for a season-closed unit', () => {

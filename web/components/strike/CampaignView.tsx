@@ -6,6 +6,7 @@ import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
 import { goNoGoKind } from '@/lib/strikeBrief/goNoGo'
 import { endedNoticeLabel, type EndedNotice } from '@/lib/strikeBrief/closedBrief'
 import { formatDateOnly } from '@/lib/utils/dateOnly'
+import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
 
 type UnitProfile = {
   id?: string
@@ -125,19 +126,21 @@ function UnitRow({ unit, isFishing }: { unit: EnrichedUnit; isFishing?: boolean 
   // An ended unit shows only the closed label: no GO, CONDITIONAL or tier badge from a stored brief.
   const ended = unit.ended !== null
   const endedLabel = unit.ended ? endedNoticeLabel(unit.ended) : null
+  const muted = isMissed || ended
 
   return (
     <button
       onClick={() => unit.objective_id && router.push(`/strike/${unit.objective_id}`)}
-      className={`w-full flex items-center gap-3 px-4 py-3 text-left border-b border-slate-700/50 last:border-0 hover:bg-slate-700/40 transition-colors ${isMissed || ended ? 'opacity-50' : ''}`}
+      className="w-full flex items-center gap-3 px-4 py-3 text-left border-b border-slate-700/50 last:border-0 hover:bg-slate-700/40 transition-colors"
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium text-white">{unitName}</span>
-          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${roleBadge(unit.role)}`}>
+          {/* Muted rows dim by colour, never opacity, so the ended label below stays fully readable. */}
+          <span className={muted ? NOTICE_CLASSES.mutedName : 'text-sm font-medium text-white'}>{unitName}</span>
+          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${muted ? 'bg-slate-700 text-slate-400' : roleBadge(unit.role)}`}>
             {formatRole(unit.role)}
           </span>
-          {endedLabel && <span className="text-xs text-slate-400">{endedLabel}</span>}
+          {endedLabel && <span className={NOTICE_CLASSES.endedLabel}>{endedLabel}</span>}
         </div>
         {dateLabel && <div className="text-xs text-slate-400 mt-0.5">{dateLabel}</div>}
         {isMissed && unit.missed_reason && (

@@ -4,6 +4,7 @@ import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
 import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
 import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
 import { isEndedWindowState } from '@/lib/objectives/windowState'
+import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
 import {
   closedSynthesis,
   endedNoticeLabel,
@@ -219,14 +220,15 @@ export default async function StrikePage({ params }: { params: { id: string } })
       summary: null,
     }
 
+    // Notices sit inside the dark page container, so they never land on the white strip above it.
     return (
-      <>
-        <div className="mx-4 mt-4 rounded-lg px-4 py-3 text-sm bg-slate-800 border border-slate-600 text-slate-200">
+      <div className="bg-slate-900 text-white">
+        <div className={NOTICE_CLASSES.closed}>
           {closedText}
         </div>
         {briefRow && (
-          <div className="mx-4 mt-3 rounded-lg px-4 py-3 text-xs bg-slate-800/50 border border-slate-700 text-slate-400">
-            <div>
+          <div className={NOTICE_CLASSES.history}>
+            <div className={NOTICE_CLASSES.historyHeading}>
               Last brief{lastBriefDate ? `, ${formatBriefDate(lastBriefDate)}` : ''}
               {lastGoNoGo ? ` · ${lastGoNoGo}` : ''}
             </div>
@@ -237,7 +239,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
           brief={closedBrief}
           objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
         />
-      </>
+      </div>
     )
   }
 
@@ -246,16 +248,12 @@ export default async function StrikePage({ params }: { params: { id: string } })
   const banner = windowOpensBanner(evaluation)
 
   return (
-    <>
-      {banner && (
-        <div className="mx-4 mt-4 rounded-lg px-4 py-3 text-sm bg-blue-900/30 border border-blue-700/50 text-blue-200">
-          {banner}
-        </div>
-      )}
+    <div className="bg-slate-900 text-white">
+      {banner && <div className={NOTICE_CLASSES.opens}>{banner}</div>}
       <StrikeBriefClient
         brief={brief}
         objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
       />
-    </>
+    </div>
   )
 }
