@@ -9,6 +9,7 @@ import ObjectiveTabs from './ObjectiveTabs'
 import { getConfidenceStatus } from '@/lib/utils/confidenceStatus'
 import AskMeridianLoader from '@/components/AskMeridianLoader'
 import { formatDateOnly } from '@/lib/utils/dateOnly'
+import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
 
 const EXPERIMENT_START = new Date('2026-06-23')
 
@@ -49,11 +50,15 @@ export default async function ObjectiveDetailPage({ params }: { params: { id: st
   ])
 
   // FF-074: hunt location lives on objective_profiles (service client — ownership verified above)
-  const { data: locationProfile } = await createServiceClient()
+  const serviceClient = createServiceClient()
+  const { data: locationProfile } = await serviceClient
     .from('objective_profiles')
-    .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y')
+    .select('id, lat, lon, nws_grid_office, nws_grid_x, nws_grid_y')
     .eq('objective_id', obj.id)
     .maybeSingle()
+
+  // Evaluated at render time (FF-089 P0). Drives the status of the strike card and deep link.
+  const huntWindow = locationProfile ? await loadObjectiveWindow(serviceClient, obj.id) : null
 
   const hasCalendar = (calConnections?.length ?? 0) > 0
 
@@ -128,6 +133,8 @@ export default async function ObjectiveDetailPage({ params }: { params: { id: st
             accountType={(profile as { tier?: string; account_type?: string } | null)?.account_type ?? null}
             smsAlertsEnabled={(profile as { sms_alerts_enabled?: boolean } | null)?.sms_alerts_enabled ?? false}
             location={locationProfile as import('./ObjectiveDetailClient').HuntLocation | null}
+            strikeProfileId={(locationProfile?.id as string | undefined) ?? null}
+            huntWindowState={huntWindow?.evaluation.state ?? null}
             initialSources={(watchSources ?? []) as import('@/components/watchlist/WatchSourcesPanel').WatchSource[]}
             unseenAlertCount={unseenAlertCount ?? 0}
           />

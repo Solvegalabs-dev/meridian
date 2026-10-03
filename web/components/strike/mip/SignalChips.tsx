@@ -19,7 +19,7 @@ export default function SignalChips({ chips }: { chips: Chip[] }) {
           className="shrink-0 rounded-lg px-3 py-2"
           style={{ backgroundColor: 'rgba(255,255,255,0.05)', borderLeft: `3px solid ${STATUS_COLOR[chip.status]}` }}
         >
-          <div className="text-[10px] uppercase tracking-wide whitespace-nowrap" style={{ color: 'var(--ov-text-mid)' }}>
+          <div className="text-[11px] uppercase tracking-wide whitespace-nowrap" style={{ color: 'var(--ov-text-mid)' }}>
             {chip.label}
           </div>
           <div className="text-sm font-semibold text-white whitespace-nowrap">{chip.value}</div>

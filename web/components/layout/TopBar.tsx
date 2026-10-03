@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { LogOut, User, Menu } from 'lucide-react'
@@ -57,6 +58,14 @@ export default function TopBar({
       </div>
 
       <div className="flex items-center gap-2 flex-shrink-0">
+        {/* Strike: the phone brief for hunts. Mission Control had no way in before. */}
+        <Link
+          href="/strike"
+          className="text-[13px] font-medium text-[var(--text2)] hover:text-[var(--text)] px-2 py-1.5 rounded-lg hover:bg-[var(--gray-lt)] transition-colors"
+        >
+          Strike
+        </Link>
+
         <SweepButton lastSweepAt={lastSweepAt} nextSweepAt={nextSweepAt} />
 
         {/* Help & Tour */}
