@@ -130,7 +130,8 @@ async function mapBriefRow(
   return {
     objective_id: arcObjectiveId,
     brief_date: (row.brief_date as string) ?? today,
-    brief_generated_at: new Date().toISOString(),
+    // The stored row's time, so "Updated …" and the stale note describe the brief, not this request.
+    brief_generated_at: (row.created_at as string | null) ?? new Date().toISOString(),
     confidence_tier: tierStr,
     confidence_pct: confidencePct,
     go_no_go: (row.go_no_go as string) ?? 'NO-GO',
@@ -194,6 +195,14 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   const brief = await mapBriefRow(briefRow, arcObjectiveId, objective as Record<string, unknown>)
 
+  const { data: objectiveRow } = await supabase
+    .from('objectives')
+    .select('title')
+    .eq('id', arcObjectiveId)
+    .maybeSingle()
+  const title = (objectiveRow?.title as string | null | undefined)
+    ?? String(objective.taxonomy_key ?? '').replace(/\./g, ' · ')
+
   // FF-089 P0: window state is evaluated at render time. The sweep is not the only trigger.
   const windowCheck = await loadObjectiveWindow(supabase, arcObjectiveId)
   const evaluation = windowCheck?.evaluation ?? null
@@ -238,6 +247,9 @@ export default async function StrikePage({ params }: { params: { id: string } })
         <StrikeBriefClient
           brief={closedBrief}
           objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
+          title={title}
+          hasBrief={briefRow !== null}
+          evaluation={evaluation}
         />
       </div>
     )
@@ -253,6 +265,9 @@ export default async function StrikePage({ params }: { params: { id: string } })
       <StrikeBriefClient
         brief={brief}
         objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
+        title={title}
+        hasBrief={briefRow !== null}
+        evaluation={evaluation}
       />
     </div>
   )

@@ -31,7 +31,7 @@ export default function StrikeHeader({ objectiveTitle, confidenceTier, confidenc
         style={{ backgroundColor: tier.bg }}
       >
         <span className="text-sm font-bold leading-none">{tier.label}</span>
-        <span className="text-[10px] leading-none mt-0.5">{confidencePct}%</span>
+        <span className="text-[11px] leading-none mt-0.5">{confidencePct}%</span>
       </span>
     </div>
   )

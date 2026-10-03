@@ -16,9 +16,11 @@ type Props = {
   objectiveId: string
   objectiveTitle: string
   initialBrief: MipBriefPayload
+  // The full phone brief (verdict, windows, freshness) for the same hunt.
+  fullStrikeHref: string
 }
 
-export default function StrikeBriefView({ objectiveId, objectiveTitle, initialBrief }: Props) {
+export default function StrikeBriefView({ objectiveId, objectiveTitle, initialBrief, fullStrikeHref }: Props) {
   const [brief, setBrief] = useState(initialBrief)
   const [refreshing, setRefreshing] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -48,6 +50,12 @@ export default function StrikeBriefView({ objectiveId, objectiveTitle, initialBr
         <div className="px-4 pt-4">
           <Link href={`/objectives/${objectiveId}`} className="inline-flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--ov-text-mid)' }}>
             <ChevronLeft size={14} /> Back to objective
+          </Link>
+        </div>
+
+        <div className="px-4 pb-2">
+          <Link href={fullStrikeHref} className="inline-flex items-center min-h-[44px] text-sm font-medium text-blue-300 hover:text-blue-200">
+            Open full strike view
           </Link>
         </div>
 

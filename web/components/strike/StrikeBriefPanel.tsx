@@ -2,6 +2,11 @@
 
 import StrikeMapStrip from './StrikeMapStrip'
 import StrikeFooter from './StrikeFooter'
+import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
+import { verdictStyle } from '@/lib/strike/verdictStyles'
+import { isStaleBrief, staleBriefNote, updatedLabel } from '@/lib/strike/briefFreshness'
+import type { WindowState } from '@/lib/objectives/windowState'
+import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 type TimeWindow = {
   window: string
@@ -18,6 +23,7 @@ type StrikeBrief = {
   lead_signal?: string | null
   go_no_go?: string | null
   brief_date?: string | null
+  brief_generated_at?: string | null
   confidence_tier?: string | null
   confidence_pct?: number | null
   time_windows?: TimeWindow[] | null
@@ -31,7 +37,14 @@ type Props = {
   brief: StrikeBrief | null
   isOnline: boolean
   onRefresh: () => void
+  windowState?: WindowState | null
+  // Trip start date (YYYY-MM-DD) for an upcoming hunt, used in the pending copy.
+  tripStart?: string | null
 }
+
+// Opaque backgrounds only (no /60 alpha). Label text is slate-300 (passes 4.5:1 on slate-800).
+const CARD = 'bg-slate-800 rounded-lg px-4 py-3'
+const LABEL = 'text-xs text-slate-300 uppercase tracking-wider mb-2'
 
 const PRIORITY_RAIL: Record<string, string> = {
   high:   'bg-red-500',
@@ -45,14 +58,19 @@ const PRIORITY_TEXT: Record<string, string> = {
   low:    'text-green-400',
 }
 
-export default function StrikeBriefPanel({ brief, isOnline, onRefresh }: Props) {
+export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowState, tripStart }: Props) {
   // time_windows === null means no brief row found (stub). time_windows === [] means
-  // brief exists but movement_windows not yet populated — show content, not full pending.
+  // brief exists but movement_windows not yet populated: show content, not full pending.
   if (!brief || brief.time_windows === null) {
     return (
-      <div className="p-6 text-center text-slate-400 text-sm">
-        <div className="mb-1">Intelligence sweep pending</div>
-        <div className="text-xs text-slate-500">Check back after the next scheduled run</div>
+      <div className="px-4 py-6 space-y-2 text-sm">
+        <div className="text-slate-200 font-medium">Intelligence sweep pending</div>
+        <div className="text-slate-300">The scheduled sweep writes this brief. Check back after the next run.</div>
+        {windowState === 'upcoming' && tripStart && (
+          <div className="text-slate-300">
+            Briefs start when your trip window opens ({formatDateOnly(tripStart)}).
+          </div>
+        )}
       </div>
     )
   }
@@ -61,26 +79,54 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh }: Props) 
   const map_pins     = brief.map_pins ?? []
   const sources      = brief.sources ?? []
   const { lead_signal, summary } = brief
+  const closed = isClosedBrief(brief)
+  const verdict = verdictStyle(brief.go_no_go)
+  const generatedAt = brief.brief_generated_at ?? null
+  const now = new Date()
+  const huntActive = windowState === 'active'
+  const stale = !closed && generatedAt !== null && isStaleBrief(generatedAt, now, huntActive)
 
   return (
     <div className="px-4 py-4 space-y-5">
-      {/* Map strip */}
-      <StrikeMapStrip pins={map_pins} isOnline={isOnline} />
+      {/* VERDICT: first thing on the tab */}
+      {verdict && (
+        <section className="space-y-2">
+          <span
+            className="inline-block text-2xl font-bold leading-none px-3 py-2 rounded-lg"
+            style={{ backgroundColor: verdict.bg, color: verdict.color }}
+          >
+            {verdict.label}
+          </span>
+          {!closed && generatedAt && <div className="text-sm text-slate-300">{updatedLabel(generatedAt)}</div>}
+          {stale && generatedAt && (
+            <div className="rounded-lg px-4 py-3 text-sm font-medium" style={{ backgroundColor: '#451a03', color: '#fde68a' }}>
+              {staleBriefNote(generatedAt, now)}
+            </div>
+          )}
+        </section>
+      )}
 
-      {/* TIME WINDOWS — rendered first */}
+      {/* LEAD SIGNAL */}
+      {lead_signal && !closed && (
+        <section>
+          <div className={LABEL}>Lead signal</div>
+          <div className="bg-blue-900 border border-blue-700 rounded-lg px-4 py-3">
+            <div className="text-blue-100 text-sm font-medium">{lead_signal}</div>
+          </div>
+        </section>
+      )}
+
+      {/* TIME WINDOWS */}
       <section>
-        <div className="text-xs text-slate-400 uppercase tracking-wider mb-2">
-          Time windows
-        </div>
+        <div className={LABEL}>Time windows</div>
         {time_windows.length === 0 ? (
-          <div className="bg-slate-800/60 rounded-lg px-4 py-3 text-slate-400 text-sm">
-            {brief.go_no_go === 'CLOSED' ? 'Hunt closed — no time windows' : 'Brief generating — check back shortly'}
+          <div className={`${CARD} text-slate-300 text-sm`}>
+            {closed ? 'Hunt closed: no time windows' : 'Brief generating: check back shortly'}
           </div>
         ) : (
           <div className="space-y-2">
             {time_windows.map((w, i) => (
-              <div key={i} className="flex items-start gap-3 bg-slate-800/60 rounded-lg p-3">
-                {/* Priority rail */}
+              <div key={i} className="flex items-start gap-3 bg-slate-800 rounded-lg p-3">
                 <div className={`w-1 self-stretch rounded-full flex-shrink-0 ${PRIORITY_RAIL[w.priority]}`} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2">
@@ -89,7 +135,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh }: Props) 
                       <span className={`text-xs font-bold ${PRIORITY_TEXT[w.priority]}`}>
                         {w.priority.toUpperCase()}
                       </span>
-                      <span className="text-xs text-slate-400">
+                      <span className="text-xs text-slate-300">
                         {Math.round(w.probability * 100)}%
                       </span>
                     </div>
@@ -102,22 +148,12 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh }: Props) 
         )}
       </section>
 
-      {/* LEAD SIGNAL — callout above summary */}
-      {lead_signal && (
-        <section>
-          <div className="text-xs text-slate-400 uppercase tracking-wider mb-2">Lead signal</div>
-          <div className="bg-blue-900/40 border border-blue-700/60 rounded-lg px-4 py-3">
-            <div className="text-blue-200 text-sm font-medium">{lead_signal}</div>
-          </div>
-        </section>
-      )}
-
       {/* SUMMARY */}
       {summary && (
         <section>
-          <div className="text-xs text-slate-400 uppercase tracking-wider mb-2">Strike summary</div>
-          <div className="bg-slate-800/60 rounded-lg px-4 py-3">
-            <div className="text-slate-200 text-sm leading-relaxed">{summary}</div>
+          <div className={LABEL}>Strike summary</div>
+          <div className={CARD}>
+            <div className="text-slate-100 text-sm leading-relaxed">{summary}</div>
           </div>
         </section>
       )}
@@ -125,19 +161,18 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh }: Props) 
       {/* SOURCES */}
       {sources.length > 0 && (
         <section>
-          <div className="text-xs text-slate-400 uppercase tracking-wider mb-2">Sources</div>
+          <div className={LABEL}>Sources</div>
           <div className="flex flex-wrap gap-2">
             {sources.map((s, i) => (
-              <span
-                key={i}
-                className="text-xs bg-slate-700 text-slate-300 rounded px-2 py-0.5"
-              >
+              <span key={i} className="text-xs bg-slate-700 text-slate-200 rounded px-2 py-1">
                 {s}
               </span>
             ))}
           </div>
         </section>
       )}
+
+      <StrikeMapStrip pins={map_pins} isOnline={isOnline} />
 
       {/* FOOTER */}
       <StrikeFooter brief={brief as unknown as Record<string, unknown>} onRefresh={onRefresh} />
