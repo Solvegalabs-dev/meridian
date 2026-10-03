@@ -2,6 +2,8 @@ import { notFound } from 'next/navigation'
 import { createServiceClient } from '@/lib/supabase/server'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
 import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
+import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
+import { windowOpensBanner } from '@/lib/strikeBrief/closedBrief'
 
 export const dynamic = 'force-dynamic'
 
@@ -61,7 +63,8 @@ async function mapBriefRow(
       go_no_go: 'NO-GO',
       summary: null,
       lead_signal: null,
-      time_windows: collarAugmentation.windows.length > 0
+      // FF-089 P0: an ended hunt (ended_at set) shows no windows, even before its CLOSED row exists.
+      time_windows: collarAugmentation.windows.length > 0 && objective.ended_at == null
         ? collarAugmentation.windows.map(w => ({
             window: w.window, action: w.action, priority: w.priority,
             probability: PRIORITY_TO_PROBABILITY[w.priority], confidence_tier: 'T4',
@@ -183,10 +186,22 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   const brief = await mapBriefRow(briefRow, arcObjectiveId, objective as Record<string, unknown>)
 
+  // FF-089 P0: "Season opens {date}" / "Trip opens {date}" banner, rendered server-side
+  // so the partner API keeps its single additive field (objective_state).
+  const windowCheck = await loadObjectiveWindow(supabase, arcObjectiveId)
+  const banner = windowOpensBanner(windowCheck?.evaluation ?? null)
+
   return (
-    <StrikeBriefClient
-      brief={brief}
-      objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
-    />
+    <>
+      {banner && (
+        <div className="mx-4 mt-4 rounded-lg px-4 py-3 text-sm bg-blue-900/30 border border-blue-700/50 text-blue-200">
+          {banner}
+        </div>
+      )}
+      <StrikeBriefClient
+        brief={brief}
+        objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
+      />
+    </>
   )
 }

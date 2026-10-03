@@ -1,5 +1,7 @@
 'use client'
 
+import { goNoGoKind } from '@/lib/strikeBrief/goNoGo'
+
 type Props = {
   brief: Record<string, unknown> | null
   onRefresh: () => void
@@ -9,21 +11,25 @@ export default function StrikeFooter({ brief, onRefresh }: Props) {
   const goNoGo = (brief?.go_no_go as string) ?? ''
   const briefDate = (brief?.brief_date as string) ?? ''
   const attribution = (brief?.attribution as string) ?? 'Powered by Meridian Arc'
+  const kind = goNoGoKind(goNoGo)
 
   const goBadgeClass =
-    goNoGo === 'GO'
+    kind === 'go'
       ? 'bg-green-600 text-white'
-      : goNoGo === 'CONDITIONAL'
+      : kind === 'conditional'
       ? 'bg-amber-600 text-white'
+      : kind === 'closed'
+      ? 'bg-slate-600 text-slate-200'
       : 'bg-red-700 text-white'
+  const label = kind === 'closed' ? 'CLOSED' : goNoGo || 'NO-GO'
 
   return (
     <div className="mt-4 pt-3 border-t border-slate-700 flex items-center justify-between gap-3 flex-wrap">
       <div className="flex items-center gap-2">
         <span className={`text-xs font-bold px-2 py-1 rounded ${goBadgeClass}`}>
-          {goNoGo || 'NO-GO'}
+          {label}
         </span>
-        <span className="text-xs text-slate-500">{briefDate} · 0430</span>
+        <span className="text-xs text-slate-500">{kind === 'closed' ? briefDate : `${briefDate} · 0430`}</span>
       </div>
       <div className="flex items-center gap-3">
         <span className="text-xs text-slate-500">{attribution}</span>

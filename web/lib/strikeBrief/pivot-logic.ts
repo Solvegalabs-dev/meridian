@@ -56,19 +56,28 @@ export function countConsecutiveNoGo(trajectory: ConfidenceSnapshot[]): number {
   return count
 }
 
+// Units whose window or season has ended (set by the FF-089 P0 lifecycle).
+// A closed unit is never a pivot target, and a closed primary never pivots.
+const CLOSED_UNIT_STATUSES = ['expired', 'missed', 'completed', 'closed']
+
+export function isClosedUnit(unit: { status: string }): boolean {
+  return CLOSED_UNIT_STATUSES.includes(unit.status)
+}
+
 export function evaluatePivot(
   primary: CampaignUnitWithBrief,
   fallbacks: CampaignUnitWithBrief[]
 ): PivotRecommendation | null {
   if (!primary || !fallbacks.length) return null
+  if (isClosedUnit(primary)) return null
 
   const primaryLatest = getLatestConfidence(primary.confidence_trajectory)
   const primaryTrend  = getTrajectoryTrend(primary.confidence_trajectory)
   const primaryNoGo   = countConsecutiveNoGo(primary.confidence_trajectory)
   const primaryDrop   = primaryLatest - getWeekAgoConfidence(primary.confidence_trajectory)
 
-  // Sort fallbacks by latest confidence descending
-  const ranked = [...fallbacks].sort(
+  // Open fallbacks only, sorted by latest confidence descending
+  const ranked = fallbacks.filter(f => !isClosedUnit(f)).sort(
     (a, b) => getLatestConfidence(b.confidence_trajectory) - getLatestConfidence(a.confidence_trajectory)
   )
 

@@ -4,6 +4,12 @@ import { generateMovementWindows } from './movementPrediction';
 import { getTerrainIntel } from './terrainIntelligence';
 import { evaluatePivot } from './pivot-logic';
 import { FISHING_PROMPT_ADDENDUM, FISHING_WINDOW_INSTRUCTIONS } from '@/lib/strike/config/fishing-synthesis-prompt';
+import { loadObjectiveWindow, isEndedState } from '@/lib/objectives/objectiveWindow';
+import type { WindowEvaluation } from '@/lib/objectives/windowState';
+import { buildClosedBriefFields, formatBriefDate, type StrikeGoNoGo } from './closedBrief';
+
+// Values the model may return. CLOSED is written only by code (closedBrief.ts).
+const MODEL_GO_NO_GO = ['GO', 'NO_GO', 'CONDITIONAL', 'MONITOR'] as const;
 
 // Fishing/aquatic agent keys excluded from elk hunt briefs
 const FISHING_AGENT_EXCLUDE = ['SALMON', 'AQUATIC', 'FISHING', 'BONNEVILLE', 'MCNARY', 'HATCH']
@@ -68,7 +74,7 @@ export type StrikeBriefRow = {
   domain: string;
   synthesis: string;
   lead_signal: string | null;
-  go_no_go: string | null;
+  go_no_go: StrikeGoNoGo | null;
   condition_delta: string | null;
   pattern_match_year: number | null;
   confidence_tier: string | null;
@@ -223,7 +229,9 @@ export async function buildStrikeBriefContext(
 
 // --- Prompt builder ---
 
-export function buildStrikeBriefPrompt(context: StrikeBriefContext, timeWindow: string): string {
+// windowFact: a deterministic date fact from the window evaluator (season or trip
+// not yet open). The model is told it is a hard fact; post-processing enforces it too.
+export function buildStrikeBriefPrompt(context: StrikeBriefContext, timeWindow: string, windowFact?: string): string {
   const isFishing = context.domain === 'fishing';
 
   const huntingWindowInstructions: Record<string, string> = {
@@ -301,7 +309,7 @@ OBJECTIVE: ${context.objectiveTitle}
 DOMAIN: ${context.domain}
 PATTERN MATCH: ${context.patternMatchYear ? `Current conditions match ${context.patternMatchYear} at ${context.patternMatchScore}% similarity` : 'No pattern match'}
 CONFIDENCE TIER: ${context.confidenceTier}
-
+${windowFact ? `HUNT WINDOW (hard fact, overrides any inference): ${windowFact}\n` : ''}
 ${locationBlock ? locationBlock + '\n\n' : ''}SIGNAL BRIEF (from sub-agents):
 ${context.signalBrief}
 
@@ -338,6 +346,95 @@ OUTPUT FORMAT (JSON only, no markdown):
 
 // --- Main generator ---
 
+// --- Window notices (FF-089 P0) ---
+
+type WindowNotice = { fact?: string; prefix: string; capGo: boolean }
+
+// Deterministic text for objectives whose window is not open. Applied in code, so
+// the stored brief says it even if the model did not.
+function windowNoticeFor(evaluation: WindowEvaluation): WindowNotice | null {
+  const { state, detail } = evaluation;
+  if (state === 'season_not_open' && detail.season_start) {
+    const date = formatBriefDate(detail.season_start);
+    return {
+      fact: `the season opens ${date} and has not started. Do not tell the hunter to go today.`,
+      prefix: `Season opens ${date}.`,
+      capGo: true,
+    };
+  }
+  if (state === 'upcoming' && detail.trip_start) {
+    const date = formatBriefDate(detail.trip_start);
+    return {
+      fact: `the hunting trip starts ${date}. Do not tell the hunter to go today.`,
+      prefix: `Trip opens ${date}.`,
+      capGo: true,
+    };
+  }
+  if (state === 'no_dates') {
+    return {
+      prefix: detail.code === 'unparseable_dates'
+        ? 'Hunt dates could not be read; briefs assume you are hunting now.'
+        : 'No hunt dates set; briefs assume you are hunting now.',
+      capGo: false,
+    };
+  }
+  return null;
+}
+
+// Closed hunts: the row is written by code, never by the model. Returns an existing
+// CLOSED row for today if there is one, whatever window it was written under.
+async function writeClosedBrief(
+  supabase: ReturnType<typeof createServiceClient>,
+  objectiveId: string,
+  userId: string,
+  domain: string,
+  today: string,
+  evaluation: WindowEvaluation
+): Promise<StrikeBriefRow> {
+  const { data: existing } = await supabase
+    .from('strike_briefs')
+    .select('*')
+    .eq('objective_id', objectiveId)
+    .eq('brief_date', today)
+    .eq('go_no_go', 'CLOSED')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (existing) return existing as StrikeBriefRow;
+
+  const fields = buildClosedBriefFields(evaluation);
+  const { data: brief, error } = await supabase
+    .from('strike_briefs')
+    .insert({
+      objective_id: objectiveId,
+      user_id: userId,
+      brief_date: today,
+      domain,
+      pattern_match_year: null,
+      agent_hits: [],
+      ...fields,
+    })
+    .select()
+    .single();
+
+  if (error?.code === '23505') {
+    // A non-closed row already holds today's neutral window. CLOSED replaces it.
+    const { data: replaced, error: updErr } = await supabase
+      .from('strike_briefs')
+      .update(fields)
+      .eq('objective_id', objectiveId)
+      .eq('brief_date', today)
+      .eq('time_window', fields.time_window)
+      .select()
+      .single();
+    if (updErr || !replaced) throw new Error(`[StrikeBrief] closed replace failed: ${updErr?.message}`);
+    return replaced as StrikeBriefRow;
+  }
+
+  if (error || !brief) throw new Error(`[StrikeBrief] closed DB write failed: ${error?.message}`);
+  return brief as StrikeBriefRow;
+}
+
 export async function generateStrikeBrief(
   objectiveId: string,
   userId: string
@@ -346,20 +443,36 @@ export async function generateStrikeBrief(
   const timeWindow = getTimeWindow();
   const today = new Date().toISOString().split('T')[0];
 
-  // Return cached brief if one exists for this window today
+  // FF-089 P0: the code decides whether the hunt is over. Closed hunts never reach the model.
+  const windowCheck = await loadObjectiveWindow(supabase, objectiveId);
+  if (windowCheck && isEndedState(windowCheck.evaluation.state)) {
+    return writeClosedBrief(
+      supabase,
+      objectiveId,
+      userId,
+      windowCheck.profile.domain ?? 'elk_hunt',
+      today,
+      windowCheck.evaluation
+    );
+  }
+  const windowNotice = windowCheck ? windowNoticeFor(windowCheck.evaluation) : null;
+
+  // Return cached brief if one exists for this window today.
+  // A CLOSED row is not a cache hit: the hunt has reactivated, so a real brief is due.
   const { data: existing } = await supabase
     .from('strike_briefs')
     .select('*')
     .eq('objective_id', objectiveId)
     .eq('brief_date', today)
     .eq('time_window', timeWindow)
+    .or('go_no_go.is.null,go_no_go.neq.CLOSED')
     .maybeSingle();
 
   if (existing) return existing as StrikeBriefRow;
 
   // Build context
   const context = await buildStrikeBriefContext(objectiveId, userId);
-  const prompt = buildStrikeBriefPrompt(context, timeWindow);
+  const prompt = buildStrikeBriefPrompt(context, timeWindow, windowNotice?.fact);
 
   // Call Sonnet
   const anthropic = getAnthropicClient();
@@ -386,24 +499,38 @@ export async function generateStrikeBrief(
     throw new Error('[StrikeBrief] JSON parse failed');
   }
 
+  // Unknown model values are coerced to MONITOR (never GO), so the CHECK constraint holds.
+  let goNoGo: string | null = null;
+  if (parsed.go_no_go) {
+    const normalized = parsed.go_no_go.trim().toUpperCase().replace(/[\s-]+/g, '_');
+    goNoGo = (MODEL_GO_NO_GO as readonly string[]).includes(normalized) ? normalized : 'MONITOR';
+  }
+  let synthesis = parsed.synthesis ?? raw;
+  if (windowNotice) {
+    if (windowNotice.capGo && (goNoGo === 'GO' || goNoGo === 'CONDITIONAL')) goNoGo = 'MONITOR';
+    synthesis = `${windowNotice.prefix} ${synthesis}`;
+  }
+
+  // Upsert on the unique (objective, date, window) key: the only row it can replace is a
+  // CLOSED row from before the hunt reactivated (the cache check above skips other rows).
   const { data: brief, error } = await supabase
     .from('strike_briefs')
-    .insert({
+    .upsert({
       objective_id: objectiveId,
       user_id: userId,
       brief_date: today,
       time_window: timeWindow,
       domain: context.domain,
-      synthesis: parsed.synthesis ?? raw,
+      synthesis,
       lead_signal: parsed.lead_signal ?? null,
-      go_no_go: parsed.go_no_go ?? null,
+      go_no_go: goNoGo,
       condition_delta: parsed.condition_delta ?? null,
       pattern_match_year: context.patternMatchYear,
       confidence_tier: parsed.confidence_tier ?? context.confidenceTier,
       agent_hits: context.domain === 'fishing'
         ? context.agentHits
         : context.agentHits.filter(h => !isFishingTerm(h)),
-    })
+    }, { onConflict: 'objective_id,brief_date,time_window' })
     .select()
     .single();
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import type { StrikeBriefRow } from '@/lib/strikeBrief/strikeBriefGenerator'
+import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
 
 interface Props {
   objectiveId: string
@@ -13,6 +14,8 @@ const GO_NO_GO_STYLE: Record<string, { label: string; bg: string; color: string 
   NO_GO:       { label: 'NO GO',       bg: 'rgba(200,90,84,.15)',  color: '#C85A54' },
   CONDITIONAL: { label: 'CONDITIONAL', bg: 'rgba(201,162,39,.15)', color: '#C9A227' },
   MONITOR:     { label: 'MONITOR',     bg: 'rgba(96,165,250,.15)', color: '#60a5fa' },
+  // FF-089 P0: hunt is over. Neutral grey, no verdict colour.
+  CLOSED:      { label: 'CLOSED',      bg: 'rgba(148,163,184,.15)', color: '#94a3b8' },
 }
 
 const TIER_COLOR: Record<string, string> = {
@@ -110,17 +113,21 @@ export default function StrikeBriefCard({ objectiveId, domain }: Props) {
   const mtMin = now.getUTCMinutes()
   const mtHHMM = `${String(mtHour).padStart(2, '0')}${String(mtMin).padStart(2, '0')}`
 
-  const windows = brief.movement_windows ?? []
-  const terrain = brief.terrain_intel
+  // FF-089 P0: a closed hunt shows no time window, movement windows or terrain.
+  const closed = isClosedBrief(brief)
+  const windows = closed ? [] : (brief.movement_windows ?? [])
+  const terrain = closed ? null : brief.terrain_intel
 
   return (
     <div className="rounded-xl mt-4 flex flex-col overflow-hidden" style={{ border: '1px solid var(--ov-border-md)', backgroundColor: 'var(--ov-navy-card)' }}>
       {/* Header */}
       <div className="flex items-center gap-2 flex-wrap px-4 pt-4 pb-3" style={{ borderBottom: '1px solid var(--ov-border)' }}>
-        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wider uppercase"
-          style={{ backgroundColor: 'rgba(96,165,250,.15)', color: '#60a5fa', border: '1px solid rgba(96,165,250,.3)' }}>
-          {brief.time_window}
-        </span>
+        {!closed && (
+          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wider uppercase"
+            style={{ backgroundColor: 'rgba(96,165,250,.15)', color: '#60a5fa', border: '1px solid rgba(96,165,250,.3)' }}>
+            {brief.time_window}
+          </span>
+        )}
         {gng && (
           <span className="px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wider uppercase"
             style={{ backgroundColor: gng.bg, color: gng.color }}>

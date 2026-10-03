@@ -37,7 +37,8 @@ export default async function StrikePage() {
       campaign_units (id, objective_id, role, rank, status, missed_reason,
         confidence_trajectory, pivot_recommended, pivot_reason)`)
     .eq('user_id', userId)
-    .eq('status', 'active')
+    // FF-089 P0: closed campaigns stay visible (read-only, sorted last) so the last brief can still be read.
+    .in('status', ['active', 'closed'])
     .order('created_at', { ascending: false })
 
   const allObjectiveIds: string[] = (campaigns ?? []).flatMap(c =>
@@ -50,7 +51,7 @@ export default async function StrikePage() {
     allObjectiveIds.length > 0
       ? supabase
           .from('objective_profiles')
-          .select('id, objective_id, geo, timing, agent_build_status')
+          .select('id, objective_id, geo, timing, agent_build_status, status, ended_reason, ended_at')
           .in('objective_id', allObjectiveIds)
       : Promise.resolve({ data: [] as unknown[] }),
     allObjectiveIds.length > 0
@@ -75,6 +76,7 @@ export default async function StrikePage() {
   const enriched = (campaigns ?? []).map(c => ({
     id: c.id as string,
     name: c.name as string,
+    status: c.status as string,
     taxonomy_key: c.taxonomy_key as string,
     season_year: c.season_year as number | null,
     units: ((c.campaign_units ?? []) as RawUnit[])

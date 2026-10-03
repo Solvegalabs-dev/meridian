@@ -35,7 +35,9 @@ export async function GET(request: Request) {
   const { data: profiles } = await supabase
     .from('objective_profiles')
     .select('objective_id, assigned_agents, state, county')
-    .not('assigned_agents', 'is', null);
+    .not('assigned_agents', 'is', null)
+    // FF-089 P0: ended hunts (season closed / trip ended) are status 'completed'; no agent runs for them.
+    .neq('status', 'completed');
 
   const profilesByAgent = new Map<string, ObjectiveGeoProfile[]>();
   for (const p of (profiles ?? []) as ObjectiveGeoProfile[]) {

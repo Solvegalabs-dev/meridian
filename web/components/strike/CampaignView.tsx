@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
+import { goNoGoKind } from '@/lib/strikeBrief/goNoGo'
 
 type UnitProfile = {
   id?: string
@@ -10,6 +11,8 @@ type UnitProfile = {
   geo?: { unit?: string; state?: string; water_body?: string } | null
   timing?: { trip_start?: string; trip_end?: string } | null
   agent_build_status?: string
+  status?: string
+  ended_reason?: 'trip_ended' | 'season_closed' | null
 } | null
 
 type UnitBrief = {
@@ -33,9 +36,21 @@ type EnrichedUnit = {
 type Campaign = {
   id: string
   name: string
+  status?: string
   taxonomy_key: string
   season_year: number | null
   units: EnrichedUnit[]
+}
+
+// FF-089 P0: a campaign is closed when hunt_campaigns.status is 'closed'.
+// Closed campaigns stay visible, read-only, sorted to the bottom.
+function isClosedCampaign(c: Campaign): boolean {
+  return c.status === 'closed'
+}
+
+// A unit is ended when the lifecycle expired it or its profile is completed by it.
+function isEndedUnit(unit: EnrichedUnit): boolean {
+  return unit.status === 'expired' || unit.profile?.status === 'completed'
 }
 
 function formatRole(role: string): string {
@@ -69,6 +84,9 @@ function tierBadge(tier?: string) {
 
 function gnoBadge(gno?: string) {
   if (!gno) return null
+  if (goNoGoKind(gno) === 'closed') {
+    return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-slate-700 text-slate-300">Closed</span>
+  }
   const g = gno.toUpperCase()
   const cls = g === 'GO'
     ? 'bg-emerald-600 text-white'
@@ -100,11 +118,15 @@ function UnitRow({ unit, isFishing }: { unit: EnrichedUnit; isFishing?: boolean 
   const dates = formatDates(unit.profile?.timing)
   const dateLabel = isFishing && dates ? `Season window: ${dates}` : dates
   const isMissed = unit.status === 'missed' || unit.role?.toUpperCase() === 'MISSED'
+  const ended = isEndedUnit(unit)
+  const endedLabel = ended
+    ? unit.profile?.ended_reason === 'season_closed' ? 'Season closed' : 'Trip ended'
+    : null
 
   return (
     <button
       onClick={() => unit.objective_id && router.push(`/strike/${unit.objective_id}`)}
-      className={`w-full flex items-center gap-3 px-4 py-3 text-left border-b border-slate-700/50 last:border-0 hover:bg-slate-700/40 transition-colors ${isMissed ? 'opacity-50' : ''}`}
+      className={`w-full flex items-center gap-3 px-4 py-3 text-left border-b border-slate-700/50 last:border-0 hover:bg-slate-700/40 transition-colors ${isMissed || ended ? 'opacity-50' : ''}`}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
@@ -112,6 +134,7 @@ function UnitRow({ unit, isFishing }: { unit: EnrichedUnit; isFishing?: boolean 
           <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${roleBadge(unit.role)}`}>
             {formatRole(unit.role)}
           </span>
+          {endedLabel && <span className="text-xs text-slate-400">{endedLabel}</span>}
         </div>
         {dateLabel && <div className="text-xs text-slate-400 mt-0.5">{dateLabel}</div>}
         {isMissed && unit.missed_reason && (
@@ -172,7 +195,7 @@ export default function CampaignView({ campaigns }: { campaigns: Campaign[] }) {
             </Link>
           </div>
         ) : (
-          campaigns.map(campaign => {
+          [...campaigns].sort((a, b) => Number(isClosedCampaign(a)) - Number(isClosedCampaign(b))).map(campaign => {
             const isFishing = isFishingTaxonomyKey(campaign.taxonomy_key ?? '')
             const pivotUnits = campaign.units.filter(u => u.pivot_recommended)
             return (

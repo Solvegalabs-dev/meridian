@@ -3,6 +3,8 @@
 // instead of self-fetching the API route.
 import { createServiceClient } from '@/lib/supabase/server'
 import { getCollarBriefAugmentation, parseTempF } from '@/lib/swarm/agents/outdoor/collarCalibration'
+import { loadObjectiveWindow, isEndedState } from '@/lib/objectives/objectiveWindow'
+import { closedSynthesis } from '@/lib/strikeBrief/closedBrief'
 
 export type SignalChip = { label: string; value: string; status: 'ok' | 'warn' | 'critical' }
 export type TimeWindow = { window: string; action: string; priority: 'high' | 'medium' | 'low' }
@@ -19,6 +21,8 @@ export type MipBriefPayload = {
   map_pins: MapPin[]
   sources: string[]
   attribution: 'Powered by Meridian Arc'
+  // Additive (FF-089 P0). Window state: active | upcoming | season_not_open | season_closed | trip_ended | no_dates
+  objective_state?: string
 }
 
 export function pendingBriefPayload(objectiveId: string): MipBriefPayload {
@@ -173,8 +177,15 @@ export async function getMipBriefPayload(
     .limit(1)
     .maybeSingle()
 
+  // FF-089 P0: an ended hunt (season closed / trip ended) returns its closed state,
+  // no time windows, and no collar windows. objective_state is additive (partner API).
+  const windowCheck = await loadObjectiveWindow(supabase, nativeObjectiveId)
+  const ended = windowCheck && isEndedState(windowCheck.evaluation.state) ? windowCheck.evaluation : null
+  const briefClosed = (brief?.go_no_go as string | null | undefined) === 'CLOSED'
+  const closed = ended !== null || briefClosed
+
   const timeWindows: TimeWindow[] = []
-  if (brief) {
+  if (brief && !closed) {
     type MovementWindow = { time?: string; reason?: string; probability?: number }
     const mw = brief.movement_windows as MovementWindow[] | null
     if (Array.isArray(mw) && mw.length > 0) {
@@ -195,7 +206,7 @@ export async function getMipBriefPayload(
     }
   }
 
-  if (!sweep && !brief) {
+  if (!sweep && !brief && !ended) {
     return { payload: pendingBriefPayload(objectiveId), notFound: false }
   }
 
@@ -233,12 +244,14 @@ export async function getMipBriefPayload(
     profile?.user_id as string | undefined,
     parseTempF(tempChip?.value)
   )
-  for (const w of collarAugmentation.windows) {
-    timeWindows.push(w)
+  if (!closed) {
+    for (const w of collarAugmentation.windows) {
+      timeWindows.push(w)
+    }
   }
   // CC-BY requires attribution — de-duplicated so it doesn't double up if
   // another source string already happens to match (Fix 4).
-  if (collarAugmentation.credit && !sources.includes(collarAugmentation.credit)) {
+  if (!closed && collarAugmentation.credit && !sources.includes(collarAugmentation.credit)) {
     sources.push(collarAugmentation.credit)
   }
 
@@ -246,17 +259,25 @@ export async function getMipBriefPayload(
     ? confidenceTier(confidencePct)
     : briefTierToInt((brief?.confidence_tier as string | null) ?? null)
 
+  // A closed hunt states that it is closed. The sweep summary is not shown for it.
+  const summary = ended
+    ? closedSynthesis(ended)
+    : briefClosed
+    ? (brief?.synthesis as string)
+    : (sweep?.summary as string) ?? (brief?.synthesis as string) ?? 'Intelligence sweep pending — check back after next scheduled run.'
+
   const payload: MipBriefPayload = {
     objective_id: objectiveId,
     brief_generated_at: new Date().toISOString(),
     confidence_tier: derivedTier,
     confidence_pct: confidencePct,
-    summary: (sweep?.summary as string) ?? (brief?.synthesis as string) ?? 'Intelligence sweep pending — check back after next scheduled run.',
+    summary,
     signal_chips: signalChips,
     time_windows: timeWindows,
     map_pins: mapPins,
     sources,
     attribution: 'Powered by Meridian Arc',
+    ...(windowCheck ? { objective_state: windowCheck.evaluation.state } : {}),
   }
 
   return { payload, notFound: false }
