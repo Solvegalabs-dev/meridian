@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
+import { normalizeHuntCode } from '@/lib/hunts/huntCode'
 
 const TAXONOMY_OPTIONS = [
   // Hunting
@@ -34,6 +35,7 @@ export default function StrikeNewPage() {
     taxonomy_key: 'elk.bull.archery',
     state: '',
     unit: '',
+    hunt_number: '',
     water_body: '',
     river_miles: '',
     access_type: '',
@@ -67,6 +69,13 @@ export default function StrikeNewPage() {
         if (form.access_type) geo.access_type = form.access_type
       } else {
         if (form.unit) geo.unit = form.unit
+        // FF-091: a valid UDWR hunt number is stored as geo.unit and sets the hunt code on save.
+        // It is Utah-only, so an empty state becomes UT.
+        const code = normalizeHuntCode(form.hunt_number)
+        if (code) {
+          geo.unit = code
+          if (!form.state) geo.state = 'UT'
+        }
       }
       if (form.lat) geo.lat = parseFloat(form.lat)
       if (form.lon) geo.lon = parseFloat(form.lon)
@@ -202,6 +211,19 @@ export default function StrikeNewPage() {
                 onChange={e => set('unit', e.target.value)}
                 className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-500"
               />
+            </div>
+          )}
+          {!isFishing && (
+            <div className="mt-2 space-y-1">
+              <input
+                type="text"
+                placeholder="Hunt number (optional, e.g. EA2004)"
+                value={form.hunt_number}
+                onChange={e => set('hunt_number', e.target.value.toUpperCase().replace(/\s+/g, ''))}
+                maxLength={6}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-500"
+              />
+              <p className="text-xs text-slate-300">Your Utah DWR hunt number. You can add or change it on the Prep tab later.</p>
             </div>
           )}
           <div className="grid grid-cols-2 gap-2 mt-2">

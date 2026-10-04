@@ -12,7 +12,7 @@
 // Profiles that were completed by hand (ended_at null) are never reactivated here.
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { evaluateWindowState, localDateIn, type WindowEvaluation, type TripTiming } from './windowState'
-import { findSeasonRows, matchSeasonRows, objectiveTimezone, parseTaxonomyKey, type HuntSeasonRow } from './seasonMatcher'
+import { findSeasonRows, matchSeasonRows, objectiveTimezone, parseTaxonomyKey, seasonYearsFor, type HuntSeasonRow } from './seasonMatcher'
 
 export type EndedReason = 'trip_ended' | 'season_closed'
 
@@ -27,13 +27,14 @@ export type ObjectiveWindowProfile = {
   lat: number | null
   lon: number | null
   hunt_unit_id: string | null
+  hunt_code?: string | null
   domain: string | null
   ended_at: string | null
   ended_reason: EndedReason | null
 }
 
 export const PROFILE_WINDOW_COLUMNS =
-  'id, objective_id, user_id, status, timing, taxonomy_key, state, lat, lon, hunt_unit_id, domain, ended_at, ended_reason'
+  'id, objective_id, user_id, status, timing, taxonomy_key, state, lat, lon, hunt_unit_id, hunt_code, domain, ended_at, ended_reason'
 
 export function isEndedState(state: WindowEvaluation['state']): boolean {
   return state === 'season_closed' || state === 'trip_ended'
@@ -93,13 +94,13 @@ export async function evaluateProfilesWindow(
   const local = profiles.map(profile => {
     const tz = objectiveTimezone(profile)
     const today = localDateIn(now, tz)
-    // Season year = today's calendar year. Same January quirk as findSeasonRows (seasonMatcher.ts).
     return { profile, tz, today, year: Number(today.slice(0, 4)) }
   })
 
   const states = Array.from(new Set(local.map(l => l.profile.state?.toUpperCase()).filter((s): s is string => !!s)))
   const species = Array.from(new Set(local.map(l => parseTaxonomyKey(l.profile.taxonomy_key)?.species).filter((s): s is string => !!s)))
-  const years = Array.from(new Set(local.map(l => l.year)))
+  // Both season years for every profile's today (see seasonYearsFor).
+  const years = Array.from(new Set(local.flatMap(l => seasonYearsFor(l.today))))
 
   let rows: HuntSeasonRow[] = []
   if (states.length > 0 && species.length > 0) {
@@ -114,7 +115,7 @@ export async function evaluateProfilesWindow(
   }
 
   for (const l of local) {
-    const seasonRows = matchSeasonRows(l.profile, rows, l.year)
+    const seasonRows = matchSeasonRows(l.profile, rows, l.year, l.today)
     result.set(l.profile.objective_id, evaluateWindowState({
       timing: l.profile.timing,
       seasonRows,

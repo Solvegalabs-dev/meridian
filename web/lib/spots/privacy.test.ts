@@ -31,9 +31,14 @@ describe('MIP payload privacy', () => {
   })
 })
 
-describe('no coordinates in logs or errors from the spot code', () => {
-  it('new spot modules do not log latitude or longitude', () => {
-    const files = filesUnder(join(ROOT, 'lib', 'spots')).filter(f => !f.endsWith('.test.ts') && !f.endsWith('testDb.ts'))
+describe('no coordinates in logs or errors from the spot and hunt code', () => {
+  it('new spot and hunt modules do not log latitude or longitude', () => {
+    const files = [
+      ...filesUnder(join(ROOT, 'lib', 'spots')),
+      ...filesUnder(join(ROOT, 'lib', 'hunts')),
+      join(ROOT, 'app', 'api', 'hunts', 'lookup', 'route.ts'),
+      join(ROOT, 'app', 'api', 'objectives', '[id]', 'hunt-code', 'route.ts'),
+    ].filter(f => !f.endsWith('.test.ts') && !f.endsWith('testDb.ts'))
     for (const f of files) {
       const src = readFileSync(f, 'utf8')
       const logLines = src.split('\n').filter(l => /console\.(log|error|warn)/.test(l))

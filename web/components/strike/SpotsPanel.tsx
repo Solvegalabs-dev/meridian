@@ -16,6 +16,7 @@ export type SpotView = {
   county: string | null
   state: string | null
   hunt_unit_id: string | null
+  inside_boundary?: boolean | null
 }
 
 export type SpotsState = {
@@ -36,13 +37,21 @@ export function atLimit(count: number, limit: number | null): boolean {
   return limit != null && count >= limit
 }
 
+// Warning text when a pin falls outside the objective's hunt boundary. A warning, never a block.
+export function boundaryWarning(spot: SpotView, huntCode: string | null | undefined): string | null {
+  if (!huntCode || spot.inside_boundary !== false) return null
+  return `This spot is outside the ${huntCode} boundary. Strike briefs will still use these coordinates.`
+}
+
 // Presentational: the list, header and limit state. Container state lives in SpotsPanel.
 export function SpotsView({
   state,
+  huntCode,
   onAdd,
   onMakeActive,
 }: {
   state: SpotsState
+  huntCode?: string | null
   onAdd?: () => void
   onMakeActive?: (spot: SpotView) => void
 }) {
@@ -62,6 +71,9 @@ export function SpotsView({
               <div className="text-slate-300 text-xs">{spot.lat.toFixed(4)}, {spot.lon.toFixed(4)}</div>
               {(spot.county || spot.hunt_unit_id) && (
                 <div className="text-slate-300 text-xs">{[spot.county, spot.hunt_unit_id].filter(Boolean).join(' · ')}</div>
+              )}
+              {boundaryWarning(spot, huntCode) && (
+                <p className="mt-1 text-sm text-amber-200">{boundaryWarning(spot, huntCode)}</p>
               )}
             </div>
             {spot.is_active ? (
@@ -200,7 +212,7 @@ export function SpotForm({
 }
 
 // Container: loads spots, adds, edits, deletes and switches the active spot.
-export default function SpotsPanel({ objectiveId }: { objectiveId: string }) {
+export default function SpotsPanel({ objectiveId, huntCode = null }: { objectiveId: string; huntCode?: string | null }) {
   const base = `/api/objectives/${objectiveId}/spots`
   const [state, setState] = useState<SpotsState | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -286,6 +298,7 @@ export default function SpotsPanel({ objectiveId }: { objectiveId: string }) {
     <div className="space-y-3">
       <SpotsView
         state={state}
+        huntCode={huntCode}
         onAdd={() => { setAdding(true); setEditing(null) }}
         onMakeActive={spot => { setSheet(spot); setSheetError(null) }}
       />

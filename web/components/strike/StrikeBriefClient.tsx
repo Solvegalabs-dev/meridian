@@ -126,6 +126,7 @@ export default function StrikeBriefClient({
 
       <StrikeHeader
         title={title}
+        huntCode={(objective.hunt_code as string | null | undefined) ?? null}
         taxonomyKey={objective.taxonomy_key ?? ''}
         evaluation={evaluation}
         hasBrief={briefPresent}

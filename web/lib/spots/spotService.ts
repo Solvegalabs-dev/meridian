@@ -4,6 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { FullGeography } from '@/lib/geo/locationResolver'
 import { maxSpotsForUser, limitForResponse } from './limits'
 import { validateCoordinates } from './coordinates'
+import { boundaryFlagForObjective } from '@/lib/hunts/boundary'
 import {
   SpotError,
   clearSpotFromProfile,
@@ -13,7 +14,7 @@ import {
 
 export const NAME_MAX = 40
 export const PRIMARY_SPOT_NAME = 'Primary spot'
-const SPOT_COLUMNS = 'id, objective_id, name, lat, lon, is_active, sort_order, geo_snapshot, geo_resolved_at, hunt_unit_id, activated_at, created_at'
+const SPOT_COLUMNS = 'id, objective_id, name, lat, lon, is_active, sort_order, geo_snapshot, geo_resolved_at, hunt_unit_id, inside_boundary, activated_at, created_at'
 
 export type SpotRow = {
   id: string
@@ -26,6 +27,7 @@ export type SpotRow = {
   geo_snapshot: Partial<FullGeography> | null
   geo_resolved_at: string | null
   hunt_unit_id: string | null
+  inside_boundary: boolean | null
   activated_at: string | null
   created_at: string
 }
@@ -106,6 +108,7 @@ export async function createSpot(
 
   const makeActive = input.makeActive === true || existing.length === 0
   const { geo, resolvedAt } = await resolveSpotGeo(lat, lon, {}, now)
+  const insideBoundary = await boundaryFlagForObjective(service, input.objectiveId, lat, lon)
 
   const { data: inserted, error } = await service
     .from('objective_spots')
@@ -120,6 +123,7 @@ export async function createSpot(
       geo_snapshot: geo,
       geo_resolved_at: resolvedAt,
       hunt_unit_id: geo.hunt_unit_id ?? null,
+      inside_boundary: insideBoundary,
     })
     .select(SPOT_COLUMNS)
     .single()
@@ -154,6 +158,9 @@ export async function activateSpot(
   }
 
   await activateInDatabase(service, objectiveId, spot.id)
+  const insideBoundary = await boundaryFlagForObjective(service, objectiveId, spot.lat, spot.lon)
+  const { error: flagError } = await service.from('objective_spots').update({ inside_boundary: insideBoundary }).eq('id', spot.id)
+  if (flagError) throw new Error(flagError.message)
   const location = await writeSpotToProfile(service, objectiveId, { lat: spot.lat, lon: spot.lon, geo })
   return { spotId: spot.id, reused, location }
 }
@@ -179,6 +186,10 @@ export async function updateSpot(
     : { lat: spot.lat, lon: spot.lon }
   const moved = next.lat !== Number(spot.lat) || next.lon !== Number(spot.lon)
   if (moved || coordsGiven) Object.assign(patch, { lat: next.lat, lon: next.lon })
+
+  if (moved || options.forceResolve) {
+    patch.inside_boundary = await boundaryFlagForObjective(service, objectiveId, next.lat, next.lon)
+  }
 
   if (spot.is_active && (moved || options.forceResolve)) {
     const { geo, resolvedAt } = await resolveSpotGeo(next.lat, next.lon, {}, now)
@@ -250,6 +261,7 @@ export function spotView(spot: SpotRow) {
     county: (snap.county as string | null | undefined) ?? null,
     state: (snap.state as string | null | undefined) ?? null,
     hunt_unit_id: spot.hunt_unit_id,
+    inside_boundary: spot.inside_boundary ?? null,
     activated_at: spot.activated_at,
   }
 }

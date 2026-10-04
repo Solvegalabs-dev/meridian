@@ -6,6 +6,7 @@ import { waitUntil } from '@vercel/functions'
 import { createServiceClient } from '@/lib/supabase/server'
 import { resolveAgentBundle } from '@/lib/swarm/objectiveRouter'
 import { resolveFullGeography } from '@/lib/geo/locationResolver'
+import { normalizeHuntCode } from '@/lib/hunts/huntCode'
 
 export const dynamic = 'force-dynamic'
 
@@ -71,6 +72,10 @@ export async function POST(request: NextRequest) {
 
   const { lat, lon } = geo
 
+  // FF-091: the season matcher reads the state and hunt number columns, not the geo json.
+  const huntCode = normalizeHuntCode(geo.unit)
+  const stateColumn = typeof geo.state === 'string' && geo.state.trim() ? geo.state.trim().toUpperCase() : null
+
   // Insert objective_profiles row
   const { data: objProfile, error: insertError } = await supabase
     .from('objective_profiles')
@@ -91,6 +96,8 @@ export async function POST(request: NextRequest) {
       status: 'active',
       ...(lat != null ? { lat } : {}),
       ...(lon != null ? { lon } : {}),
+      ...(stateColumn ? { state: stateColumn } : {}),
+      ...(huntCode ? { hunt_code: huntCode } : {}),
     })
     .select('id')
     .single()
