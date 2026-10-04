@@ -5,6 +5,7 @@ import StrikeFooter from './StrikeFooter'
 import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
 import { verdictStyle } from '@/lib/strike/verdictStyles'
 import { isStaleBrief, staleBriefNote, updatedLabel } from '@/lib/strike/briefFreshness'
+import type { BriefRefreshResult } from '@/lib/strike/briefRefresh'
 import { PRESEASON_CAPTION } from '@/lib/strike/windowStatus'
 import type { WindowState } from '@/lib/objectives/windowState'
 import { formatDateOnly } from '@/lib/utils/dateOnly'
@@ -37,7 +38,7 @@ type StrikeBrief = {
 type Props = {
   brief: StrikeBrief | null
   isOnline: boolean
-  onRefresh: () => void
+  onRefresh: () => Promise<BriefRefreshResult>
   windowState?: WindowState | null
   // Trip start date (YYYY-MM-DD) for an upcoming hunt, used in the pending copy.
   tripStart?: string | null

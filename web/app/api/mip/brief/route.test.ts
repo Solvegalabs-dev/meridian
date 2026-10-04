@@ -54,7 +54,7 @@ describe('GET /api/mip/brief partner_key=strike: brief_generated_at', () => {
     }
     const json = await (await get()).json()
     const html = renderToStaticMarkup(
-      createElement(StrikeBriefPanel, { brief: json, isOnline: true, onRefresh: () => {}, windowState: 'active' })
+      createElement(StrikeBriefPanel, { brief: json, isOnline: true, onRefresh: async () => 'same' as const, windowState: 'active' })
     )
     expect(html).not.toContain('just now')
     expect(html).toMatch(/Updated 1d ago \(/)

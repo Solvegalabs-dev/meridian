@@ -16,12 +16,16 @@ export function staleBriefNote(generatedAt: string, now: Date): string {
   return `This brief is ${Math.floor(briefAgeHours(generatedAt, now))} h old; the next sweep updates it.`
 }
 
-// "Updated 3h ago (Oct 3, 6:15 AM)": relative time, then the viewer's local date and time.
-export function updatedLabel(generatedAt: string): string {
-  const local = new Date(generatedAt).toLocaleString('en-US', {
+// The viewer's local date and time, e.g. "Oct 3, 6:15 AM".
+export function briefTimeLabel(generatedAt: string): string {
+  return new Date(generatedAt).toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   })
-  return `Updated ${timeAgo(generatedAt)} (${local})`
+}
+
+// "Updated 3h ago (Oct 3, 6:15 AM)": relative time, then the viewer's local date and time.
+export function updatedLabel(generatedAt: string): string {
+  return `Updated ${timeAgo(generatedAt)} (${briefTimeLabel(generatedAt)})`
 }
 
 // The stored brief's time, so a refresh does not reset "Updated" to the request time.

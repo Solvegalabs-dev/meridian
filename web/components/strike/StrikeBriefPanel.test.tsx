@@ -23,7 +23,7 @@ function brief(over: Record<string, unknown> = {}) {
 }
 
 function render(props: Partial<Parameters<typeof StrikeBriefPanel>[0]> & { brief: Record<string, unknown> | null }) {
-  return renderToStaticMarkup(<StrikeBriefPanel isOnline onRefresh={() => {}} windowState="active" {...props} />)
+  return renderToStaticMarkup(<StrikeBriefPanel isOnline onRefresh={async () => 'same' as const} windowState="active" {...props} />)
 }
 
 describe('StrikeBriefPanel', () => {

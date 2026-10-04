@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import StrikeHeader from './StrikeHeader'
@@ -13,7 +13,7 @@ import OfflineBanner from './OfflineBanner'
 import { useStrikeCache } from '@/hooks/useStrikeCache'
 import type { WindowEvaluation } from '@/lib/objectives/windowState'
 import { defaultStrikeTab, type StrikeTab } from '@/lib/strike/defaultTab'
-import { hasStoredBrief } from '@/lib/strike/briefFreshness'
+import { checkForNewerBrief, type BriefRefreshResult } from '@/lib/strike/briefRefresh'
 
 // "Brief" (not "Strike Brief") so five tabs fit at 375 px without truncation.
 const TAB_LABELS: Record<StrikeTab, string> = {
@@ -78,20 +78,26 @@ export default function StrikeBriefClient({
     }
   }, [])
 
-  const refresh = useCallback(async () => {
-    if (!navigator.onLine) return
-    try {
-      const res = await fetch(
-        `/api/mip/brief?objective_id=${arcObjectiveId}&partner_key=strike`
-      )
-      const fresh = await res.json()
-      setBrief(fresh)
-      setBriefPresent(hasStoredBrief(fresh))
-    } catch {}
+  // Read by refresh() so it compares against the brief on screen without re-creating the callback on every update.
+  const briefRef = useRef(brief)
+  useEffect(() => { briefRef.current = brief }, [brief])
+
+  const refresh = useCallback(async (): Promise<BriefRefreshResult> => {
+    const outcome = await checkForNewerBrief({
+      objectiveId: arcObjectiveId,
+      currentGeneratedAt: (briefRef.current?.brief_generated_at as string | null) ?? null,
+      online: navigator.onLine,
+    })
+    // Only a validated, newer brief replaces the one on screen. Errors and "same" leave it alone.
+    if (outcome.brief) {
+      setBrief(outcome.brief)
+      setBriefPresent(true)
+    }
+    return outcome.result
   }, [arcObjectiveId])
 
   useEffect(() => {
-    const interval = setInterval(refresh, 30 * 60 * 1000)
+    const interval = setInterval(() => { void refresh() }, 30 * 60 * 1000)
     return () => clearInterval(interval)
   }, [refresh])
 
