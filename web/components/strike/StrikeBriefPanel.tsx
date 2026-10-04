@@ -91,8 +91,8 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
 
   return (
     <div className="px-4 py-4 space-y-5">
-      {/* VERDICT: first thing on the tab */}
-      {verdict && (
+      {/* VERDICT: first thing on the tab. A closed hunt shows its message in the page notice, not a pill. */}
+      {verdict && !closed && (
         <section className="space-y-2">
           <span
             className="inline-block text-2xl font-bold leading-none px-3 py-2 rounded-lg"
@@ -120,13 +120,12 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
         </section>
       )}
 
-      {/* TIME WINDOWS */}
+      {/* TIME WINDOWS. Hidden on a closed hunt: it has none, and the page notice says so. */}
+      {!closed && (
       <section>
         <div className={LABEL}>Time windows</div>
         {time_windows.length === 0 ? (
-          <div className={`${CARD} text-slate-300 text-sm`}>
-            {closed ? 'Hunt closed: no time windows' : 'Brief generating: check back shortly'}
-          </div>
+          <div className={`${CARD} text-slate-300 text-sm`}>Brief generating: check back shortly</div>
         ) : (
           <div className="space-y-2">
             {time_windows.map((w, i) => (
@@ -151,6 +150,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
           </div>
         )}
       </section>
+      )}
 
       {/* SUMMARY */}
       {summary && (
@@ -179,7 +179,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
       <StrikeMapStrip pins={map_pins} isOnline={isOnline} />
 
       {/* FOOTER */}
-      <StrikeFooter brief={brief as unknown as Record<string, unknown>} onRefresh={onRefresh} />
+      <StrikeFooter brief={brief as unknown as Record<string, unknown>} onRefresh={onRefresh} showRefresh={!closed} />
     </div>
   )
 }

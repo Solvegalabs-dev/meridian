@@ -35,7 +35,7 @@ export default function StrikeHeader({ title, taxonomyKey, evaluation, hasBrief,
     <div className="px-4 py-3 border-b border-slate-700 space-y-2">
       <div className="min-w-0">
         <div className="text-xs text-slate-300 uppercase tracking-wider">Strike Brief</div>
-        <h1 className="text-white font-semibold text-lg leading-tight truncate">{title}</h1>
+        <h1 className="text-white font-semibold text-lg leading-tight line-clamp-2 break-words">{title}</h1>
         <div className="text-xs text-slate-300 truncate">{taxonomyKey.replace(/\./g, ' · ')}</div>
       </div>
 

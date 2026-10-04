@@ -55,18 +55,28 @@ describe('StrikeBriefPanel', () => {
     expect(html).not.toContain('h old;')
   })
 
-  it('closed brief: neutral CLOSED pill, no windows, no tier, no lead signal, no summary', () => {
+  it('closed hunt: no CLOSED pill, no closed time-window card, no windows, no tier, no lead signal, no summary', () => {
     const html = render({
       brief: brief({ go_no_go: 'CLOSED', confidence_tier: null, time_windows: [], lead_signal: null, summary: null, sources: [] }),
       windowState: 'trip_ended',
     })
-    expect(html).toContain('>CLOSED<')
-    expect(html).toContain('Hunt closed: no time windows')
+    expect(html).not.toContain('>CLOSED<')
+    expect(html).not.toContain('Hunt closed: no time windows')
+    expect(html).not.toContain('Time windows')
     expect(html).not.toContain('Updated ')
     expect(html).not.toContain('0600–1100')
     expect(html).not.toContain('Lead signal')
     expect(html).not.toContain('>T1<')
     expect(html).not.toContain('>GO<')
+  })
+
+  it('closed hunt: no Refresh control, but keeps the date and attribution line', () => {
+    const html = render({
+      brief: brief({ go_no_go: 'CLOSED', confidence_tier: null, time_windows: [], summary: null, sources: [], brief_date: '2026-10-03' }),
+      windowState: 'season_closed',
+    })
+    expect(html).not.toContain('Check for newer brief')
+    expect(html).toContain('2026-10-03 · Powered by Meridian Arc')
   })
 
   it('pending state, upcoming hunt: says when briefs start', () => {

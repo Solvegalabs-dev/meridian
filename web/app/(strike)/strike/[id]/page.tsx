@@ -5,10 +5,11 @@ import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCal
 import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
 import { isEndedWindowState } from '@/lib/objectives/windowState'
 import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
+import { cleanSynthesis, lastHuntHeading, selectLastHuntBrief } from '@/lib/strike/lastHuntBrief'
+import LastHuntBrief from '@/components/strike/LastHuntBrief'
 import {
   closedSynthesis,
   endedNoticeLabel,
-  formatBriefDate,
   resolveEndedNotice,
   windowOpensBanner,
 } from '@/lib/strikeBrief/closedBrief'
@@ -123,9 +124,7 @@ async function mapBriefRow(
     ...(collarAugmentation.credit ? [collarAugmentation.credit] : []),
   ]))
 
-  const rawSynthesis = (row.synthesis as string) ?? ''
-  const stripped = rawSynthesis.replace(/ \(T[1-4]: [^)]+\)/g, '').trim()
-  const cleanSummary = stripped || rawSynthesis.trim() || null
+  const cleanSummary = cleanSynthesis(row.synthesis as string | null)
 
   return {
     objective_id: arcObjectiveId,
@@ -217,8 +216,15 @@ export default async function StrikePage({ params }: { params: { id: string } })
     const closedText = evaluation && isEndedWindowState(evaluation.state)
       ? closedSynthesis(evaluation)
       : `${endedNoticeLabel(ended)}.`
-    const lastBriefDate = briefRow ? (briefRow.brief_date as string | null) : null
-    const lastGoNoGo = briefRow ? (briefRow.go_no_go as string | null) : null
+    // History is the newest real verdict. The CLOSED row is the end marker, so it is never shown here.
+    const { data: historyRows } = await supabase
+      .from('strike_briefs')
+      .select('brief_date, go_no_go, synthesis')
+      .eq('objective_id', arcObjectiveId)
+      .neq('go_no_go', 'CLOSED')
+      .order('created_at', { ascending: false })
+      .limit(1)
+    const lastHunt = selectLastHuntBrief((historyRows ?? []) as Array<{ brief_date: string | null; go_no_go: string | null; synthesis: string | null }>)
     const closedBrief = {
       ...brief,
       go_no_go: 'CLOSED',
@@ -235,14 +241,8 @@ export default async function StrikePage({ params }: { params: { id: string } })
         <div className={NOTICE_CLASSES.closed}>
           {closedText}
         </div>
-        {briefRow && (
-          <div className={NOTICE_CLASSES.history}>
-            <div className={NOTICE_CLASSES.historyHeading}>
-              Last brief{lastBriefDate ? `, ${formatBriefDate(lastBriefDate)}` : ''}
-              {lastGoNoGo ? ` · ${lastGoNoGo}` : ''}
-            </div>
-            {typeof brief.summary === 'string' && <p className="mt-1 leading-relaxed">{brief.summary}</p>}
-          </div>
+        {lastHunt && (
+          <LastHuntBrief heading={lastHuntHeading(lastHunt)} synthesis={cleanSynthesis(lastHunt.synthesis)} />
         )}
         <StrikeBriefClient
           brief={closedBrief}
