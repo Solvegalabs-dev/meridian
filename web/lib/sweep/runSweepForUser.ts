@@ -1074,7 +1074,20 @@ export async function runSweepForUser(
     console.log(`[sweep:timing] ${sweep.id} ${elapsed()} — ${signalInserts.length} signals assembled, writing to DB`)
 
     if (signalInserts.length > 0) {
-      await supabase.from('signals').insert(signalInserts)
+      // FF-091: each signal is tagged with its first objective's active spot, so a later spot switch keeps the areas apart.
+      const activeSpots = objectives.length > 0
+        ? (await supabase
+            .from('objective_spots')
+            .select('id, objective_id')
+            .in('objective_id', objectives.map(o => o.id))
+            .eq('is_active', true)).data ?? []
+        : []
+      const spotByObjective = new Map(activeSpots.map(s => [s.objective_id as string, s.id as string]))
+      const tagged = signalInserts.map(s => ({
+        ...s,
+        spot_id: spotByObjective.get(s.objective_ids[0]) ?? null,
+      }))
+      await supabase.from('signals').insert(tagged)
     }
 
     // 10. Write confidence scores and update objectives

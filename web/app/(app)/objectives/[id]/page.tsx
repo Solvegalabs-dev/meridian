@@ -57,6 +57,16 @@ export default async function ObjectiveDetailPage({ params }: { params: { id: st
     .eq('objective_id', obj.id)
     .maybeSingle()
 
+  // FF-091: which spot is active and how many exist, for the Mission Control summary.
+  const { data: spotRows } = await serviceClient
+    .from('objective_spots')
+    .select('name, is_active')
+    .eq('objective_id', obj.id)
+  const spotSummary = {
+    activeName: (spotRows ?? []).find(s => s.is_active)?.name as string | undefined ?? null,
+    count: (spotRows ?? []).length,
+  }
+
   // Evaluated at render time (FF-089 P0). Drives the status of the strike card and deep link.
   const huntWindow = locationProfile ? await loadObjectiveWindow(serviceClient, obj.id) : null
 
@@ -134,6 +144,7 @@ export default async function ObjectiveDetailPage({ params }: { params: { id: st
             smsAlertsEnabled={(profile as { sms_alerts_enabled?: boolean } | null)?.sms_alerts_enabled ?? false}
             location={locationProfile as import('./ObjectiveDetailClient').HuntLocation | null}
             strikeProfileId={(locationProfile?.id as string | undefined) ?? null}
+            spotSummary={spotSummary}
             huntWindowState={huntWindow?.evaluation.state ?? null}
             initialSources={(watchSources ?? []) as import('@/components/watchlist/WatchSourcesPanel').WatchSource[]}
             unseenAlertCount={unseenAlertCount ?? 0}
