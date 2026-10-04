@@ -1,5 +1,5 @@
 // UDWR hunt number rules and the pure helpers the lookup uses. No I/O here.
-import { inGeometry } from '@/lib/geo/unitResolver'
+import { inGeometry } from '@/lib/geo/pointInPolygon'
 
 export const HUNT_CODE_RE = /^[A-Z]{2}[0-9]{4}$/
 export const CACHE_TTL_DAYS = 30
