@@ -20,7 +20,7 @@ import { detectDomain } from '@/lib/sweep/subAgent/domainDetector'
 import { runPatternDeviationEngine } from '@/lib/sweep/patternDeviation/patternDeviationEngine'
 import { getDomainProfile } from '@/lib/sweep/domainBaseline/domainProfileManager'
 import { bindObjectiveToAgents } from '@/lib/agents/agentContextResolver'
-import { generateStrikeBrief } from '@/lib/strikeBrief/strikeBriefGenerator'
+import { generateStrikeBrief, LocationNotSetError } from '@/lib/strikeBrief/strikeBriefGenerator'
 import { applyWindowLifecycleForUser } from '@/lib/objectives/objectiveWindow'
 
 export interface SweepObjectiveResult {
@@ -500,7 +500,9 @@ export async function runSweepForUser(
         try {
           await generateStrikeBrief(obj.id, userId)
         } catch (err) {
-          console.error(`[sweep:strikeBrief] generateStrikeBrief failed for ${obj.id}:`, err)
+          // A missing location is expected for a new objective, not a failure.
+          if (err instanceof LocationNotSetError) console.info(`[sweep:strikeBrief] skipped ${obj.id}: location not set`)
+          else console.error(`[sweep:strikeBrief] generateStrikeBrief failed for ${obj.id}:`, err)
         }
       })
     )
@@ -542,7 +544,8 @@ export async function runSweepForUser(
             await generateStrikeBrief(sp.objective_id as string, sp.user_id as string)
             console.log('[sweep:strikeBrief] Strike brief generated for:', sp.objective_id)
           } catch (err) {
-            console.error('[sweep:strikeBrief] generateStrikeBrief failed for:', sp.objective_id, err)
+            if (err instanceof LocationNotSetError) console.info('[sweep:strikeBrief] skipped, location not set:', sp.objective_id)
+            else console.error('[sweep:strikeBrief] generateStrikeBrief failed for:', sp.objective_id, err)
           }
         })
       )

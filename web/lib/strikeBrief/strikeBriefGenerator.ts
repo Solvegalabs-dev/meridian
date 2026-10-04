@@ -1,5 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/server';
-import { loadActiveSpotId } from '@/lib/spots/activeSpot';
+import { loadActiveSpotId, spotRunFilter } from '@/lib/spots/activeSpot';
 import { hasLocation } from '@/lib/agents/geoLocation';
 import { getAnthropicClient } from '@/lib/anthropic/client';
 import { generateMovementWindows } from './movementPrediction';
@@ -150,7 +150,7 @@ export async function buildStrikeBriefContext(
       .in('agent_key', agentKeys)
       .eq('result', 'hit')
       .gte('ran_at', today);
-    if (activeSpotId) runQuery = runQuery.eq('geo_context->>spotId', activeSpotId);
+    if (activeSpotId) runQuery = runQuery.or(spotRunFilter(activeSpotId));
     const { data: runLogs } = await runQuery;
     agentHits = (runLogs ?? []).map(r => r.agent_key as string);
   }

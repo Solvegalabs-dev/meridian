@@ -161,7 +161,7 @@ export async function runAgent(
   // 3c. FF-091 Part C: no location means no geo-templated run. There are no fallback
   // coordinates, grid or state, so an objective never gets another area's weather.
   const rawTemplate = agent.source_url_template as string;
-  if (shouldSkipForLocation(rawTemplate, geoProfile)) {
+  if (shouldSkipForLocation(rawTemplate, geoProfile, geoContext.state)) {
     await logRun(supabase, agentKey, 'skip', Date.now() - start, undefined, undefined, geoContext, LOCATION_NOT_SET);
     return { agentKey, result: 'skip', durationMs: Date.now() - start };
   }

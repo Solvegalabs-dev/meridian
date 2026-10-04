@@ -14,22 +14,34 @@ export type LocationFields = {
 
 export type LocationProfile = LocationFields | null
 
-const GRID_AND_COORD_PLACEHOLDERS = ['{lat}', '{lon}', '{nws_grid_office}', '{nws_grid_x}', '{nws_grid_y}']
+// Placeholders that need a point on the ground: coordinates or the NWS grid.
+const POINT_PLACEHOLDERS = ['{lat}', '{lon}', '{nws_grid_office}', '{nws_grid_x}', '{nws_grid_y}']
 
-// True when the URL template needs a point on the ground (coordinates, NWS grid, or state).
-export function templateNeedsLocation(template: string): boolean {
-  return GRID_AND_COORD_PLACEHOLDERS.some(p => template.includes(p)) || template.includes('{state}')
+export function templateNeedsCoordinates(template: string): boolean {
+  return POINT_PLACEHOLDERS.some(p => template.includes(p))
 }
 
-// A profile has a location when it has coordinates and an NWS grid, which weather agents need.
+export function templateNeedsState(template: string): boolean {
+  return template.includes('{state}')
+}
+
+// A profile has a point when it has coordinates and an NWS grid.
 export function hasLocation(profile: LocationProfile): boolean {
   return profile != null
     && profile.lat != null && profile.lon != null
     && profile.nws_grid_office != null && profile.nws_grid_x != null && profile.nws_grid_y != null
 }
 
-// Whether a run should be skipped: the template needs a location and the objective has none.
-// Templates without location placeholders always run, as before.
-export function shouldSkipForLocation(template: string, profile: LocationProfile): boolean {
-  return templateNeedsLocation(template) && !hasLocation(profile)
+// Skip rule, split by what the template needs:
+// - coordinate or grid placeholders: skip unless the profile has a full location
+// - {state} only: skip only when no state is known (profile or run context). No coordinates needed.
+// Templates with neither placeholder always run.
+export function shouldSkipForLocation(
+  template: string,
+  profile: LocationProfile,
+  runState?: string | null,
+): boolean {
+  if (templateNeedsCoordinates(template) && !hasLocation(profile)) return true
+  if (templateNeedsState(template) && !(profile?.state || runState)) return true
+  return false
 }

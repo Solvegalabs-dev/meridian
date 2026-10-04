@@ -95,8 +95,9 @@ WHERE os.objective_id = b.objective_id
 ALTER TABLE signals
   ADD COLUMN IF NOT EXISTS spot_id uuid REFERENCES objective_spots(id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS signals_objective_spot_idx
-  ON signals (objective_id, spot_id);
+-- signals has no objective_id column (objective_ids is uuid[]), so the index is on spot_id alone.
+CREATE INDEX IF NOT EXISTS signals_spot_idx
+  ON signals (spot_id);
 
 DO $$
 DECLARE

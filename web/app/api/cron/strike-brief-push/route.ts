@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { generateStrikeBrief } from '@/lib/strikeBrief/strikeBriefGenerator';
+import { generateStrikeBrief, LocationNotSetError } from '@/lib/strikeBrief/strikeBriefGenerator';
 
 export const maxDuration = 300;
 
@@ -27,7 +27,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ generated: 0 });
   }
 
-  const results: { objectiveId: string; result: 'generated' | 'error'; error?: string }[] = [];
+  const results: { objectiveId: string; result: 'generated' | 'error' | 'location_not_set'; error?: string }[] = [];
 
   for (const p of profiles) {
     const objectiveId = p.objective_id as string;
@@ -36,6 +36,12 @@ export async function GET(request: Request) {
       await generateStrikeBrief(objectiveId, userId);
       results.push({ objectiveId, result: 'generated' });
     } catch (err) {
+      // A missing location is expected for a new objective, so it is not a failure.
+      if (err instanceof LocationNotSetError) {
+        console.info(`[StrikeBriefPush] Skipped ${objectiveId}: location not set`);
+        results.push({ objectiveId, result: 'location_not_set' });
+        continue;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[StrikeBriefPush] Failed for ${objectiveId}:`, msg);
       results.push({ objectiveId, result: 'error', error: msg });
