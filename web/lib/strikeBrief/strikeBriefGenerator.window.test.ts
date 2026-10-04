@@ -15,9 +15,20 @@ vi.mock('@/lib/anthropic/client', () => ({
 vi.mock('./movementPrediction', () => ({ generateMovementWindows: vi.fn(async () => []) }))
 vi.mock('./terrainIntelligence', () => ({ getTerrainIntel: vi.fn(async () => ({ intel: null, source: null })) }))
 
-import { generateStrikeBrief } from './strikeBriefGenerator'
+import { generateStrikeBrief, LocationNotSetError } from './strikeBriefGenerator'
 
 const NOW = new Date('2026-10-03T15:00:00Z') // 09:00 MDT Oct 3
+
+// FF-091: a generated brief needs a location. Used by tests that are about model output, not location.
+const PROFILE_LOCATED = {
+  objective_id: 'obj-x',
+  lat: 40.7,
+  lon: -111.9,
+  nws_grid_office: 'SLC',
+  nws_grid_x: 90,
+  nws_grid_y: 130,
+  domain: 'elk_hunt',
+};
 
 const PROFILE_TRIP_ENDED = {
   id: 'prof-17',
@@ -29,6 +40,9 @@ const PROFILE_TRIP_ENDED = {
   state: 'UT',
   lat: 40.7,
   lon: -111.9,
+  nws_grid_office: 'SLC',
+  nws_grid_x: 90,
+  nws_grid_y: 130,
   hunt_unit_id: null,
   domain: 'elk_hunt',
   ended_at: null,
@@ -224,31 +238,30 @@ describe('active and no-date objectives', () => {
     })
   })
 
-  it('an objective with no profile runs the normal path', async () => {
+  it('an objective with no location gets no brief: no model call, no write', async () => {
     const db = setup({ profile: null, modelFields: { go_no_go: 'GO' } })
 
-    await generateStrikeBrief('obj-x', 'user-1')
-
-    expect(h.create).toHaveBeenCalledTimes(1)
-    expect(briefWrite(db)).toMatchObject({ go_no_go: 'GO', synthesis: 'Hunt the north face.' })
+    await expect(generateStrikeBrief('obj-x', 'user-1')).rejects.toThrow(LocationNotSetError)
+    expect(h.create).not.toHaveBeenCalled()
+    expect(briefWrite(db)).toBeUndefined()
   })
 })
 
 describe('model output is normalised before the CHECK constraint', () => {
   it('a hyphenated NO-GO becomes NO_GO', async () => {
-    const db = setup({ profile: null, modelFields: { go_no_go: 'NO-GO' } })
+    const db = setup({ profile: PROFILE_LOCATED, modelFields: { go_no_go: 'NO-GO' } })
     await generateStrikeBrief('obj-x', 'user-1')
     expect(briefWrite(db)?.go_no_go).toBe('NO_GO')
   })
 
   it('an unrecognised value becomes MONITOR, never GO', async () => {
-    const db = setup({ profile: null, modelFields: { go_no_go: 'WAIT' } })
+    const db = setup({ profile: PROFILE_LOCATED, modelFields: { go_no_go: 'WAIT' } })
     await generateStrikeBrief('obj-x', 'user-1')
     expect(briefWrite(db)?.go_no_go).toBe('MONITOR')
   })
 
   it('the model cannot write CLOSED itself', async () => {
-    const db = setup({ profile: null, modelFields: { go_no_go: 'CLOSED' } })
+    const db = setup({ profile: PROFILE_LOCATED, modelFields: { go_no_go: 'CLOSED' } })
     await generateStrikeBrief('obj-x', 'user-1')
     expect(briefWrite(db)?.go_no_go).toBe('MONITOR')
   })

@@ -7,6 +7,8 @@ import { computeTerrainIntelligence } from '@/lib/swarm/agents/outdoor/terrain';
 import { computeHatchWindow } from '@/lib/swarm/agents/outdoor/fishingPhenology';
 import { computeSalmonRunProgression } from '@/lib/swarm/agents/outdoor/salmonRunProgression';
 import { computeCollarPatterns } from '@/lib/swarm/agents/outdoor/collarPatternExtractor';
+import { loadActiveSpotId } from '@/lib/spots/activeSpot';
+import { LOCATION_NOT_SET, shouldSkipForLocation, type LocationFields } from './geoLocation';
 
 // Returns: number = value, null = known calculator but no data (→ miss), undefined = unknown key (→ error)
 async function runCalculated(calculatorKey: string, objectiveId?: string): Promise<number | null | undefined> {
@@ -42,10 +44,15 @@ export async function runAgent(
     county?: string;
     domain?: string;
     objectiveId?: string;
+    spotId?: string;
   }
 ): Promise<AgentResult> {
   const start = Date.now();
   const supabase = createServiceClient();
+  // FF-091: tag every run with the active spot, so the brief can use only this area's hits.
+  if (geoContext.objectiveId) {
+    geoContext = { ...geoContext, spotId: (await loadActiveSpotId(supabase, geoContext.objectiveId)) ?? undefined };
+  }
 
   // 1. Load agent config
   const { data: agent, error } = await supabase
@@ -137,17 +144,11 @@ export async function runAgent(
   }
 
   // 3b. Load objective geo profile for URL substitution (best-effort)
-  let geoProfile: {
-    lat?: number | null
-    lon?: number | null
-    nws_grid_office?: string | null
-    nws_grid_x?: number | null
-    nws_grid_y?: number | null
-    state?: string | null
+  let geoProfile: (LocationFields & {
     hunt_unit_id?: string | null
     usgs_gauge_ids?: string[] | null
     snotel_station_ids?: string[] | null
-  } | null = null;
+  }) | null = null;
   if (geoContext.objectiveId) {
     const { data: gp } = await supabase
       .from('objective_profiles')
@@ -157,21 +158,28 @@ export async function runAgent(
     geoProfile = gp;
   }
 
-  // 3c. Build URL with geo substitution — NWS fallback is Elizabeth Pass (OBJ-17).
-  // FF-089 geo vars are substituted before buildUrl(), which would otherwise
-  // fill {state} from geoContext.state ?? 'UT' and ignore the resolved profile state.
+  // 3c. FF-091 Part C: no location means no geo-templated run. There are no fallback
+  // coordinates, grid or state, so an objective never gets another area's weather.
+  const rawTemplate = agent.source_url_template as string;
+  if (shouldSkipForLocation(rawTemplate, geoProfile, geoContext.state)) {
+    await logRun(supabase, agentKey, 'skip', Date.now() - start, undefined, undefined, geoContext, LOCATION_NOT_SET);
+    return { agentKey, result: 'skip', durationMs: Date.now() - start };
+  }
+
+  // Build URL with geo substitution. FF-089 geo vars are substituted before buildUrl(),
+  // which would otherwise fill {state} from geoContext.state and ignore the resolved profile state.
   const template = (agent.source_url_template as string)
     .replace(/\{usgs_gauge_ids\}/g,    geoProfile?.usgs_gauge_ids?.join(',') ?? '')
     .replace(/\{usgs_gauge_id\}/g,     geoProfile?.usgs_gauge_ids?.[0] ?? '')
     .replace(/\{snotel_station_id\}/g, geoProfile?.snotel_station_ids?.[0] ?? '')
-    .replace(/\{state\}/g,             geoProfile?.state ?? geoContext.state ?? 'UT')
+    .replace(/\{state\}/g,             geoProfile?.state ?? geoContext.state ?? '')
     .replace(/\{hunt_unit_id\}/g,      geoProfile?.hunt_unit_id ?? '');
   const url = buildUrl(template, geoContext)
-    .replace('{nws_grid_office}', geoProfile?.nws_grid_office ?? 'GJT')
-    .replace('{nws_grid_x}',     String(geoProfile?.nws_grid_x ?? 69))
-    .replace('{nws_grid_y}',     String(geoProfile?.nws_grid_y ?? 170))
-    .replace('{lat}',            String(geoProfile?.lat ?? 40.948))
-    .replace('{lon}',            String(geoProfile?.lon ?? -110.668));
+    .replace('{nws_grid_office}', geoProfile?.nws_grid_office ?? '')
+    .replace('{nws_grid_x}',     String(geoProfile?.nws_grid_x ?? ''))
+    .replace('{nws_grid_y}',     String(geoProfile?.nws_grid_y ?? ''))
+    .replace('{lat}',            String(geoProfile?.lat ?? ''))
+    .replace('{lon}',            String(geoProfile?.lon ?? ''));
 
   try {
     // 4. Fetch — Accept header excludes application/json so HTML pages respond correctly

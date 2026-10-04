@@ -1,4 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/server';
+import { loadActiveSpotId, spotRunFilter } from '@/lib/spots/activeSpot';
+import { hasLocation } from '@/lib/agents/geoLocation';
 import { getAnthropicClient } from '@/lib/anthropic/client';
 import { generateMovementWindows } from './movementPrediction';
 import { getTerrainIntel } from './terrainIntelligence';
@@ -140,12 +142,16 @@ export async function buildStrikeBriefContext(
   // Today's agent hits for bound agents
   let agentHits: string[] = [];
   if (agentKeys.length > 0) {
-    const { data: runLogs } = await supabase
+    // FF-091: only hits from the active spot. After a switch, the old area's hits are not used.
+    const activeSpotId = await loadActiveSpotId(supabase, objectiveId);
+    let runQuery = supabase
       .from('agent_run_log')
       .select('agent_key, ran_at')
       .in('agent_key', agentKeys)
       .eq('result', 'hit')
       .gte('ran_at', today);
+    if (activeSpotId) runQuery = runQuery.or(spotRunFilter(activeSpotId));
+    const { data: runLogs } = await runQuery;
     agentHits = (runLogs ?? []).map(r => r.agent_key as string);
   }
 
@@ -403,11 +409,13 @@ async function writeClosedBrief(
   if (existing) return existing as StrikeBriefRow;
 
   const fields = buildClosedBriefFields(evaluation);
+  const spotId = await loadActiveSpotId(supabase, objectiveId);
   const { data: brief, error } = await supabase
     .from('strike_briefs')
     .insert({
       objective_id: objectiveId,
       user_id: userId,
+      spot_id: spotId,
       brief_date: today,
       domain,
       pattern_match_year: null,
@@ -435,6 +443,14 @@ async function writeClosedBrief(
   return brief as StrikeBriefRow;
 }
 
+// FF-091: an objective without a location gets no brief. Nothing is generated that would look local.
+export class LocationNotSetError extends Error {
+  constructor() {
+    super('Location not set. Add a hunt spot to get local intel.');
+    this.name = 'LocationNotSetError';
+  }
+}
+
 export async function generateStrikeBrief(
   objectiveId: string,
   userId: string
@@ -455,6 +471,14 @@ export async function generateStrikeBrief(
       windowCheck.evaluation
     );
   }
+  const { data: locationRow } = await supabase
+    .from('objective_profiles')
+    .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y')
+    .eq('objective_id', objectiveId)
+    .maybeSingle();
+  if (!hasLocation(locationRow)) throw new LocationNotSetError();
+  const activeSpotId = await loadActiveSpotId(supabase, objectiveId);
+
   const windowNotice = windowCheck ? windowNoticeFor(windowCheck.evaluation) : null;
 
   // Return cached brief if one exists for this window today.
@@ -518,6 +542,7 @@ export async function generateStrikeBrief(
     .upsert({
       objective_id: objectiveId,
       user_id: userId,
+      spot_id: activeSpotId,
       brief_date: today,
       time_window: timeWindow,
       domain: context.domain,

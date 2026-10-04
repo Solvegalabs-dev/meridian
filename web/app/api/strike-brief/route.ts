@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { generateStrikeBrief } from '@/lib/strikeBrief/strikeBriefGenerator';
+import { generateStrikeBrief, LocationNotSetError } from '@/lib/strikeBrief/strikeBriefGenerator';
 
 export async function GET(request: Request) {
   const supabase = createClient();
@@ -25,6 +25,9 @@ export async function GET(request: Request) {
     const brief = await generateStrikeBrief(objectiveId, user.id);
     return NextResponse.json(brief);
   } catch (err) {
+    if (err instanceof LocationNotSetError) {
+      return NextResponse.json({ error: err.message, code: 'location_not_set' }, { status: 409 });
+    }
     const msg = err instanceof Error ? err.message : 'Unknown error';
     return NextResponse.json({ error: msg }, { status: 500 });
   }

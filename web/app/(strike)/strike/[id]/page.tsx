@@ -5,6 +5,7 @@ import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCal
 import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
 import { isEndedWindowState } from '@/lib/objectives/windowState'
 import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
+import { hasLocation } from '@/lib/agents/geoLocation'
 import { cleanSynthesis, lastHuntHeading, selectLastHuntBrief } from '@/lib/strike/lastHuntBrief'
 import LastHuntBrief from '@/components/strike/LastHuntBrief'
 import {
@@ -258,10 +259,13 @@ export default async function StrikePage({ params }: { params: { id: string } })
   // FF-089 P0: "Season opens {date}" / "Trip opens {date}" banner, rendered server-side
   // so the partner API keeps its single additive field (objective_state).
   const banner = windowOpensBanner(evaluation)
+  // FF-091 Part C: an objective with no location says so, instead of showing another area's data.
+  const noLocation = !hasLocation(objective as Parameters<typeof hasLocation>[0]);
 
   return (
     <div className="bg-slate-900 text-white">
       {banner && <div className={NOTICE_CLASSES.opens}>{banner}</div>}
+      {noLocation && <div className={NOTICE_CLASSES.opens}>Location not set. Add a hunt spot to get local intel.</div>}
       <StrikeBriefClient
         brief={brief}
         objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}

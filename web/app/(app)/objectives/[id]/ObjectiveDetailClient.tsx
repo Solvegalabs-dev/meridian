@@ -37,6 +37,7 @@ export interface HuntLocation {
 interface Props {
   obj: ObjProps
   location?: HuntLocation | null
+  spotSummary?: { activeName: string | null; count: number }
   tier: string
   accountType: string | null
   initialSources: WatchSource[]
@@ -50,7 +51,7 @@ interface Props {
 
 type DrawerView = 'menu' | 'edit' | 'watch'
 
-export default function ObjectiveDetailClient({ obj, location = null, tier, accountType, initialSources, unseenAlertCount = 0, smsAlertsEnabled = false, strikeProfileId = null, huntWindowState = null }: Props) {
+export default function ObjectiveDetailClient({ obj, location = null, tier, accountType, initialSources, unseenAlertCount = 0, smsAlertsEnabled = false, strikeProfileId = null, huntWindowState = null, spotSummary = { activeName: null, count: 0 } }: Props) {
   const [closeModalOpen, setCloseModalOpen]     = useState(false)
   const [abandonModalOpen, setAbandonModalOpen] = useState(false)
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false)
@@ -577,6 +578,17 @@ export default function ObjectiveDetailClient({ obj, location = null, tier, acco
                   <>
                     <div style={{ borderTop: '1px solid var(--ov-border)', paddingTop: '12px' }}>
                       <p className="text-[11px] font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--ov-text-dim)' }}>Hunt Location</p>
+                      {location.lat == null && (
+                        <p className="text-[11px] mb-1" style={{ color: 'var(--ov-text-hi)' }}>Location not set. Add a hunt spot to get local intel.</p>
+                      )}
+                      {spotSummary.count > 0 && (
+                        <p className="text-[11px] mb-1" style={{ color: 'var(--ov-text-dim)' }}>
+                          Active spot: {spotSummary.activeName ?? 'none'}, {spotSummary.count} {spotSummary.count === 1 ? 'spot' : 'spots'}
+                          {strikeProfileId && (
+                            <> · <a href={`/strike/${strikeProfileId}`} className="underline">Manage on the Prep tab</a></>
+                          )}
+                        </p>
+                      )}
                       {location.nws_grid_office && location.nws_grid_x != null && location.nws_grid_y != null && (
                         <p className="text-[11px]" style={{ color: 'var(--ov-text-dim)' }}>
                           Current weather grid: {location.nws_grid_office} {location.nws_grid_x},{location.nws_grid_y}
