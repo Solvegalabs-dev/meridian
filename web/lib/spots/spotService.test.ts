@@ -214,3 +214,28 @@ describe('privacy: coordinates stay out of error messages', () => {
     expect(err.message).not.toMatch(/12\.34|98\.76/)
   })
 })
+
+describe('boundary flag on spot writes', () => {
+  const SQUARE = {
+    type: 'FeatureCollection',
+    features: [{ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[-111.2, 40.3], [-110.8, 40.3], [-110.8, 40.7], [-111.2, 40.7], [-111.2, 40.3]]] } }],
+  }
+
+  it('a new spot outside the hunt boundary is stored with inside_boundary false', async () => {
+    const d = new FakeDb({
+      objective_spots: [],
+      objective_profiles: [{ objective_id: OBJ, hunt_unit_id: 'chalk-creek', hunt_code: 'EA2004', state: 'UT', lat: 40.5, lon: -111 }],
+      udwr_hunt_cache: [{ hunt_code: 'EA2004', boundary_geojson: SQUARE, fetched_at: NOW.toISOString() }],
+    })
+    const { spot: created } = await createSpot(asClient(d), { objectiveId: OBJ, userId: USER, name: 'Far', lat: 41.9, lon: -111 }, NOW)
+    expect(created.inside_boundary).toBe(false)
+    expect(d.tables.objective_spots[0].inside_boundary).toBe(false)
+  })
+
+  it('no hunt number: inside_boundary is null (unknown), never false', async () => {
+    const d = db([])
+    const { spot: created } = await createSpot(asClient(d), { objectiveId: OBJ, userId: USER, name: 'Any', lat: 41.9, lon: -111 }, NOW)
+    expect(created.inside_boundary).toBeNull()
+  })
+})
+

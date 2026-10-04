@@ -80,8 +80,20 @@ describe('matchSeasonRows', () => {
     expect(matchSeasonRows({ state: 'UT', taxonomy_key: 'elk.bull.rifle' }, ALL, 2026)).toEqual([])
   })
 
-  it('never matches a code-specific row until the profile carries a code', () => {
+  it('never matches a code-specific row for a profile with no hunt number', () => {
     expect(ids(matchSeasonRows(UT_ELK_BULL_ARCHERY, [CODE_SPECIFIC], 2026))).toEqual([])
+  })
+
+  it('matches a code-specific row only for the same hunt number', () => {
+    const sameCode: SeasonProfile = { ...UT_ELK_BULL_ARCHERY, hunt_code: 'EB1005' }
+    const otherCode: SeasonProfile = { ...UT_ELK_BULL_ARCHERY, hunt_code: 'EA2004' }
+    expect(ids(matchSeasonRows(sameCode, [CODE_SPECIFIC], 2026))).toEqual(['G'])
+    expect(ids(matchSeasonRows(otherCode, [CODE_SPECIFIC], 2026))).toEqual([])
+  })
+
+  it('the hunt number outranks the unit when both match', () => {
+    const profile: SeasonProfile = { ...UT_ELK_BULL_ARCHERY, hunt_unit_id: 'HD-316', hunt_code: 'EB1005' }
+    expect(ids(matchSeasonRows(profile, [STATEWIDE_BULL_ARCHERY, UNIT_BULL_ARCHERY, CODE_SPECIFIC], 2026))).toEqual(['G'])
   })
 
   it('filters by season year', () => {
@@ -105,3 +117,40 @@ describe('matchSeasonRows', () => {
     expect(matchSeasonRows(UT_ELK_BULL_ARCHERY, [], 2026)).toEqual([])
   })
 })
+
+// EA2004 (Chalk Creek): UT, elk, any_weapon, antlerless, 2026-08-01 to 2027-01-31, stored as season_year 2026.
+const EA2004_ROW = row({
+  id: 'EA2004',
+  hunt_type: 'any_weapon',
+  sex_class: 'antlerless',
+  hunt_code: 'EA2004',
+  hunt_unit_id: null,
+  season_year: 2026,
+  season_start: '2026-08-01',
+  season_end: '2027-01-31',
+})
+const EA2004_PROFILE: SeasonProfile = {
+  state: 'UT',
+  taxonomy_key: 'elk.antlerless.any_weapon',
+  hunt_unit_id: 'chalk-creek',
+  hunt_code: 'EA2004',
+}
+
+describe('January year boundary', () => {
+  it('a season running into January resolves on 2027-01-15 (the season started in 2026)', () => {
+    expect(ids(matchSeasonRows(EA2004_PROFILE, [EA2004_ROW], 2027, '2027-01-15'))).toEqual(['EA2004'])
+  })
+
+  it('without a date the old single-year lookup still finds nothing in 2027', () => {
+    expect(matchSeasonRows(EA2004_PROFILE, [EA2004_ROW], 2027)).toEqual([])
+  })
+
+  it('still resolves in the autumn of the start year', () => {
+    expect(ids(matchSeasonRows(EA2004_PROFILE, [EA2004_ROW], 2026, '2026-10-04'))).toEqual(['EA2004'])
+  })
+
+  it('after the season has ended, the same row does not match (season unknown beyond its dates)', () => {
+    expect(matchSeasonRows(EA2004_PROFILE, [EA2004_ROW], 2027, '2027-02-05')).toEqual([])
+  })
+})
+

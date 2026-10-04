@@ -28,7 +28,8 @@ function inPolygon(lon: number, lat: number, rings: Ring[]): boolean {
   return !rings.slice(1).some(hole => inRing(lon, lat, hole))
 }
 
-function inGeometry(lon: number, lat: number, geometry: Geometry): boolean {
+// Exported (FF-091 B4) so spot pins can be checked against a cached hunt boundary. No behaviour change.
+export function inGeometry(lon: number, lat: number, geometry: Geometry): boolean {
   if (geometry.type === 'Polygon') return inPolygon(lon, lat, geometry.coordinates)
   if (geometry.type === 'MultiPolygon') return geometry.coordinates.some(p => inPolygon(lon, lat, p))
   return false

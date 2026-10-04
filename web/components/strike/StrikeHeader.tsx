@@ -7,6 +7,8 @@ import { PRESEASON_CAPTION, isPreseasonState, windowStatusChip } from '@/lib/str
 
 type Props = {
   title: string
+  // UDWR hunt number (FF-091), shown next to the title when saved.
+  huntCode?: string | null
   taxonomyKey: string
   evaluation: WindowEvaluation | null
   // hasBrief is false when no strike_briefs row exists. The brief object still carries
@@ -22,7 +24,7 @@ const CHIP_TONE: Record<'live' | 'pending' | 'ended', { bg: string; color: strin
   ended:   { bg: '#334155', color: '#e2e8f0' },
 }
 
-export default function StrikeHeader({ title, taxonomyKey, evaluation, hasBrief, brief, isOnline }: Props) {
+export default function StrikeHeader({ title, huntCode, taxonomyKey, evaluation, hasBrief, brief, isOnline }: Props) {
   const chip = windowStatusChip(evaluation)
   const ended = evaluation ? isEndedWindowState(evaluation.state) : false
   const closed = ended || isClosedBrief(brief as { go_no_go?: string | null } | null)
@@ -36,7 +38,10 @@ export default function StrikeHeader({ title, taxonomyKey, evaluation, hasBrief,
       <div className="min-w-0">
         <div className="text-xs text-slate-300 uppercase tracking-wider">Strike Brief</div>
         <h1 className="text-white font-semibold text-lg leading-tight line-clamp-2 break-words">{title}</h1>
-        <div className="text-xs text-slate-300 truncate">{taxonomyKey.replace(/\./g, ' · ')}</div>
+        <div className="text-xs text-slate-300 truncate">
+          {huntCode && <span className="font-semibold text-slate-100">{huntCode} · </span>}
+          {taxonomyKey.replace(/\./g, ' · ')}
+        </div>
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">

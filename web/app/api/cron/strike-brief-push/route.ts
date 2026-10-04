@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { generateStrikeBrief, LocationNotSetError } from '@/lib/strikeBrief/strikeBriefGenerator';
+import { applyWindowLifecycleForUser } from '@/lib/objectives/objectiveWindow';
 
 export const maxDuration = 300;
 
@@ -25,6 +26,17 @@ export async function GET(request: Request) {
   if (!profiles || profiles.length === 0) {
     console.log('[StrikeBriefPush] No active Strike objective_profiles found');
     return NextResponse.json({ generated: 0 });
+  }
+
+  // FF-091 Part D: ended hunts are marked completed by the lifecycle, which the user sweep used to be the only caller of.
+  // Run it once per user before any brief is written. Non-fatal: a failure is logged and the briefs still run.
+  const userIds = Array.from(new Set(profiles.map(p => p.user_id as string).filter(Boolean)));
+  for (const userId of userIds) {
+    try {
+      await applyWindowLifecycleForUser(supabase, userId);
+    } catch (err) {
+      console.error('[StrikeBriefPush] lifecycle failed for user:', err instanceof Error ? err.message : String(err));
+    }
   }
 
   const results: { objectiveId: string; result: 'generated' | 'error' | 'location_not_set'; error?: string }[] = [];

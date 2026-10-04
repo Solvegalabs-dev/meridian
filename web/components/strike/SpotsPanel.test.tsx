@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { SpotsView, atLimit, headerText, type SpotView } from './SpotsPanel'
+import { SpotsView, atLimit, boundaryWarning, headerText, type SpotView } from './SpotsPanel'
 
 const spot = (id: string, name: string, over: Partial<SpotView> = {}): SpotView => ({
   id, name, lat: 40.917, lon: -111.397, is_active: false, county: 'Summit', state: 'UT', hunt_unit_id: null, ...over,
@@ -60,5 +60,29 @@ describe('header and limit helpers', () => {
     expect(atLimit(2, 3)).toBe(false)
     expect(atLimit(3, 3)).toBe(true)
     expect(atLimit(99, null)).toBe(false)
+  })
+})
+
+describe('boundary warning', () => {
+  const base = spot('a', 'North')
+
+  it('outside the hunt boundary: a warning naming the hunt number', () => {
+    const outside = { ...base, inside_boundary: false }
+    const html = renderToStaticMarkup(<SpotsView state={{ spots: [outside], limit: 3, active_spot_id: null }} huntCode="EA2004" />)
+    expect(html).toContain('This spot is outside the EA2004 boundary. Strike briefs will still use these coordinates.')
+  })
+
+  it('inside the boundary: no warning', () => {
+    const inside = { ...base, inside_boundary: true }
+    const html = renderToStaticMarkup(<SpotsView state={{ spots: [inside], limit: 3, active_spot_id: null }} huntCode="EA2004" />)
+    expect(html).not.toContain('outside the')
+  })
+
+  it('no boundary (null) or no hunt number: no warning, not "outside"', () => {
+    const unknown = { ...base, inside_boundary: null }
+    expect(renderToStaticMarkup(<SpotsView state={{ spots: [unknown], limit: 3, active_spot_id: null }} huntCode="EA2004" />)).not.toContain('outside the')
+    const outside = { ...base, inside_boundary: false }
+    expect(renderToStaticMarkup(<SpotsView state={{ spots: [outside], limit: 3, active_spot_id: null }} />)).not.toContain('outside the')
+    expect(boundaryWarning(outside, null)).toBeNull()
   })
 })

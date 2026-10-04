@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { isFishingTaxonomyKey, FISHING_PREP_PHASES } from '@/lib/strike/config/fishing-taxonomy'
 import { addDaysDateOnly, formatDateOnly } from '@/lib/utils/dateOnly'
 import SpotsPanel from './SpotsPanel'
+import HuntNumberCard from './HuntNumberCard'
 
 type Cadence = 'monthly' | 'biweekly' | 'weekly'
 
@@ -520,10 +521,12 @@ function ElkPrepContent({ objective }: { objective: Record<string, unknown> }) {
 export default function StrikePrepPanel({ objective }: Props) {
   const taxonomyKey = (objective.taxonomy_key as string) ?? ''
   const objectiveId = (objective.objective_id as string | null) ?? (objective.id as string)
-  // FF-091: hunt spots sit at the top of Prep, above the phase content.
+  const huntCode = (objective.hunt_code as string | null) ?? null
+  // FF-091: hunt number and spots sit at the top of Prep, above the phase content.
   return (
     <div className="px-4 pt-4 space-y-4">
-      <SpotsPanel objectiveId={objectiveId} />
+      <HuntNumberCard objectiveId={objectiveId} initialCode={huntCode} />
+      <SpotsPanel objectiveId={objectiveId} huntCode={huntCode} />
       {isFishingTaxonomyKey(taxonomyKey)
         ? <FishingPrepContent objective={objective} />
         : <ElkPrepContent objective={objective} />}
