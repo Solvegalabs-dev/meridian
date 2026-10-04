@@ -7,6 +7,7 @@ import { goNoGoKind } from '@/lib/strikeBrief/goNoGo'
 import { endedNoticeLabel, type EndedNotice } from '@/lib/strikeBrief/closedBrief'
 import { formatDateOnly } from '@/lib/utils/dateOnly'
 import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
+import { formatReason } from '@/lib/strike/reasonLabels'
 
 type UnitProfile = {
   id?: string
@@ -144,7 +145,7 @@ function UnitRow({ unit, isFishing }: { unit: EnrichedUnit; isFishing?: boolean 
         </div>
         {dateLabel && <div className="text-xs text-slate-400 mt-0.5">{dateLabel}</div>}
         {isMissed && unit.missed_reason && (
-          <div className="text-xs text-slate-500 mt-0.5 italic">{unit.missed_reason}</div>
+          <div className="text-xs text-slate-500 mt-0.5 italic">{formatReason(unit.missed_reason)}</div>
         )}
       </div>
       <div className="flex items-center gap-1.5 flex-shrink-0">

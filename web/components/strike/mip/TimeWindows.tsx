@@ -26,7 +26,7 @@ export default function TimeWindows({ windows }: { windows: Window[] }) {
                 {w.window}
               </div>
               <div
-                className={`text-[13px] ${w.priority === 'low' ? '' : 'text-white/80'}`}
+                className={`text-sm ${w.priority === 'low' ? '' : 'text-white/80'}`}
                 style={w.priority === 'low' ? { color: 'var(--ov-text-dim)' } : undefined}
               >
                 {w.action}

@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import StrikeHeader from './StrikeHeader'
 import StrikePrepPanel from './StrikePrepPanel'
@@ -10,12 +11,14 @@ import StrikeSignalsPanel from './StrikeSignalsPanel'
 import StrikeNotesPanel from './StrikeNotesPanel'
 import OfflineBanner from './OfflineBanner'
 import { useStrikeCache } from '@/hooks/useStrikeCache'
+import type { WindowEvaluation } from '@/lib/objectives/windowState'
+import { defaultStrikeTab, type StrikeTab } from '@/lib/strike/defaultTab'
+import { checkForNewerBrief, type BriefRefreshResult } from '@/lib/strike/briefRefresh'
 
-type Tab = 'prep' | 'strike' | 'intel' | 'signals' | 'notes'
-
-const TAB_LABELS: Record<Tab, string> = {
+// "Brief" (not "Strike Brief") so five tabs fit at 375 px without truncation.
+const TAB_LABELS: Record<StrikeTab, string> = {
   prep:    'Prep',
-  strike:  'Strike Brief',
+  strike:  'Brief',
   intel:   'Intel',
   signals: 'Signals',
   notes:   'Notes',
@@ -32,25 +35,30 @@ type ObjectiveProfile = {
   [k: string]: unknown
 }
 
+type Props = {
+  brief: Record<string, unknown>
+  objective: ObjectiveProfile
+  title: string
+  // False when no strike_briefs row exists; the brief object then holds placeholder fields.
+  hasBrief: boolean
+  evaluation: WindowEvaluation | null
+}
+
 export default function StrikeBriefClient({
   brief: initialBrief,
   objective,
-}: {
-  brief: Record<string, unknown>
-  objective: ObjectiveProfile
-}) {
+  title,
+  hasBrief,
+  evaluation,
+}: Props) {
   const router = useRouter()
+  const arcObjectiveId = (objective.objective_id ?? objective.id) as string
 
-  const [activeTab, setActiveTab] = useState<Tab>(() => {
-    const opener = objective.timing?.trip_start ? new Date(objective.timing.trip_start) : null
-    if (opener) {
-      const weeksOut = (opener.getTime() - Date.now()) / (1000 * 60 * 60 * 24 * 7)
-      return weeksOut > 4 ? 'prep' : 'strike'
-    }
-    return 'strike'
-  })
+  const [activeTab, setActiveTab] = useState<StrikeTab>(() => defaultStrikeTab(evaluation?.state ?? null))
 
   const [brief, setBrief] = useState(initialBrief)
+  // The server prop only covers the first load. A refresh can bring in a brief that did not exist then.
+  const [briefPresent, setBriefPresent] = useState(hasBrief)
   const [isOnline, setIsOnline] = useState(true)
   const { cachedBrief, cacheBrief } = useStrikeCache(objective.id)
 
@@ -70,20 +78,26 @@ export default function StrikeBriefClient({
     }
   }, [])
 
-  const refreshObjectiveId = (objective.objective_id ?? objective.id) as string
-  const refresh = useCallback(async () => {
-    if (!navigator.onLine) return
-    try {
-      const res = await fetch(
-        `/api/mip/brief?objective_id=${refreshObjectiveId}&partner_key=strike`
-      )
-      const fresh = await res.json()
-      setBrief(fresh)
-    } catch {}
-  }, [refreshObjectiveId])
+  // Read by refresh() so it compares against the brief on screen without re-creating the callback on every update.
+  const briefRef = useRef(brief)
+  useEffect(() => { briefRef.current = brief }, [brief])
+
+  const refresh = useCallback(async (): Promise<BriefRefreshResult> => {
+    const outcome = await checkForNewerBrief({
+      objectiveId: arcObjectiveId,
+      currentGeneratedAt: (briefRef.current?.brief_generated_at as string | null) ?? null,
+      online: navigator.onLine,
+    })
+    // Only a validated, newer brief replaces the one on screen. Errors and "same" leave it alone.
+    if (outcome.brief) {
+      setBrief(outcome.brief)
+      setBriefPresent(true)
+    }
+    return outcome.result
+  }, [arcObjectiveId])
 
   useEffect(() => {
-    const interval = setInterval(refresh, 30 * 60 * 1000)
+    const interval = setInterval(() => { void refresh() }, 30 * 60 * 1000)
     return () => clearInterval(interval)
   }, [refresh])
 
@@ -95,41 +109,41 @@ export default function StrikeBriefClient({
         <OfflineBanner cachedAt={(cachedBrief as { cached_at?: string } | null)?.cached_at} />
       )}
 
-      <button
-        onClick={() => router.push('/strike')}
-        className="strike-back-btn"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          background: 'none',
-          border: 'none',
-          fontSize: 13,
-          color: 'var(--text-secondary, #7aad8a)',
-          cursor: 'pointer',
-          padding: '8px 16px 4px',
-          fontFamily: 'inherit',
-        }}
-      >
-        ← Objectives
-      </button>
+      <div className="flex items-center justify-between gap-3 px-4 pt-2">
+        <button
+          onClick={() => router.push('/strike')}
+          className="min-h-[44px] text-sm text-slate-200 hover:text-white transition-colors"
+        >
+          ← Objectives
+        </button>
+        <Link
+          href={`/objectives/${arcObjectiveId}`}
+          className="min-h-[44px] flex items-center text-sm text-blue-300 hover:text-blue-200 transition-colors"
+        >
+          Mission Control
+        </Link>
+      </div>
 
       <StrikeHeader
-        objective={objective as unknown as Record<string, unknown>}
+        title={title}
+        taxonomyKey={objective.taxonomy_key ?? ''}
+        evaluation={evaluation}
+        hasBrief={briefPresent}
         brief={displayBrief}
         isOnline={isOnline}
       />
 
-      {/* Tab bar */}
-      <div className="flex border-b border-slate-700">
-        {(Object.keys(TAB_LABELS) as Tab[]).map(tab => (
+      {/* Tab bar: sticky so a long brief can switch tabs without scrolling back up */}
+      <div className="sticky top-0 z-10 flex bg-slate-900 border-b border-slate-700">
+        {(Object.keys(TAB_LABELS) as StrikeTab[]).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`flex-1 text-sm py-3 font-medium transition-colors ${
+            aria-current={activeTab === tab ? 'page' : undefined}
+            className={`flex-1 min-h-[44px] px-1 text-sm font-medium transition-colors ${
               activeTab === tab
                 ? 'text-white border-b-2 border-blue-500'
-                : 'text-slate-400 hover:text-slate-200'
+                : 'text-slate-300 hover:text-white'
             }`}
           >
             {TAB_LABELS[tab]}
@@ -147,16 +161,18 @@ export default function StrikeBriefClient({
             brief={displayBrief as Parameters<typeof StrikeBriefPanel>[0]['brief']}
             isOnline={isOnline}
             onRefresh={refresh}
+            windowState={evaluation?.state ?? null}
+            tripStart={evaluation?.state === 'upcoming' ? evaluation.detail.trip_start ?? null : null}
           />
         )}
         {activeTab === 'intel' && (
           <StrikeIntelPanel brief={displayBrief} objective={objective as unknown as Record<string, unknown>} />
         )}
         {activeTab === 'signals' && (
-          <StrikeSignalsPanel objectiveId={(objective.objective_id ?? objective.id) as string} />
+          <StrikeSignalsPanel objectiveId={arcObjectiveId} />
         )}
         {activeTab === 'notes' && (
-          <StrikeNotesPanel objectiveId={(objective.objective_id ?? objective.id) as string} />
+          <StrikeNotesPanel objectiveId={arcObjectiveId} />
         )}
       </div>
     </div>

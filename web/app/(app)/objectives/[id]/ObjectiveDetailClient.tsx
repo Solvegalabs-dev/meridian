@@ -9,6 +9,8 @@ import WatchSourcesPanel, { type WatchSource } from '@/components/watchlist/Watc
 import CloseModal from '@/components/objectives/CloseModal'
 import AbandonModal from '@/components/objectives/AbandonModal'
 import StrikeBriefCard from '@/components/strikeBrief/StrikeBriefCard'
+import { strikeDetailHref } from '@/lib/strike/strikeLinks'
+import type { WindowState } from '@/lib/objectives/windowState'
 
 interface ObjProps {
   id: string
@@ -40,11 +42,15 @@ interface Props {
   initialSources: WatchSource[]
   unseenAlertCount?: number
   smsAlertsEnabled?: boolean
+  // objective_profiles PK for this hunt, when one exists (drives the strike deep link).
+  strikeProfileId?: string | null
+  // Evaluated window state (render-time). Null when the hunt has no profile or no dates.
+  huntWindowState?: WindowState | null
 }
 
 type DrawerView = 'menu' | 'edit' | 'watch'
 
-export default function ObjectiveDetailClient({ obj, location = null, tier, accountType, initialSources, unseenAlertCount = 0, smsAlertsEnabled = false }: Props) {
+export default function ObjectiveDetailClient({ obj, location = null, tier, accountType, initialSources, unseenAlertCount = 0, smsAlertsEnabled = false, strikeProfileId = null, huntWindowState = null }: Props) {
   const [closeModalOpen, setCloseModalOpen]     = useState(false)
   const [abandonModalOpen, setAbandonModalOpen] = useState(false)
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false)
@@ -332,7 +338,20 @@ export default function ObjectiveDetailClient({ obj, location = null, tier, acco
       </div>
 
       {/* ── Strike Brief — elk_hunt domain only ── */}
-      <StrikeBriefCard objectiveId={obj.id} domain={obj.category} />
+      {obj.category === 'elk_hunt' && (
+        <Link
+          href={strikeDetailHref({ profileId: strikeProfileId, objectiveId: obj.id })}
+          className="mt-4 flex items-center justify-center min-h-[44px] rounded-xl text-sm font-medium transition-colors"
+          style={{ backgroundColor: 'rgba(96,165,250,.2)', color: '#93c5fd', border: '1px solid rgba(96,165,250,.3)' }}
+        >
+          Open strike view
+        </Link>
+      )}
+      <StrikeBriefCard
+        objectiveId={obj.id}
+        domain={obj.category}
+        huntActive={huntWindowState === 'active'}
+      />
 
       {/* ── Settings drawer ── */}
       {drawerOpen && (

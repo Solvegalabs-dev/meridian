@@ -8,6 +8,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { getMipBriefPayload } from '@/lib/mip/briefPayload'
 import { loadObjectiveWindow, isEndedState } from '@/lib/objectives/objectiveWindow'
 import { closedSynthesis } from '@/lib/strikeBrief/closedBrief'
+import { briefGeneratedAt } from '@/lib/strike/briefFreshness'
 
 export const dynamic = 'force-dynamic'
 
@@ -147,7 +148,8 @@ async function handleStrikeBrief(
   return NextResponse.json({
     objective_id: objectiveId,
     brief_date: (brief.brief_date as string) ?? today,
-    brief_generated_at: new Date().toISOString(),
+    // The stored row's time, so a refresh does not reset "Updated" to the request time.
+    brief_generated_at: briefGeneratedAt(brief.created_at as string | null),
     confidence_tier: tierStr,
     confidence_pct: confidencePct,
     go_no_go: (brief.go_no_go as string) ?? 'NO-GO',
