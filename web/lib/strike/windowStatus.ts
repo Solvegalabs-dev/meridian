@@ -4,6 +4,13 @@ import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 export type WindowChip = { label: string; tone: 'live' | 'pending' | 'ended' }
 
+// Before the hunt window opens: a verdict here is a pre-season outlook, not a hunt-day call.
+export const PRESEASON_CAPTION = 'Pre-season outlook, not a hunt-day call'
+
+export function isPreseasonState(evaluation: WindowEvaluation | null | undefined): boolean {
+  return evaluation?.state === 'upcoming' || evaluation?.state === 'season_not_open'
+}
+
 export function windowStatusChip(evaluation: WindowEvaluation | null | undefined): WindowChip | null {
   if (!evaluation) return null
   const d = evaluation.detail

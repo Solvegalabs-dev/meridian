@@ -5,6 +5,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { getCollarBriefAugmentation, parseTempF } from '@/lib/swarm/agents/outdoor/collarCalibration'
 import { loadObjectiveWindow, isEndedState } from '@/lib/objectives/objectiveWindow'
 import { closedSynthesis } from '@/lib/strikeBrief/closedBrief'
+import { briefGeneratedAt } from '@/lib/strike/briefFreshness'
 
 export type SignalChip = { label: string; value: string; status: 'ok' | 'warn' | 'critical' }
 export type TimeWindow = { window: string; action: string; priority: 'high' | 'medium' | 'low' }
@@ -171,7 +172,7 @@ export async function getMipBriefPayload(
 
   const { data: brief } = await supabase
     .from('strike_briefs')
-    .select('movement_windows, time_window, go_no_go, synthesis, confidence_tier')
+    .select('movement_windows, time_window, go_no_go, synthesis, confidence_tier, created_at')
     .eq('objective_id', nativeObjectiveId)
     .order('created_at', { ascending: false })
     .limit(1)
@@ -268,7 +269,8 @@ export async function getMipBriefPayload(
 
   const payload: MipBriefPayload = {
     objective_id: objectiveId,
-    brief_generated_at: new Date().toISOString(),
+    // The stored brief's time when a row exists; now only for the no-brief payload.
+    brief_generated_at: briefGeneratedAt(brief?.created_at as string | null | undefined),
     confidence_tier: derivedTier,
     confidence_pct: confidencePct,
     summary,

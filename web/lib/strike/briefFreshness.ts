@@ -23,3 +23,14 @@ export function updatedLabel(generatedAt: string): string {
   })
   return `Updated ${timeAgo(generatedAt)} (${local})`
 }
+
+// The stored brief's time, so a refresh does not reset "Updated" to the request time.
+// Falls back to now only when the row has no created_at (no brief row at all).
+export function briefGeneratedAt(createdAt: string | null | undefined, now: Date = new Date()): string {
+  return createdAt ?? now.toISOString()
+}
+
+// A strike partner payload with time_windows === null is the no-brief stub; any stored brief has an array.
+export function hasStoredBrief(payload: { time_windows?: unknown[] | null } | null | undefined): boolean {
+  return payload?.time_windows != null
+}

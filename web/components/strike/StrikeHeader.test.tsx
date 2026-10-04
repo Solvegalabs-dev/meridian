@@ -62,4 +62,27 @@ describe('StrikeHeader', () => {
     const html = render({ hasBrief: true, evaluation: ev('active'), brief: { confidence_tier: null, go_no_go: 'CLOSED' } })
     expect(html).not.toContain('text-2xl')
   })
+
+  it('upcoming hunt with a GO brief shows the pre-season caption under the verdict', () => {
+    const html = render({ hasBrief: true, evaluation: ev('upcoming'), brief: { confidence_tier: 'T1', go_no_go: 'GO' } })
+    expect(html).toContain('>GO<')
+    expect(html).toContain('Pre-season outlook, not a hunt-day call')
+  })
+
+  it('season not open with a GO brief shows the pre-season caption', () => {
+    const html = render({ hasBrief: true, evaluation: ev('season_not_open'), brief: { confidence_tier: 'T1', go_no_go: 'GO' } })
+    expect(html).toContain('Pre-season outlook, not a hunt-day call')
+  })
+
+  it('active hunt with a GO brief has no pre-season caption', () => {
+    const html = render({ hasBrief: true, evaluation: ev('active'), brief: { confidence_tier: 'T1', go_no_go: 'GO' } })
+    expect(html).toContain('>GO<')
+    expect(html).not.toContain('Pre-season outlook')
+  })
+
+  it('ended hunt renders no verdict and no caption', () => {
+    const html = render({ hasBrief: true, evaluation: ev('season_closed'), brief: { confidence_tier: 'T1', go_no_go: 'GO' } })
+    expect(html).not.toContain('>GO<')
+    expect(html).not.toContain('Pre-season outlook')
+  })
 })

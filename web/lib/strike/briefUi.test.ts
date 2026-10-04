@@ -3,9 +3,9 @@ import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { verdictStyle, TIER_CHIP } from './verdictStyles'
 import { defaultStrikeTab } from './defaultTab'
-import { windowStatusChip } from './windowStatus'
+import { windowStatusChip, isPreseasonState } from './windowStatus'
 import { strikeDetailHref } from './strikeLinks'
-import { isStaleBrief, staleBriefNote, updatedLabel, briefAgeHours } from './briefFreshness'
+import { isStaleBrief, staleBriefNote, updatedLabel, briefAgeHours, briefGeneratedAt, hasStoredBrief } from './briefFreshness'
 import { contrastRatio } from '@/lib/utils/contrast'
 import type { WindowEvaluation, WindowState } from '@/lib/objectives/windowState'
 
@@ -130,4 +130,32 @@ describe('no alpha utilities in the Strike tab and header markup', () => {
       expect(src).not.toMatch(/\bopacity-\d/)
     })
   }
+})
+
+describe('stored brief time and presence', () => {
+  const now = new Date('2026-10-03T12:00:00Z')
+
+  it('keeps the stored created_at, so a 40 h old brief stays 40 h old', () => {
+    const created = new Date(now.getTime() - 40 * 3600_000).toISOString()
+    expect(briefGeneratedAt(created, now)).toBe(created)
+  })
+
+  it('falls back to now only when there is no stored time', () => {
+    expect(briefGeneratedAt(null, now)).toBe(now.toISOString())
+    expect(briefGeneratedAt(undefined, now)).toBe(now.toISOString())
+  })
+
+  it('a stub (time_windows null) is no brief; any stored brief, even with no windows, is one', () => {
+    expect(hasStoredBrief({ time_windows: null })).toBe(false)
+    expect(hasStoredBrief({ time_windows: [] })).toBe(true)
+    expect(hasStoredBrief({ time_windows: [{ window: 'x' }] })).toBe(true)
+  })
+
+  it('pre-season caption applies to upcoming and season_not_open only', () => {
+    expect(isPreseasonState(ev('upcoming', { code: 'X', trip_start: '2026-10-15' }))).toBe(true)
+    expect(isPreseasonState(ev('season_not_open', { code: 'X', season_start: '2026-10-15' }))).toBe(true)
+    expect(isPreseasonState(ev('active'))).toBe(false)
+    expect(isPreseasonState(ev('trip_ended'))).toBe(false)
+    expect(isPreseasonState(null)).toBe(false)
+  })
 })

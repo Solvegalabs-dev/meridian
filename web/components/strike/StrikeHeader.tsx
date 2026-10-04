@@ -3,7 +3,7 @@
 import { isEndedWindowState, type WindowEvaluation } from '@/lib/objectives/windowState'
 import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
 import { verdictStyle, TIER_CHIP } from '@/lib/strike/verdictStyles'
-import { windowStatusChip } from '@/lib/strike/windowStatus'
+import { PRESEASON_CAPTION, isPreseasonState, windowStatusChip } from '@/lib/strike/windowStatus'
 
 type Props = {
   title: string
@@ -41,12 +41,17 @@ export default function StrikeHeader({ title, taxonomyKey, evaluation, hasBrief,
 
       <div className="flex items-center gap-2 flex-wrap">
         {verdict && (
-          <span
-            className="text-2xl font-bold leading-none px-3 py-2 rounded-lg"
-            style={{ backgroundColor: verdict.bg, color: verdict.color }}
-          >
-            {verdict.label}
-          </span>
+          <div className="flex flex-col gap-1">
+            <span
+              className="self-start text-2xl font-bold leading-none px-3 py-2 rounded-lg"
+              style={{ backgroundColor: verdict.bg, color: verdict.color }}
+            >
+              {verdict.label}
+            </span>
+            {isPreseasonState(evaluation) && (
+              <span className="text-sm text-slate-200">{PRESEASON_CAPTION}</span>
+            )}
+          </div>
         )}
         {tier && TIER_CHIP[tier] && (
           <span

@@ -85,4 +85,21 @@ describe('StrikeBriefPanel', () => {
     const html = render({ brief: brief() })
     expect(html).not.toMatch(/text-\[(9|10|11)px\]/)
   })
+
+  it('upcoming hunt with a GO brief shows the pre-season caption under the verdict', () => {
+    const html = render({ brief: brief(), windowState: 'upcoming', tripStart: '2026-10-15' })
+    expect(html).toContain('>GO<')
+    expect(html).toContain('Pre-season outlook, not a hunt-day call')
+    expect(html.indexOf('>GO<')).toBeLessThan(html.indexOf('Pre-season outlook'))
+  })
+
+  it('active hunt with a GO brief has no pre-season caption', () => {
+    const html = render({ brief: brief(), windowState: 'active' })
+    expect(html).not.toContain('Pre-season outlook')
+  })
+
+  it('closed hunt has no verdict and no caption', () => {
+    const html = render({ brief: brief({ go_no_go: 'CLOSED', time_windows: [] }), windowState: 'season_not_open' })
+    expect(html).not.toContain('Pre-season outlook')
+  })
 })

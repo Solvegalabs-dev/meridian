@@ -13,6 +13,7 @@ import OfflineBanner from './OfflineBanner'
 import { useStrikeCache } from '@/hooks/useStrikeCache'
 import type { WindowEvaluation } from '@/lib/objectives/windowState'
 import { defaultStrikeTab, type StrikeTab } from '@/lib/strike/defaultTab'
+import { hasStoredBrief } from '@/lib/strike/briefFreshness'
 
 // "Brief" (not "Strike Brief") so five tabs fit at 375 px without truncation.
 const TAB_LABELS: Record<StrikeTab, string> = {
@@ -56,6 +57,8 @@ export default function StrikeBriefClient({
   const [activeTab, setActiveTab] = useState<StrikeTab>(() => defaultStrikeTab(evaluation?.state ?? null))
 
   const [brief, setBrief] = useState(initialBrief)
+  // The server prop only covers the first load. A refresh can bring in a brief that did not exist then.
+  const [briefPresent, setBriefPresent] = useState(hasBrief)
   const [isOnline, setIsOnline] = useState(true)
   const { cachedBrief, cacheBrief } = useStrikeCache(objective.id)
 
@@ -83,6 +86,7 @@ export default function StrikeBriefClient({
       )
       const fresh = await res.json()
       setBrief(fresh)
+      setBriefPresent(hasStoredBrief(fresh))
     } catch {}
   }, [arcObjectiveId])
 
@@ -118,7 +122,7 @@ export default function StrikeBriefClient({
         title={title}
         taxonomyKey={objective.taxonomy_key ?? ''}
         evaluation={evaluation}
-        hasBrief={hasBrief}
+        hasBrief={briefPresent}
         brief={displayBrief}
         isOnline={isOnline}
       />

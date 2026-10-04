@@ -5,6 +5,7 @@ import StrikeFooter from './StrikeFooter'
 import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
 import { verdictStyle } from '@/lib/strike/verdictStyles'
 import { isStaleBrief, staleBriefNote, updatedLabel } from '@/lib/strike/briefFreshness'
+import { PRESEASON_CAPTION } from '@/lib/strike/windowStatus'
 import type { WindowState } from '@/lib/objectives/windowState'
 import { formatDateOnly } from '@/lib/utils/dateOnly'
 
@@ -84,6 +85,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
   const generatedAt = brief.brief_generated_at ?? null
   const now = new Date()
   const huntActive = windowState === 'active'
+  const isPreseason = windowState === 'upcoming' || windowState === 'season_not_open'
   const stale = !closed && generatedAt !== null && isStaleBrief(generatedAt, now, huntActive)
 
   return (
@@ -97,6 +99,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
           >
             {verdict.label}
           </span>
+          {!closed && isPreseason && <div className="text-sm text-slate-200">{PRESEASON_CAPTION}</div>}
           {!closed && generatedAt && <div className="text-sm text-slate-300">{updatedLabel(generatedAt)}</div>}
           {stale && generatedAt && (
             <div className="rounded-lg px-4 py-3 text-sm font-medium" style={{ backgroundColor: '#451a03', color: '#fde68a' }}>
