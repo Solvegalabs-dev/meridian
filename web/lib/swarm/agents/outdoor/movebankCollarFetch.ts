@@ -546,12 +546,12 @@ export function formatMovebankTimestamp(date: Date): string {
 // --- Individuals (addendum 4 item 2 — multi-species study filtering) ---
 // A study can carry several species; without this, events from a
 // completely different animal were being binned into the requested
-// species' pattern. `individual_taxon_canonical_name` is the confirmed
-// result-header attribute name for entity_type=individual (NOT
-// "taxon_canonical_name" — that was an unverified guess). The join key
-// back to an event is individual.id == event.individual_id (confirmed in
-// the docs); local_identifier is a separate human-readable tag, not the
-// join key.
+// species' pattern.
+// Batch1c: the study-level entity uses `taxon_canonical_name` (confirmed via
+// live probe Oct 6 2026 — `individual_taxon_canonical_name` is an EVENT
+// attribute; the individuals endpoint rejects it with 5xx). The join key back
+// to an event is individual.id == event.individual_id; local_identifier is a
+// human-readable tag, not the join key.
 export type MovebankIndividual = {
   id: string;
   localIdentifier: string;
@@ -561,7 +561,7 @@ export type MovebankIndividual = {
 export async function fetchMovebankIndividuals(studyId: string, licenseType?: string): Promise<MovebankIndividual[]> {
   const url = 'https://www.movebank.org/movebank/service/direct-read'
     + `?entity_type=individual&study_id=${studyId}`
-    + '&attributes=id,local_identifier,individual_taxon_canonical_name';
+    + '&attributes=id,local_identifier,taxon_canonical_name';
 
   // Metadata, not tracking data — routed through the same choke point for
   // rate-limiting/serialization, but never itself recorded as a license
@@ -575,7 +575,7 @@ export async function fetchMovebankIndividuals(studyId: string, licenseType?: st
     .map(r => ({
       id: r.id,
       localIdentifier: r.local_identifier ?? '',
-      taxonCanonicalName: r.individual_taxon_canonical_name ?? '',
+      taxonCanonicalName: r.taxon_canonical_name ?? '',
     }));
 }
 
