@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { FakeDb } from '@/lib/spots/testDb'
 import { hashPartnerKey } from '@/lib/auth/partnerAuth'
+import { INVITE_ONLY_MESSAGE } from '@/lib/auth/inviteGate'
 import { resetRateLimitsForTests } from '@/lib/auth/rateLimit'
 import { POST } from './route'
 
 let db: FakeDb
-let sessionUser: { id: string } | null = null
+let sessionUser: { id: string; email?: string } | null = null
 
 vi.mock('@/lib/supabase/server', () => ({
   createServiceClient: () => db,
@@ -20,6 +21,8 @@ vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }))
 
 const PARTNER_KEY = 'partner-key-basemaps-0123456789abcdef'
 const REVOKED_KEY = 'partner-key-revoked-0123456789abcdef'
+
+const INVITED = { id: 'user-1', email: 'Invited@Example.com' }
 
 const BODY = {
   domain: 'elk',
@@ -48,6 +51,7 @@ function seed(partnerOverrides: Record<string, unknown> = {}) {
     ],
     objectives: [],
     objective_profiles: [],
+    allowed_emails: [{ email: 'invited@example.com', invited_by: 'founder' }],
   })
 }
 
@@ -66,7 +70,7 @@ describe('POST /api/objectives/create: no door', () => {
   })
 
   it('an Authorization header that is not a valid key is a 401, even with a session', async () => {
-    sessionUser = { id: 'user-1' }
+    sessionUser = INVITED
     const res = await POST(req(BODY, 'Bearer not-a-real-partner-key-000000000'))
     expect(res.status).toBe(401)
     expect(db.tables.objective_profiles).toHaveLength(0)
@@ -81,7 +85,7 @@ describe('POST /api/objectives/create: no door', () => {
 
 describe('POST /api/objectives/create: session door (Strike)', () => {
   it('owns the objective by the session user, ignoring user_id and org_source in the body', async () => {
-    sessionUser = { id: 'user-1' }
+    sessionUser = INVITED
     const res = await POST(req({ ...BODY, org_source: 'basemaps', user_id: 'someone-else' }))
     expect(res.status).toBe(201)
 
@@ -92,7 +96,7 @@ describe('POST /api/objectives/create: session door (Strike)', () => {
   })
 
   it('creates a linked objectives row that the sweep and crons can select', async () => {
-    sessionUser = { id: 'user-1' }
+    sessionUser = INVITED
     const res = await POST(req(BODY))
     const body = await res.json()
 
@@ -106,7 +110,80 @@ describe('POST /api/objectives/create: session door (Strike)', () => {
   })
 })
 
+describe('POST /api/objectives/create: invite gate on the session door (FF-092 Part 2.3)', () => {
+  it('an invited user passes, matched regardless of email case', async () => {
+    sessionUser = INVITED // Invited@Example.com vs invited@example.com on the list
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(201)
+    expect(db.tables.objective_profiles).toHaveLength(1)
+  })
+
+  it('a signed-in user who is not invited gets 403 with the invite-only message and nothing is written', async () => {
+    sessionUser = { id: 'user-2', email: 'stranger@example.com' }
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe(INVITE_ONLY_MESSAGE)
+    expect(db.tables.objectives).toHaveLength(0)
+    expect(db.tables.objective_profiles).toHaveLength(0)
+  })
+
+  it('a session with no email is not invited', async () => {
+    sessionUser = { id: 'user-3' }
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(403)
+    expect(db.tables.objective_profiles).toHaveLength(0)
+  })
+
+  it('fails closed when the invite lookup errors', async () => {
+    sessionUser = INVITED
+    const realFrom = db.from.bind(db)
+    db.from = ((table: string) => table === 'allowed_emails'
+      ? { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: { message: 'down' } }) }) }) }
+      : realFrom(table)) as typeof db.from
+
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(403)
+    expect(db.tables.objective_profiles).toHaveLength(0)
+  })
+
+  it('fails closed when the invite lookup throws', async () => {
+    sessionUser = INVITED
+    const realFrom = db.from.bind(db)
+    db.from = ((table: string) => {
+      if (table === 'allowed_emails') throw new Error('connection reset')
+      return realFrom(table)
+    }) as typeof db.from
+
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(403)
+    expect(db.tables.objective_profiles).toHaveLength(0)
+  })
+
+  it('a signed-out request is still a 401, not a 403', async () => {
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(401)
+  })
+})
+
 describe('POST /api/objectives/create: partner door', () => {
+  it('a valid partner key is not checked against allowed_emails', async () => {
+    db.tables.allowed_emails = [] // nobody is invited
+    const res = await POST(req(BODY, `Bearer ${PARTNER_KEY}`))
+    expect(res.status).toBe(201)
+    expect(db.tables.objective_profiles[0].user_id).toBe('svc-bm')
+  })
+
+  it('a valid partner key works even when the invite lookup would error', async () => {
+    const realFrom = db.from.bind(db)
+    db.from = ((table: string) => {
+      if (table === 'allowed_emails') throw new Error('allowed_emails must not be read on the partner path')
+      return realFrom(table)
+    }) as typeof db.from
+
+    const res = await POST(req(BODY, `Bearer ${PARTNER_KEY}`))
+    expect(res.status).toBe(201)
+  })
+
   it('takes the partner, org_source and owner from the key, not the body', async () => {
     const res = await POST(req({ ...BODY, org_source: 'strike', user_id: 'user-1', partner_user_ref: 'cust-123' }, `Bearer ${PARTNER_KEY}`))
     expect(res.status).toBe(201)
@@ -121,13 +198,13 @@ describe('POST /api/objectives/create: partner door', () => {
   })
 
   it('ignores a signed-in session when a valid key is sent', async () => {
-    sessionUser = { id: 'user-1' }
+    sessionUser = INVITED
     await POST(req(BODY, `Bearer ${PARTNER_KEY}`))
     expect(db.tables.objective_profiles[0].user_id).toBe('svc-bm')
   })
 
   it('a body org_source of basemaps without a key creates a Strike objective, not a partner one', async () => {
-    sessionUser = { id: 'user-1' }
+    sessionUser = INVITED
     await POST(req({ ...BODY, org_source: 'basemaps' }))
     expect(db.tables.objective_profiles[0].partner_id).toBeNull()
     expect(db.tables.objective_profiles[0].org_source).toBe('strike')

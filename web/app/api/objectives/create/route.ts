@@ -1,7 +1,7 @@
 // POST /api/objectives/create — MIP Objective Intake
 // Core: intake contract is universal. Two doors, decided by the request (FF-092):
 //   Session (Strike): the signed-in user owns the objective. org_source is 'strike'.
-//     The body cannot name a user.
+//     The body cannot name a user. The user must be on the invite list (403 if not).
 //   Partner (Authorization: Bearer <key>): the key decides the partner, its org_source, and its
 //     service owner. org_source and user_id in the body are ignored. partner_user_ref is the partner's
 //     opaque id for its customer.
@@ -14,6 +14,7 @@ import { resolveFullGeography } from '@/lib/geo/locationResolver'
 import { normalizeHuntCode } from '@/lib/hunts/huntCode'
 import { authenticatePartner, isPartnerRequest } from '@/lib/auth/partnerAuth'
 import { partnerRateLimitResponse } from '@/lib/auth/rateLimit'
+import { isUserInvited, INVITE_ONLY_MESSAGE } from '@/lib/auth/inviteGate'
 import { createLinkedObjective, LinkedObjectiveError } from '@/lib/objectives/linkedObjective'
 
 export const dynamic = 'force-dynamic'
@@ -70,6 +71,11 @@ async function resolveCaller(request: NextRequest, body: CreateObjectiveBody): P
 
   const { data: { user } } = await createClient().auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // FF-092 Part 2.3: the session door is invite-only. Partner keys never reach this branch.
+  if (!(await isUserInvited(createServiceClient(), user))) {
+    return NextResponse.json({ error: INVITE_ONLY_MESSAGE }, { status: 403 })
+  }
   return { ownerUserId: user.id, orgSource: 'strike', partnerId: null, partnerRef: null }
 }
 

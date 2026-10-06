@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { FakeDb } from '@/lib/spots/testDb'
-import { isEmailInvited, normalizeInviteEmail } from './inviteGate'
+import { isEmailInvited, isUserInvited, normalizeInviteEmail } from './inviteGate'
 
 const asDb = (d: FakeDb) => d as unknown as Parameters<typeof isEmailInvited>[0]
 
@@ -31,7 +31,25 @@ describe('isEmailInvited', () => {
     expect(await isEmailInvited(asDb(d), 'ghostnet5x5@gmail.com')).toBe(false)
   })
 
+  it('fails closed when the lookup throws', async () => {
+    const d = invites()
+    d.from = (() => { throw new Error('connection reset') }) as typeof d.from
+    expect(await isEmailInvited(asDb(d), 'ghostnet5x5@gmail.com')).toBe(false)
+  })
+
   it('normalizes to lowercase', () => {
     expect(normalizeInviteEmail(' A@B.COM ')).toBe('a@b.com')
+  })
+})
+
+describe('isUserInvited', () => {
+  it('checks the user email against the list', async () => {
+    expect(await isUserInvited(asDb(invites()), { email: 'ghostnet5x5@gmail.com' })).toBe(true)
+    expect(await isUserInvited(asDb(invites()), { email: 'stranger@example.com' })).toBe(false)
+  })
+
+  it('a user with no email is not invited', async () => {
+    expect(await isUserInvited(asDb(invites()), {})).toBe(false)
+    expect(await isUserInvited(asDb(invites()), { email: null })).toBe(false)
   })
 })

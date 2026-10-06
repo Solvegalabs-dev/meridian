@@ -1,6 +1,8 @@
 import { notFound } from 'next/navigation'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { requireObjectiveAccess, ObjectiveAccessError } from '@/lib/auth/ownership'
+import { isUserInvited } from '@/lib/auth/inviteGate'
+import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
 import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
 import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
@@ -161,6 +163,9 @@ export default async function StrikePage({ params }: { params: { id: string } })
   if (!user) notFound()
 
   const supabase = createServiceClient()
+  // FF-092 Part 2.3: not invited means the screen and no data, before any objective lookup.
+  if (!(await isUserInvited(supabase, user))) return <InviteOnlyScreen />
+
   let objective: Awaited<ReturnType<typeof requireObjectiveAccess>>
   try {
     objective = await requireObjectiveAccess(supabase, user.id, params.id, STRIKE_PAGE_COLUMNS)

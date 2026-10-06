@@ -1,5 +1,5 @@
-// Invite list for Strike testers (FF-092 Part 2.3). Fails closed: a lookup error means not invited.
-// The check is not yet wired into any signup or login flow. See the FF-092 PR for the open question.
+// Invite list for Strike testers (FF-092 Part 2.3). Gated at the point of use, not at signup:
+// the Strike pages and the session path of POST /api/objectives/create check it. Fails closed: a lookup error means not invited.
 import type { createServiceClient } from '@/lib/supabase/server'
 
 type Db = ReturnType<typeof createServiceClient>
@@ -14,12 +14,20 @@ export async function isEmailInvited(db: Db, email: string): Promise<boolean> {
   const normalized = normalizeInviteEmail(email)
   if (!normalized) return false
 
-  const { data, error } = await db
-    .from('allowed_emails')
-    .select('email')
-    .eq('email', normalized)
-    .maybeSingle()
-  if (error) return false
+  try {
+    const { data, error } = await db
+      .from('allowed_emails')
+      .select('email')
+      .eq('email', normalized)
+      .maybeSingle()
+    if (error) return false
+    return data != null
+  } catch {
+    return false
+  }
+}
 
-  return data != null
+// A signed-in user with no email on the session cannot be on the list.
+export async function isUserInvited(db: Db, user: { email?: string | null }): Promise<boolean> {
+  return user.email ? isEmailInvited(db, user.email) : false
 }
