@@ -6,12 +6,16 @@ const {
   fetchMovebankStudyMetaMock,
   fetchMovebankIndividualsMock,
   fetchMovebankEventsVariantMock,
+  fetchMovebankEventsForWindowMock,
+  probeStudyAttributeMock,
 } = vi.hoisted(() => ({
   fetchMovebankStudiesDetailedMock: vi.fn(),
   fetchMovebankEventsDetailedMock: vi.fn(),
   fetchMovebankStudyMetaMock: vi.fn(),
   fetchMovebankIndividualsMock: vi.fn(),
   fetchMovebankEventsVariantMock: vi.fn(),
+  fetchMovebankEventsForWindowMock: vi.fn(),
+  probeStudyAttributeMock: vi.fn(),
 }))
 
 vi.mock('@/lib/swarm/agents/outdoor/movebankCollarFetch', async (importOriginal) => {
@@ -23,6 +27,8 @@ vi.mock('@/lib/swarm/agents/outdoor/movebankCollarFetch', async (importOriginal)
     fetchMovebankStudyMeta: fetchMovebankStudyMetaMock,
     fetchMovebankIndividuals: fetchMovebankIndividualsMock,
     fetchMovebankEventsVariant: fetchMovebankEventsVariantMock,
+    fetchMovebankEventsForWindow: fetchMovebankEventsForWindowMock,
+    probeStudyAttribute: probeStudyAttributeMock,
   }
 })
 
@@ -44,6 +50,8 @@ describe('GET /api/admin/movebank-probe', () => {
       http_ok: true, response_bytes: 100, truncated: false, data_line_count: 0,
       access_denied_message: false, header_columns: [], handshake: 'not_required', elapsed_ms: 5,
     })
+    fetchMovebankEventsForWindowMock.mockReset()
+    probeStudyAttributeMock.mockReset()
   })
 
   it('returns 401 with no Authorization header, and never leaks the password', async () => {
@@ -319,5 +327,241 @@ describe('GET /api/admin/movebank-probe', () => {
     // only the ids/license/distance/individual-count aggregate fields.
     const bodyText = JSON.stringify(body)
     expect(bodyText).not.toMatch(/"name":"[A-D]"/)
+  })
+
+  describe('fix round item 3: bisect=study_meta', () => {
+    it('requires a study_id', async () => {
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toMatch(/study_id/)
+      expect(probeStudyAttributeMock).not.toHaveBeenCalled()
+    })
+
+    it('reports the baseline (attributes=id) failure and skips per-attribute bisection when it fails', async () => {
+      probeStudyAttributeMock.mockResolvedValue({ ok: false, http_status_class: '4xx', elapsed_ms: 12 })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta&study_id=999',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(body.mode).toBe('bisect_study_meta')
+      expect(probeStudyAttributeMock).toHaveBeenCalledTimes(1) // baseline only — never bisects further
+      expect(probeStudyAttributeMock).toHaveBeenCalledWith('999', 'id')
+      expect(body.baseline).toEqual({ ok: false, http_status_class: '4xx', elapsed_ms: 12 })
+      expect(body.note).toMatch(/how this study is identified/)
+      expect(body.attributes).toBeUndefined()
+    })
+
+    it('bisects all 7 study-meta attributes serially after a successful baseline, reporting HTTP class only', async () => {
+      probeStudyAttributeMock.mockImplementation(async (_studyId: string, attributes: string) => {
+        if (attributes === 'license_terms') return { ok: false, http_status_class: '5xx', elapsed_ms: 20 }
+        return { ok: true, http_status_class: '2xx', elapsed_ms: 10 }
+      })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta&study_id=7364502758',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(body.baseline).toMatchObject({ ok: true })
+      // baseline (1) + 7 study-meta attributes, each called alone.
+      expect(probeStudyAttributeMock).toHaveBeenCalledTimes(8)
+      expect(Object.keys(body.attributes)).toEqual([
+        'timestamp_first_deployed_location', 'timestamp_last_deployed_location',
+        'number_of_deployed_locations', 'sensor_type_ids', 'taxon_ids',
+        'number_of_individuals', 'license_terms',
+      ])
+      expect(body.attributes.taxon_ids).toEqual({ ok: true, http_status_class: '2xx', elapsed_ms: 10 })
+      expect(body.attributes.license_terms).toEqual({ ok: false, http_status_class: '5xx', elapsed_ms: 20 })
+
+      // Never a response body, license text, or raw data — only ok/class/timing.
+      const bodyText = JSON.stringify(body)
+      expect(bodyText).not.toContain('super-secret-password')
+      expect(bodyText).not.toContain('license_text')
+    })
+  })
+
+  describe('fix round #2: bisect=study_meta_params', () => {
+    it('requires a study_id', async () => {
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta_params',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toMatch(/study_id/)
+      expect(probeStudyAttributeMock).not.toHaveBeenCalled()
+    })
+
+    it('tests shapes A, B, C serially with taxon_ids, and reports working_shape:null + stops when none work', async () => {
+      probeStudyAttributeMock.mockResolvedValue({ ok: false, http_status_class: '5xx', elapsed_ms: 15 })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta_params&study_id=7364502758',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(body.mode).toBe('bisect_study_meta_params')
+      // Exactly 3 calls (A, B, C), each with 'taxon_ids' — no license_terms call, since nothing worked.
+      expect(probeStudyAttributeMock).toHaveBeenCalledTimes(3)
+      expect(probeStudyAttributeMock).toHaveBeenNthCalledWith(1, '7364502758', 'taxon_ids', { idParam: 'study_id', includeDownloadAccess: true })
+      expect(probeStudyAttributeMock).toHaveBeenNthCalledWith(2, '7364502758', 'taxon_ids', { idParam: 'id', includeDownloadAccess: false })
+      expect(probeStudyAttributeMock).toHaveBeenNthCalledWith(3, '7364502758', 'taxon_ids', { idParam: 'id', includeDownloadAccess: true })
+      expect(body.taxon_ids_by_shape).toEqual({
+        A: { ok: false, http_status_class: '5xx', elapsed_ms: 15 },
+        B: { ok: false, http_status_class: '5xx', elapsed_ms: 15 },
+        C: { ok: false, http_status_class: '5xx', elapsed_ms: 15 },
+      })
+      expect(body.working_shape).toBeNull()
+      expect(body.license_terms_result).toBeUndefined()
+      expect(body.note).toMatch(/not what caused/)
+    })
+
+    it('tests all three shapes (A, B, C) even once A already works, picks A as working_shape, and retests license_terms under it', async () => {
+      probeStudyAttributeMock.mockImplementation(async (_studyId: string, attributes: string) => {
+        if (attributes === 'license_terms') return { ok: true, http_status_class: '2xx', elapsed_ms: 8 }
+        return { ok: true, http_status_class: '2xx', elapsed_ms: 10 } // all three shapes happen to succeed
+      })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta_params&study_id=999',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(body.working_shape).toBe('A') // first shape that worked, in A/B/C order
+      // A, B, C always all tested (so Jason sees all 3 results), then one more call for license_terms under the winning shape (A).
+      expect(probeStudyAttributeMock).toHaveBeenCalledTimes(4)
+      expect(probeStudyAttributeMock).toHaveBeenNthCalledWith(4, '999', 'license_terms', { idParam: 'study_id', includeDownloadAccess: true })
+      expect(body.taxon_ids_by_shape).toEqual({
+        A: { ok: true, http_status_class: '2xx', elapsed_ms: 10 },
+        B: { ok: true, http_status_class: '2xx', elapsed_ms: 10 },
+        C: { ok: true, http_status_class: '2xx', elapsed_ms: 10 },
+      })
+      expect(body.license_terms_result).toEqual({ ok: true, http_status_class: '2xx', elapsed_ms: 8 })
+      expect(body.note).toMatch(/Shape A worked/)
+      expect(body.note).toMatch(/NOT been switched/)
+    })
+
+    it('picks shape B as working when A fails but B succeeds, and never reports a response body', async () => {
+      probeStudyAttributeMock.mockImplementation(async (_studyId: string, attributes: string, shape?: { idParam: string }) => {
+        if (attributes === 'license_terms') return { ok: true, http_status_class: '2xx', elapsed_ms: 9 }
+        if (shape?.idParam === 'study_id') return { ok: false, http_status_class: '5xx', elapsed_ms: 11 } // shape A fails
+        return { ok: true, http_status_class: '2xx', elapsed_ms: 12 } // shape B (and C) succeed
+      })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?bisect=study_meta_params&study_id=999',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(body.working_shape).toBe('B')
+      expect(body.taxon_ids_by_shape.A.ok).toBe(false)
+      expect(body.taxon_ids_by_shape.B.ok).toBe(true)
+      expect(probeStudyAttributeMock).toHaveBeenLastCalledWith('999', 'license_terms', { idParam: 'id', includeDownloadAccess: false })
+
+      const bodyText = JSON.stringify(body)
+      expect(bodyText).not.toContain('super-secret-password')
+    })
+  })
+
+  describe('fix round item 3: windowed probe (window_start/window_end/sensor) in direct study_id mode', () => {
+    beforeEach(() => {
+      fetchMovebankEventsDetailedMock.mockResolvedValue({ events: [], handshake: 'not_required' })
+    })
+
+    it('reports per-stage counts and top taxon names, still gated by record=false by default', async () => {
+      fetchMovebankEventsForWindowMock.mockResolvedValue({
+        events: [
+          { individualId: 'i1', timestamp: '2019-10-01 08:00:00', lat: 40.5, lon: -110.0, taxonCanonicalName: 'Cervus elaphus' },
+          { individualId: 'i2', timestamp: '2019-10-02 08:00:00', lat: 40.5, lon: -110.0, taxonCanonicalName: 'Cervus elaphus' },
+          { individualId: 'i3', timestamp: '2019-10-03 08:00:00', lat: 60.0, lon: -110.0, taxonCanonicalName: 'Cervus elaphus' }, // outside EVENT_RADIUS_KM of the default lat/lon
+        ],
+        handshake: 'not_required',
+        truncated: false,
+      })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?study_id=999&species=elk&window_start=2019-10-01T00:00:00Z&window_end=2019-10-16T00:00:00Z&sensor=0',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(fetchMovebankEventsForWindowMock).toHaveBeenCalledWith(
+        '999', new Date('2019-10-01T00:00:00Z'), new Date('2019-10-16T00:00:00Z'), undefined, false, false
+      )
+      expect(body.windowed_probe).toMatchObject({
+        sensor_filter: false,
+        handshake: 'not_required',
+        truncated: false,
+        rows_fetched: 3,
+        rows_species_match: 3,
+        rows_in_radius: 2,
+        top_taxon_names: [{ name: 'Cervus elaphus', count: 3 }],
+      })
+
+      const bodyText = JSON.stringify(body)
+      expect(bodyText).not.toContain('"i1"')
+      expect(bodyText).not.toContain('"i2"')
+    })
+
+    it('defaults sensor filter on when sensor param is omitted', async () => {
+      fetchMovebankEventsForWindowMock.mockResolvedValue({ events: [], handshake: 'not_required', truncated: false })
+
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?study_id=999&window_start=2019-10-01T00:00:00Z&window_end=2019-10-16T00:00:00Z',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      await GET(req)
+
+      expect(fetchMovebankEventsForWindowMock).toHaveBeenCalledWith(
+        '999', new Date('2019-10-01T00:00:00Z'), new Date('2019-10-16T00:00:00Z'), undefined, false, true
+      )
+    })
+
+    it('reports an error for an invalid window_start/window_end instead of throwing', async () => {
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?study_id=999&window_start=not-a-date&window_end=also-not-a-date',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(res.status).toBe(200)
+      expect(body.windowed_probe.error).toMatch(/valid date/)
+      expect(fetchMovebankEventsForWindowMock).not.toHaveBeenCalled()
+    })
+
+    it('omits windowed_probe entirely when window_start/window_end are not provided', async () => {
+      const req = new Request(
+        'https://example.com/api/admin/movebank-probe?study_id=999',
+        { headers: { Authorization: 'Bearer test-cron-secret' } }
+      )
+      const res = await GET(req)
+      const body = await res.json()
+
+      expect(body.windowed_probe).toBeUndefined()
+      expect(fetchMovebankEventsForWindowMock).not.toHaveBeenCalled()
+    })
   })
 })

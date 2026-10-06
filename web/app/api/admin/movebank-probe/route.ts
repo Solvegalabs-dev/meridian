@@ -4,16 +4,23 @@ import {
   hasMovebankCredentials,
   fetchMovebankStudiesDetailed,
   fetchMovebankEventsDetailed,
+  fetchMovebankEventsForWindow,
   fetchMovebankIndividuals,
   fetchMovebankStudyMeta,
   fetchMovebankEventsVariant,
+  probeStudyAttribute,
   isCommercialSafeLicense,
   taxonMatchesAny,
   MOVEBANK_TAXON_NAMES,
   STUDY_QUERY_PARAM_NAMES,
+  STUDY_META_ATTRIBUTES,
+  STUDY_PARAM_SHAPES,
   type MovebankStudy,
   type MovebankEventVariantOptions,
+  type MovebankEventWithTaxon,
+  type StudyAttributeProbeResult,
 } from '@/lib/swarm/agents/outdoor/movebankCollarFetch';
+import { topTaxonNameCounts } from '@/lib/swarm/agents/outdoor/collar/jobRunner';
 
 // FF-093 addendum — live diagnostic probe so Jason can verify Movebank
 // credentials, real license_type spellings, the license handshake, and the
@@ -231,6 +238,10 @@ export async function GET(request: Request) {
   const limit = Math.max(1, Math.min(10, Number(searchParams.get('limit') ?? 3) || 3));
   const directStudyId = searchParams.get('study_id');
   const directLicenseType = searchParams.get('license_type');
+  const bisect = searchParams.get('bisect');
+  const windowStartParam = searchParams.get('window_start');
+  const windowEndParam = searchParams.get('window_end');
+  const sensorParam = searchParams.get('sensor'); // '0' | '1' — default on (matches production)
   // Off by default: a diagnostic probe run must make zero database writes.
   // The handshake itself still runs (Movebank requires it regardless), but
   // the accepted-license audit row is only written when explicitly asked.
@@ -242,6 +253,97 @@ export async function GET(request: Request) {
   if (!credentialsPresent) {
     report.auth_ok = null;
     report.note = 'MOVEBANK_USERNAME/MOVEBANK_PASSWORD not set — cannot probe further.';
+    return NextResponse.json(report);
+  }
+
+  // Fix round item 3 — bisect=study_meta: isolates whether a single study
+  // attribute name is the problem, vs. the way the study itself is
+  // identified. Per Jason's explicit instruction, a baseline call using only
+  // `attributes=id` runs FIRST against the same study_id; if that fails,
+  // bisecting individual attribute names would be meaningless (the problem
+  // is study identification/access, not an attribute spelling), so this
+  // reports the baseline failure and stops rather than bisecting further.
+  // Every call here goes through probeStudyAttribute -> movebankRequest,
+  // which already serializes and rate-limits every real Movebank call in
+  // this codebase — "serially, with the normal spacing and cooldown" is the
+  // default behavior, not something this route layers on top.
+  if (bisect === 'study_meta') {
+    if (!directStudyId) {
+      report.error = 'bisect=study_meta requires a study_id parameter';
+      return NextResponse.json(report, { status: 400 });
+    }
+
+    report.mode = 'bisect_study_meta';
+    report.study_id = directStudyId;
+
+    const baseline = await probeStudyAttribute(directStudyId, 'id');
+    report.baseline = baseline;
+
+    if (!baseline.ok) {
+      report.note = 'Baseline attributes=id call failed — the problem is how this study is identified (study_id, credentials, or access), not a specific attribute name. Per-attribute bisection skipped.';
+      report.elapsed_ms = Date.now() - start;
+      return NextResponse.json(report);
+    }
+
+    const attributeResults: Record<string, StudyAttributeProbeResult | { skipped: true; reason: string }> = {};
+    for (const attr of STUDY_META_ATTRIBUTES) {
+      if (Date.now() - start > DEADLINE_MS) {
+        attributeResults[attr] = { skipped: true, reason: 'deadline reached' };
+        continue;
+      }
+      attributeResults[attr] = await probeStudyAttribute(directStudyId, attr);
+    }
+    report.attributes = attributeResults;
+    report.elapsed_ms = Date.now() - start;
+    return NextResponse.json(report);
+  }
+
+  // Fix round #2 — bisect=study_meta_params: the attribute-name bisection
+  // above keeps the request SHAPE fixed; this instead varies the shape
+  // while keeping the attribute fixed (taxon_ids), to isolate whether the
+  // live HTTP 500s are caused by a missing `i_have_download_access=true`
+  // and/or by filtering on `study_id=X` instead of `id=X`. Shapes run
+  // serially in order A, B, C — each through probeStudyAttribute's own
+  // movebankRequest call, so they inherit the same rate limit/serialization
+  // as every other call in this codebase. The first shape that returns
+  // ok:true is treated as "the shape that worked" and is re-tested once
+  // more with license_terms. Still reports HTTP status class only, never a
+  // response body.
+  if (bisect === 'study_meta_params') {
+    if (!directStudyId) {
+      report.error = 'bisect=study_meta_params requires a study_id parameter';
+      return NextResponse.json(report, { status: 400 });
+    }
+
+    report.mode = 'bisect_study_meta_params';
+    report.study_id = directStudyId;
+    report.shape_definitions = {
+      A: 'study_id=<id> + i_have_download_access=true',
+      B: 'id=<id> instead of study_id=<id>',
+      C: 'id=<id> + i_have_download_access=true',
+    };
+
+    const shapeIds: Array<'A' | 'B' | 'C'> = ['A', 'B', 'C'];
+    const taxonResultsByShape: Record<string, StudyAttributeProbeResult> = {};
+    let workingShapeId: 'A' | 'B' | 'C' | null = null;
+
+    for (const shapeId of shapeIds) {
+      const result = await probeStudyAttribute(directStudyId, 'taxon_ids', STUDY_PARAM_SHAPES[shapeId]);
+      taxonResultsByShape[shapeId] = result;
+      if (result.ok && !workingShapeId) workingShapeId = shapeId;
+    }
+    report.taxon_ids_by_shape = taxonResultsByShape;
+    report.working_shape = workingShapeId;
+
+    if (!workingShapeId) {
+      report.note = 'None of shapes A/B/C changed the outcome for taxon_ids — the request shape is not what caused the earlier HTTP 500s.';
+      report.elapsed_ms = Date.now() - start;
+      return NextResponse.json(report);
+    }
+
+    report.license_terms_result = await probeStudyAttribute(directStudyId, 'license_terms', STUDY_PARAM_SHAPES[workingShapeId]);
+    report.note = `Shape ${workingShapeId} worked for taxon_ids. fetchMovebankStudyMeta/fetchMovebankIndividuals have NOT been switched to it automatically — report this result back so that one-line production change (and the same shape on the individuals call) can be made with live confirmation rather than a guess.`;
+    report.elapsed_ms = Date.now() - start;
     return NextResponse.json(report);
   }
 
@@ -310,6 +412,49 @@ export async function GET(request: Request) {
       individuals_error: individualsError,
       variants: variantResults,
     };
+
+    // Fix round item 3 — optional windowed probe (window_start/window_end +
+    // sensor=0|1), mirroring the Phase 2 job runner's own windowed fetch so
+    // a specific (study, window) combination can be diagnosed directly.
+    // Still subject to the same `record` gate as the rest of this route —
+    // only the handshake's own acceptance write is gated, nothing else here
+    // ever touches the database.
+    if (windowStartParam && windowEndParam) {
+      const windowStart = new Date(windowStartParam);
+      const windowEnd = new Date(windowEndParam);
+      const sensorFilter = sensorParam !== '0';
+
+      if (isNaN(windowStart.getTime()) || isNaN(windowEnd.getTime())) {
+        report.windowed_probe = { error: 'window_start/window_end must be valid date strings' };
+      } else {
+        const windowProbeStart = Date.now();
+        try {
+          const { events, handshake, truncated } = await fetchMovebankEventsForWindow(
+            directStudyId, windowStart, windowEnd, directLicenseType ?? undefined, record, sensorFilter
+          );
+          const windowScientificNames = MOVEBANK_TAXON_NAMES[species] ?? null;
+          const speciesMatchEvents: MovebankEventWithTaxon[] = windowScientificNames
+            ? events.filter(e => e.taxonCanonicalName && windowScientificNames.some(n => n.toLowerCase() === e.taxonCanonicalName.toLowerCase()))
+            : events;
+          const inRadius = speciesMatchEvents.filter(e => haversineKm(lat, lon, e.lat, e.lon) <= EVENT_RADIUS_KM);
+
+          report.windowed_probe = {
+            window_start: windowStart.toISOString(),
+            window_end: windowEnd.toISOString(),
+            sensor_filter: sensorFilter,
+            handshake,
+            truncated,
+            rows_fetched: events.length,
+            rows_species_match: windowScientificNames ? speciesMatchEvents.length : null,
+            rows_in_radius: inRadius.length,
+            top_taxon_names: topTaxonNameCounts(events),
+            elapsed_ms: Date.now() - windowProbeStart,
+          };
+        } catch (err) {
+          report.windowed_probe = { error: err instanceof Error ? err.message : 'unknown error' };
+        }
+      }
+    }
 
     report.elapsed_ms = Date.now() - start;
     return NextResponse.json(report);

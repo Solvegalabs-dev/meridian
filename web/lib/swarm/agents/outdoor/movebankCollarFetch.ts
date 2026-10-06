@@ -69,6 +69,24 @@ export function resolveMovebankTaxon(taxonomyKey: string): { scientificNames: st
   return null;
 }
 
+// Reverse of resolveMovebankTaxon's speciesTaxonKey — Phase 2 jobs store
+// only species_taxon_key (already resolved once by the planner), so the
+// worker needs to get back to scientificNames without the original full
+// taxonomy_key. Matches resolveMovebankTaxon's exact branching so the two
+// can never disagree about what a given key means.
+export function scientificNamesForSpeciesTaxonKey(speciesTaxonKey: string): string[] {
+  const root = speciesTaxonKey.split('.')[0];
+
+  if (root === 'elk') return MOVEBANK_TAXON_NAMES.elk;
+  if (speciesTaxonKey === 'deer.mule') return MOVEBANK_TAXON_NAMES.deer_mule;
+  if (speciesTaxonKey === 'deer.whitetail') return MOVEBANK_TAXON_NAMES.deer_whitetail;
+  if (root === 'moose') return MOVEBANK_TAXON_NAMES.moose;
+  if (root === 'caribou') return MOVEBANK_TAXON_NAMES.caribou;
+  if (root === 'pronghorn') return MOVEBANK_TAXON_NAMES.pronghorn;
+
+  return [];
+}
+
 export function hasMovebankCredentials(): boolean {
   return !!process.env.MOVEBANK_USERNAME && !!process.env.MOVEBANK_PASSWORD;
 }
@@ -307,6 +325,8 @@ export type MovebankStudy = {
   licenseType: string;
   citation: string;
   hasDownloadAccess: boolean;
+  timestampFirstDeployedLocation: string; // raw Movebank string — Phase 2 job planning intersects windows against these
+  timestampLastDeployedLocation: string;
 };
 
 const MAX_STUDY_ROWS = 20000;
@@ -325,7 +345,11 @@ export type MovebankStudyFetchResult = {
 const STUDY_QUERY_PARAMS: Record<string, string> = {
   entity_type: 'study',
   i_have_download_access: 'true',
-  attributes: 'id,name,main_location_lat,main_location_long,number_of_individuals,taxon_ids,license_type,citation,i_have_download_access',
+  // timestamp_first/last_deployed_location added for Phase 2 (batch 1 item
+  // 3) — confirmed real study attributes (same result header as the rest of
+  // this list) — so the job planner can intersect a hunt-season window
+  // against each study's actual date range without a second per-study call.
+  attributes: 'id,name,main_location_lat,main_location_long,number_of_individuals,taxon_ids,license_type,citation,i_have_download_access,timestamp_first_deployed_location,timestamp_last_deployed_location',
 };
 export const STUDY_QUERY_PARAM_NAMES = Object.keys(STUDY_QUERY_PARAMS);
 
@@ -365,6 +389,8 @@ export async function fetchMovebankStudiesDetailed(): Promise<MovebankStudyFetch
       licenseType: r.license_type ?? '',
       citation: r.citation ?? '',
       hasDownloadAccess: (r.i_have_download_access ?? '').toLowerCase() === 'true',
+      timestampFirstDeployedLocation: r.timestamp_first_deployed_location ?? '',
+      timestampLastDeployedLocation: r.timestamp_last_deployed_location ?? '',
     }))
     .filter(s => s.lat !== null && !isNaN(s.lat) && s.lon !== null && !isNaN(s.lon));
 
@@ -454,6 +480,69 @@ export async function fetchMovebankEvents(studyId: string, licenseType?: string)
   return events;
 }
 
+// --- Windowed event fetch for Phase 2 jobs (spec v2 amendments A1/A2/A3) ---
+// A1: time bounds come from the job's own (window_start, window_end), never
+// a fixed lookback — the original fetchMovebankEventsDetailed() above still
+// uses YEARS_OF_HISTORY and stays untouched for the Phase 1 production
+// extractor; this is a separate function for the job runner.
+// A2: requests `individual_taxon_canonical_name` directly as an EVENT
+// attribute (confirmed in the docs' own result-header example:
+// "individual_local_identifier,tag_local_identifier,timestamp,location_long,
+// location_lat,visible,individual_taxon_canonical_name") so species can be
+// filtered per-fix without a separate individuals join in the common case.
+export type MovebankEventWithTaxon = MovebankEvent & { taxonCanonicalName: string };
+
+export type MovebankWindowedEventResult = {
+  events: MovebankEventWithTaxon[];
+  handshake: MovebankHandshakeResult;
+  truncated: boolean;
+};
+
+export async function fetchMovebankEventsForWindow(
+  studyId: string,
+  windowStart: Date,
+  windowEnd: Date,
+  licenseType?: string,
+  record: boolean = true,
+  sensorFilter: boolean = true // fix round item 3 — the admin probe needs to test with the GPS sensor filter OFF; every real production call keeps the default (true)
+): Promise<MovebankWindowedEventResult> {
+  let url = 'https://www.movebank.org/movebank/service/direct-read'
+    + `?entity_type=event&study_id=${studyId}`;
+  if (sensorFilter) url += `&sensor_type_id=${GPS_SENSOR_TYPE_ID}`;
+  url += `&timestamp_start=${movebankTimestampParam(windowStart)}`
+    + `&timestamp_end=${movebankTimestampParam(windowEnd)}`
+    + '&attributes=individual_id,timestamp,location_lat,location_long,individual_taxon_canonical_name';
+
+  const { text, handshake, truncated: byteTruncated } = await movebankRequest(url, MAX_RESPONSE_BYTES, { studyId, licenseType, record });
+
+  if (handshake === 'aborted_noncommercial' || isAccessDenied(text)) {
+    return { events: [], handshake, truncated: false };
+  }
+
+  const rows = parseCsv(text, MAX_EVENT_ROWS);
+  const rowTruncated = rows.length >= MAX_EVENT_ROWS;
+  const events: MovebankEventWithTaxon[] = [];
+  for (const r of rows) {
+    const lat = parseFloat(r.location_lat ?? r['location-lat']);
+    const lon = parseFloat(r.location_long ?? r['location-long']);
+    if (!r.timestamp || isNaN(lat) || isNaN(lon)) continue;
+    events.push({
+      individualId: r.individual_id ?? r['individual-id'] ?? '',
+      timestamp: r.timestamp,
+      lat,
+      lon,
+      taxonCanonicalName: r.individual_taxon_canonical_name ?? '',
+    });
+  }
+  return { events, handshake, truncated: byteTruncated || rowTruncated };
+}
+
+// Exposed so the job runner can format its own window boundaries the same
+// way without re-deriving the yyyyMMddHHmmssSSS format.
+export function formatMovebankTimestamp(date: Date): string {
+  return movebankTimestampParam(date);
+}
+
 // --- Individuals (addendum 4 item 2 — multi-species study filtering) ---
 // A study can carry several species; without this, events from a
 // completely different animal were being binned into the requested
@@ -501,12 +590,26 @@ export type MovebankStudyMeta = {
   sensorTypeIds: string;
   taxonIds: string;
   numberOfIndividuals: string;
+  licenseTerms: string; // Phase 2 A5 — the actual license TEXT (not license_type), confirmed real study attribute
 };
+
+// Single source of truth for the study-meta attribute list, so the fix-round
+// bisect probe (probeStudyAttribute, below) tests exactly the attributes
+// fetchMovebankStudyMeta actually requests — not a second, driftable copy.
+export const STUDY_META_ATTRIBUTES = [
+  'timestamp_first_deployed_location',
+  'timestamp_last_deployed_location',
+  'number_of_deployed_locations',
+  'sensor_type_ids',
+  'taxon_ids',
+  'number_of_individuals',
+  'license_terms',
+];
 
 export async function fetchMovebankStudyMeta(studyId: string): Promise<MovebankStudyMeta | null> {
   const url = 'https://www.movebank.org/movebank/service/direct-read'
     + `?entity_type=study&study_id=${studyId}`
-    + '&attributes=timestamp_first_deployed_location,timestamp_last_deployed_location,number_of_deployed_locations,sensor_type_ids,taxon_ids,number_of_individuals';
+    + `&attributes=${STUDY_META_ATTRIBUTES.join(',')}`;
 
   const { text } = await movebankRequest(url, MAX_RESPONSE_BYTES);
   const rows = parseCsv(text, 10);
@@ -520,6 +623,7 @@ export async function fetchMovebankStudyMeta(studyId: string): Promise<MovebankS
     sensorTypeIds: r.sensor_type_ids ?? '',
     taxonIds: r.taxon_ids ?? '',
     numberOfIndividuals: r.number_of_individuals ?? '',
+    licenseTerms: r.license_terms ?? '',
   };
 }
 
@@ -593,6 +697,64 @@ export async function fetchMovebankEventsVariant(
       handshake: 'error',
       elapsed_ms: Date.now() - start,
       error: err instanceof Error ? err.message : 'unknown error',
+    };
+  }
+}
+
+// --- Single-attribute study probe (fix round item 3 — "bisect" diagnostics) ---
+// Isolates whether ONE study attribute name is usable by a live account,
+// reporting only the HTTP status CLASS (2xx/4xx/5xx) — never the response
+// body, so no license text or data ever surfaces through this path. Goes
+// through the same movebankRequest choke point as every other call in this
+// module, so it automatically inherits the real rate limit + single-flight
+// serialization ("the normal spacing") — no separate throttling needed here.
+export type StudyAttributeProbeResult = {
+  ok: boolean;
+  http_status_class: '2xx' | '4xx' | '5xx' | 'error';
+  elapsed_ms: number;
+};
+
+// Request-SHAPE knobs for a single-study query (fix round #2 —
+// "bisect=study_meta_params"). The attribute-name bisection above
+// (probeStudyAttribute with no `shape`) keeps the request shape fixed at
+// `entity_type=study&study_id=X`; this instead varies the shape itself:
+// whether `i_have_download_access=true` is present (the one param the
+// catalog discovery query uses that no single-entity call does) and
+// whether the study is scoped via `id=X` instead of `study_id=X`.
+export type StudyParamShape = {
+  idParam: 'study_id' | 'id';
+  includeDownloadAccess: boolean;
+};
+
+export const STUDY_PARAM_SHAPES: Record<'A' | 'B' | 'C', StudyParamShape> = {
+  A: { idParam: 'study_id', includeDownloadAccess: true },
+  B: { idParam: 'id', includeDownloadAccess: false },
+  C: { idParam: 'id', includeDownloadAccess: true },
+};
+
+// `shape` is optional so every existing caller (the attribute-name
+// bisection, which never passes one) keeps the exact original request:
+// `entity_type=study&study_id=X&attributes=...`, with no
+// `i_have_download_access` param.
+export async function probeStudyAttribute(studyId: string, attributes: string, shape?: StudyParamShape): Promise<StudyAttributeProbeResult> {
+  const start = Date.now();
+  const idParam = shape?.idParam ?? 'study_id';
+  let url = 'https://www.movebank.org/movebank/service/direct-read'
+    + `?entity_type=study&${idParam}=${studyId}`;
+  if (shape?.includeDownloadAccess) url += '&i_have_download_access=true';
+  url += `&attributes=${attributes}`;
+  try {
+    // No `context` passed — a study-attribute probe is metadata, never
+    // recorded as a license acceptance (matches fetchMovebankStudyMeta).
+    await movebankRequest(url, MAX_RESPONSE_BYTES);
+    return { ok: true, http_status_class: '2xx', elapsed_ms: Date.now() - start };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '';
+    const match = /Movebank HTTP ([45])\d\d/.exec(message);
+    return {
+      ok: false,
+      http_status_class: match ? (`${match[1]}xx` as '4xx' | '5xx') : 'error',
+      elapsed_ms: Date.now() - start,
     };
   }
 }
