@@ -245,13 +245,47 @@ export async function sampleElevations(events: Array<{ lat: number; lon: number 
 // counts as ok.
 // ============================================================
 export type LicenseRecordResult = { ok: true } | { ok: false; reason: 'license_not_recorded' };
-// Batch1b item 3 catalog fallback: when the metadata endpoint is broken
-// (e.g. 5xx from the missing `id` prefix bug) but the catalog row confirms
-// a CC_0/CC_BY study, callers can supply the catalog license type so a
-// sentinel record can be written with source='catalog' instead of failing.
-export type LicenseCatalogFallback = { licenseType: string };
+// Catalog fallback: CC_0/CC_BY studies can be recorded from the catalog row
+// (license_type + citation) when the metadata endpoint is unavailable OR
+// returns no license_terms text (expected for CC0/CC-BY — no custom terms).
+export type LicenseCatalogFallback = { licenseType: string; citation?: string };
 
 const LICENSE_NOT_RECORDED: LicenseRecordResult = { ok: false, reason: 'license_not_recorded' };
+
+// Write a catalog-based sentinel row and return ok:true if the upsert succeeds.
+// Sentinel text = "catalog-record:<TYPE> <citation>" (citation appended when present).
+// `isCommercialSafeLicense` already limits to CC_0/CC_BY only (no NC/ND/SA/CUSTOM).
+async function writeCatalogFallbackRecord(
+  supabase: ReturnType<typeof createServiceClient>,
+  studyId: string,
+  fallback: LicenseCatalogFallback,
+  logReason: 'thrown' | 'empty_terms'
+): Promise<LicenseRecordResult> {
+  if (!isCommercialSafeLicense(fallback.licenseType)) return LICENSE_NOT_RECORDED;
+  const licenseType = fallback.licenseType.toUpperCase().trim().replace(/[-\s]+/g, '_');
+  const sentinelText = fallback.citation
+    ? `catalog-record:${licenseType} ${fallback.citation}`
+    : `catalog-record:${licenseType}`;
+  const sentinelMd5 = createHash('md5').update(Buffer.from(sentinelText, 'utf-8')).digest('hex');
+  const { error } = await supabase
+    .from('movebank_license_acceptances')
+    .upsert(
+      {
+        study_id: Number(studyId),
+        license_type: licenseType,
+        license_md5: sentinelMd5,
+        license_text: sentinelText,
+        source: 'catalog',
+      },
+      { onConflict: 'study_id,license_md5', ignoreDuplicates: true }
+    );
+  if (error) {
+    console.error(`[collar-worker] catalog fallback insert failed for ${studyId} (${logReason}):`, error.message);
+    return LICENSE_NOT_RECORDED;
+  }
+  console.log(`[collar-worker] catalog fallback license record written for study ${studyId} (${licenseType}, reason: ${logReason})`);
+  return { ok: true };
+}
 
 export async function ensureLicenseRecordedForStudy(
   studyId: string,
@@ -270,32 +304,20 @@ export async function ensureLicenseRecordedForStudy(
   try {
     meta = await fetchMovebankStudyMeta(studyId);
   } catch (err) {
-    console.error(`[collar-worker] study metadata fetch failed for ${studyId}, cannot record license:`, err instanceof Error ? err.message : err);
-    // Catalog fallback: CC_0/CC_BY are safe to record without full license text
-    // when the metadata endpoint is broken — write a sentinel row so the job
-    // can proceed without waiting for the endpoint to recover.
-    if (catalogFallback && isCommercialSafeLicense(catalogFallback.licenseType)) {
-      const sentinelText = `catalog-record:${catalogFallback.licenseType.toUpperCase()}`;
-      const sentinelMd5 = createHash('md5').update(Buffer.from(sentinelText, 'utf-8')).digest('hex');
-      const { error: fallbackError } = await supabase
-        .from('movebank_license_acceptances')
-        .upsert(
-          { study_id: Number(studyId), license_md5: sentinelMd5, license_text: sentinelText, source: 'catalog' },
-          { onConflict: 'study_id,license_md5', ignoreDuplicates: true }
-        );
-      if (!fallbackError) {
-        console.log(`[collar-worker] catalog fallback license record written for study ${studyId} (${catalogFallback.licenseType})`);
-        return { ok: true };
-      }
-      console.error(`[collar-worker] catalog fallback insert also failed for ${studyId}:`, fallbackError.message);
-    }
-    return LICENSE_NOT_RECORDED;
-  }
-  if (!meta?.licenseTerms) {
-    console.error(`[collar-worker] study ${studyId} metadata has no license_terms — cannot record acceptance`);
+    console.error(`[collar-worker] study metadata fetch failed for ${studyId}:`, err instanceof Error ? err.message : err);
+    if (catalogFallback) return writeCatalogFallbackRecord(supabase, studyId, catalogFallback, 'thrown');
     return LICENSE_NOT_RECORDED;
   }
 
+  // CC_0/CC_BY studies have a license TYPE but no custom terms text — that is
+  // expected and correct. Use the catalog row as evidence of acceptance.
+  if (!meta?.licenseTerms) {
+    console.log(`[collar-worker] study ${studyId} metadata has no license_terms — using catalog fallback (empty_terms)`);
+    if (catalogFallback) return writeCatalogFallbackRecord(supabase, studyId, catalogFallback, 'empty_terms');
+    return LICENSE_NOT_RECORDED;
+  }
+
+  // Real license text present — record it verbatim (source: 'study_metadata').
   const md5 = createHash('md5').update(Buffer.from(meta.licenseTerms, 'utf-8')).digest('hex');
   const { error: upsertError } = await supabase
     .from('movebank_license_acceptances')
@@ -307,7 +329,7 @@ export async function ensureLicenseRecordedForStudy(
     console.error(`[collar-worker] failed to insert license acceptance for study ${studyId}:`, upsertError.message);
     return LICENSE_NOT_RECORDED;
   }
-
+  console.log(`[collar-worker] license record written for study ${studyId} (real_terms)`);
   return { ok: true };
 }
 
@@ -489,11 +511,13 @@ async function processJob(job: CollarJob): Promise<ProcessOutcome> {
     return { status: 'dead', reason: 'license_not_eligible' };
   }
 
-  // A5 fail-closed (fix round item 2) — never fetch events for a study
-  // whose license acceptance isn't recorded AND couldn't be recorded now.
-  // Batch1b item 3: pass catalog fallback so CC_0/CC_BY jobs survive a
-  // transient metadata endpoint failure without being requeued indefinitely.
-  const licenseResult = await ensureLicenseRecordedForStudy(String(job.study_id), { licenseType: catalogRow.license_type ?? '' });
+  // A5 fail-closed — never fetch events without a recorded license basis.
+  // Batch1c: pass citation alongside licenseType so the catalog sentinel row
+  // carries both fields; covers the expected empty-terms case for CC_0/CC_BY.
+  const licenseResult = await ensureLicenseRecordedForStudy(String(job.study_id), {
+    licenseType: catalogRow.license_type ?? '',
+    citation: catalogRow.citation ?? undefined,
+  });
   if (!licenseResult.ok) {
     await requeueWithBackoffOrDie(job, licenseResult.reason);
     return { status: 'requeued', reason: licenseResult.reason };

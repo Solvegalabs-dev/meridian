@@ -362,8 +362,11 @@ describe('fetchMovebankIndividuals / fetchMovebankStudyMeta / fetchMovebankEvent
     vi.unstubAllGlobals()
   })
 
-  it('fetchMovebankIndividuals parses id/local_identifier/individual_taxon_canonical_name', async () => {
-    const csv = 'id,local_identifier,individual_taxon_canonical_name\n1,E1,Cervus elaphus\n2,E2,Odocoileus hemionus\n'
+  it('batch1c: fetchMovebankIndividuals uses taxon_canonical_name (study-level entity, not individual_taxon_canonical_name)', async () => {
+    // Batch1c: entity_type=individual uses `taxon_canonical_name`, not
+    // `individual_taxon_canonical_name` (which is an EVENT attribute and causes
+    // a 5xx on the individuals endpoint — confirmed live Oct 6 2026).
+    const csv = 'id,local_identifier,taxon_canonical_name\n1,E1,Cervus elaphus\n2,E2,Odocoileus hemionus\n'
     fetchMock.mockResolvedValueOnce(fakeResponse({ body: csv }))
 
     const { fetchMovebankIndividuals } = await import('./movebankCollarFetch')
@@ -375,12 +378,15 @@ describe('fetchMovebankIndividuals / fetchMovebankStudyMeta / fetchMovebankEvent
     ])
     expect(fetchMock.mock.calls[0][0]).toContain('entity_type=individual')
     expect(fetchMock.mock.calls[0][0]).toContain('study_id=999')
+    // Must request taxon_canonical_name, not individual_taxon_canonical_name.
+    expect(fetchMock.mock.calls[0][0]).toContain('taxon_canonical_name')
+    expect(fetchMock.mock.calls[0][0]).not.toContain('individual_taxon_canonical_name')
   })
 
   it('fetchMovebankIndividuals never records a license acceptance itself', async () => {
     fetchMock
       .mockResolvedValueOnce(fakeResponse({ headers: { 'accept-license': 'true' }, body: LICENSE_HTML }))
-      .mockResolvedValueOnce(fakeResponse({ body: 'id,local_identifier,individual_taxon_canonical_name\n1,E1,Cervus elaphus\n' }))
+      .mockResolvedValueOnce(fakeResponse({ body: 'id,local_identifier,taxon_canonical_name\n1,E1,Cervus elaphus\n' }))
 
     const { fetchMovebankIndividuals } = await import('./movebankCollarFetch')
     await fetchMovebankIndividuals('999', 'CC_BY')

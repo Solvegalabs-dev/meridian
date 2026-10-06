@@ -509,6 +509,146 @@ describe('ensureLicenseRecordedForStudy (A5 — record on first use, not only on
 
     expect(result).toEqual({ ok: false, reason: 'license_not_recorded' })
   })
+
+  // --- batch1c: catalog fallback for empty licenseTerms (CC_0 / CC_BY) ---
+  describe('batch1c: catalog fallback when licenseTerms is empty', () => {
+    it('CC_0 + empty licenseTerms + catalogFallback → writes catalog row and returns ok', async () => {
+      fetchMovebankStudyMetaMock.mockResolvedValue({
+        timestampFirstDeployedLocation: '', timestampLastDeployedLocation: '',
+        numberOfDeployedLocations: '', sensorTypeIds: '', taxonIds: '',
+        numberOfIndividuals: '', licenseTerms: '',
+      })
+      const { client, recorder } = makeMockSupabase({ licenseAcceptanceExists: false })
+      vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+      vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+        return { ...actual, fetchMovebankStudyMeta: fetchMovebankStudyMetaMock }
+      })
+      vi.resetModules()
+
+      const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
+      const result = await ensureLicenseRecordedForStudy('123', { licenseType: 'CC_0', citation: 'Doe J 2022 doi:10.1234' })
+
+      expect(result).toEqual({ ok: true })
+      const upsertCall = recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')
+      expect(upsertCall).toBeDefined()
+      expect((upsertCall!.args[0] as Record<string, unknown>).source).toBe('catalog')
+      expect((upsertCall!.args[0] as Record<string, unknown>).license_type).toBe('CC_0')
+      expect((upsertCall!.args[0] as Record<string, unknown>).license_text).toContain('catalog-record:CC_0')
+      expect((upsertCall!.args[0] as Record<string, unknown>).license_text).toContain('Doe J 2022 doi:10.1234')
+    })
+
+    it('CC_BY + empty licenseTerms + catalogFallback (no citation) → writes catalog row and returns ok', async () => {
+      fetchMovebankStudyMetaMock.mockResolvedValue({
+        timestampFirstDeployedLocation: '', timestampLastDeployedLocation: '',
+        numberOfDeployedLocations: '', sensorTypeIds: '', taxonIds: '',
+        numberOfIndividuals: '', licenseTerms: '',
+      })
+      const { client, recorder } = makeMockSupabase({ licenseAcceptanceExists: false })
+      vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+      vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+        return { ...actual, fetchMovebankStudyMeta: fetchMovebankStudyMetaMock }
+      })
+      vi.resetModules()
+
+      const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
+      const result = await ensureLicenseRecordedForStudy('123', { licenseType: 'CC_BY' })
+
+      expect(result).toEqual({ ok: true })
+      const upsertCall = recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')
+      expect(upsertCall).toBeDefined()
+      expect((upsertCall!.args[0] as Record<string, unknown>).source).toBe('catalog')
+      expect((upsertCall!.args[0] as Record<string, unknown>).license_type).toBe('CC_BY')
+      expect((upsertCall!.args[0] as Record<string, unknown>).license_text).toBe('catalog-record:CC_BY')
+    })
+
+    it('CC_BY_NC + empty licenseTerms → fails closed (non-commercial-safe, no catalog fallback)', async () => {
+      fetchMovebankStudyMetaMock.mockResolvedValue({
+        timestampFirstDeployedLocation: '', timestampLastDeployedLocation: '',
+        numberOfDeployedLocations: '', sensorTypeIds: '', taxonIds: '',
+        numberOfIndividuals: '', licenseTerms: '',
+      })
+      const { client, recorder } = makeMockSupabase({ licenseAcceptanceExists: false })
+      vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+      vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+        return { ...actual, fetchMovebankStudyMeta: fetchMovebankStudyMetaMock }
+      })
+      vi.resetModules()
+
+      const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
+      const result = await ensureLicenseRecordedForStudy('123', { licenseType: 'CC_BY_NC' })
+
+      expect(result).toEqual({ ok: false, reason: 'license_not_recorded' })
+      expect(recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')).toBeUndefined()
+    })
+
+    it('CUSTOM + empty licenseTerms → fails closed (not in CC_0/CC_BY allow-list)', async () => {
+      fetchMovebankStudyMetaMock.mockResolvedValue({
+        timestampFirstDeployedLocation: '', timestampLastDeployedLocation: '',
+        numberOfDeployedLocations: '', sensorTypeIds: '', taxonIds: '',
+        numberOfIndividuals: '', licenseTerms: '',
+      })
+      const { client, recorder } = makeMockSupabase({ licenseAcceptanceExists: false })
+      vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+      vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+        return { ...actual, fetchMovebankStudyMeta: fetchMovebankStudyMetaMock }
+      })
+      vi.resetModules()
+
+      const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
+      const result = await ensureLicenseRecordedForStudy('123', { licenseType: 'CUSTOM' })
+
+      expect(result).toEqual({ ok: false, reason: 'license_not_recorded' })
+      expect(recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')).toBeUndefined()
+    })
+
+    it('empty licenseType + empty licenseTerms → fails closed (unknown type)', async () => {
+      fetchMovebankStudyMetaMock.mockResolvedValue({
+        timestampFirstDeployedLocation: '', timestampLastDeployedLocation: '',
+        numberOfDeployedLocations: '', sensorTypeIds: '', taxonIds: '',
+        numberOfIndividuals: '', licenseTerms: '',
+      })
+      const { client, recorder } = makeMockSupabase({ licenseAcceptanceExists: false })
+      vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+      vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+        return { ...actual, fetchMovebankStudyMeta: fetchMovebankStudyMetaMock }
+      })
+      vi.resetModules()
+
+      const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
+      const result = await ensureLicenseRecordedForStudy('123', { licenseType: '' })
+
+      expect(result).toEqual({ ok: false, reason: 'license_not_recorded' })
+      expect(recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')).toBeUndefined()
+    })
+
+    it('meta throws + CC_0 catalog fallback with citation → catalog row includes citation in sentinel text', async () => {
+      fetchMovebankStudyMetaMock.mockRejectedValue(new Error('Movebank HTTP 503'))
+      const { client, recorder } = makeMockSupabase({ licenseAcceptanceExists: false })
+      vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+      vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+        return { ...actual, fetchMovebankStudyMeta: fetchMovebankStudyMetaMock }
+      })
+      vi.resetModules()
+
+      const { ensureLicenseRecordedForStudy } = await import('./jobRunner')
+      const result = await ensureLicenseRecordedForStudy('123', { licenseType: 'CC_0', citation: 'Smith B 2021 doi:10.9999' })
+
+      expect(result).toEqual({ ok: true })
+      const upsertCall = recorder.calls.find(c => c.method === 'movebank_license_acceptances.upsert')
+      expect(upsertCall).toBeDefined()
+      const row = upsertCall!.args[0] as Record<string, unknown>
+      expect(row.source).toBe('catalog')
+      expect(row.license_type).toBe('CC_0')
+      expect(row.license_text).toContain('catalog-record:CC_0')
+      expect(row.license_text).toContain('Smith B 2021 doi:10.9999')
+    })
+  })
 })
 
 // --- Integration: real movebankCollarFetch (fetch-level mock only), so the
