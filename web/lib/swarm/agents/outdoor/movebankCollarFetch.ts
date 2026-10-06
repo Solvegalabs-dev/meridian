@@ -606,10 +606,12 @@ export const STUDY_META_ATTRIBUTES = [
   'license_terms',
 ];
 
+// Batch1b item 3: always include `id` in the attribute list — the baseline
+// `attributes=id` call succeeds reliably; every prior 5xx omitted `id`.
 export async function fetchMovebankStudyMeta(studyId: string): Promise<MovebankStudyMeta | null> {
   const url = 'https://www.movebank.org/movebank/service/direct-read'
     + `?entity_type=study&study_id=${studyId}`
-    + `&attributes=${STUDY_META_ATTRIBUTES.join(',')}`;
+    + `&attributes=id,${STUDY_META_ATTRIBUTES.join(',')}`;
 
   const { text } = await movebankRequest(url, MAX_RESPONSE_BYTES);
   const rows = parseCsv(text, 10);
@@ -726,21 +728,32 @@ export type StudyParamShape = {
   includeDownloadAccess: boolean;
 };
 
-export const STUDY_PARAM_SHAPES: Record<'A' | 'B' | 'C', StudyParamShape> = {
+// Shape D added (batch1b item 3): study_id (no i_have_download_access) + attributes=id,taxon_ids —
+// tests whether including `id` in the attribute list resolves the HTTP 500s seen with A/B/C.
+export const STUDY_PARAM_SHAPES: Record<'A' | 'B' | 'C' | 'D', StudyParamShape> = {
   A: { idParam: 'study_id', includeDownloadAccess: true },
   B: { idParam: 'id', includeDownloadAccess: false },
   C: { idParam: 'id', includeDownloadAccess: true },
+  D: { idParam: 'study_id', includeDownloadAccess: false },
 };
 
 // `shape` is optional so every existing caller (the attribute-name
 // bisection, which never passes one) keeps the exact original request:
 // `entity_type=study&study_id=X&attributes=...`, with no
 // `i_have_download_access` param.
-export async function probeStudyAttribute(studyId: string, attributes: string, shape?: StudyParamShape): Promise<StudyAttributeProbeResult> {
+// `entityType` defaults to 'study' — pass 'individual' to probe the
+// individuals entity (batch1b item 3 — testing taxon_canonical_name vs
+// individual_taxon_canonical_name on entity_type=individual).
+export async function probeStudyAttribute(
+  studyId: string,
+  attributes: string,
+  shape?: StudyParamShape,
+  entityType: 'study' | 'individual' = 'study'
+): Promise<StudyAttributeProbeResult> {
   const start = Date.now();
   const idParam = shape?.idParam ?? 'study_id';
   let url = 'https://www.movebank.org/movebank/service/direct-read'
-    + `?entity_type=study&${idParam}=${studyId}`;
+    + `?entity_type=${entityType}&${idParam}=${studyId}`;
   if (shape?.includeDownloadAccess) url += '&i_have_download_access=true';
   url += `&attributes=${attributes}`;
   try {
@@ -755,6 +768,112 @@ export async function probeStudyAttribute(studyId: string, attributes: string, s
       ok: false,
       http_status_class: match ? (`${match[1]}xx` as '4xx' | '5xx') : 'error',
       elapsed_ms: Date.now() - start,
+    };
+  }
+}
+
+// --- Windowed event fetch with full diagnostic output (batch1b item 1+2) ---
+// Mirrors fetchMovebankEventsForWindow but also returns the response's column
+// names, byte count, HTTP status class, and access-denied flag so a zero-row
+// result can be explained (wrong attribute name / empty window / no access).
+// The `attrs` parameter lets the probe test whether a specific attribute set
+// is accepted by Movebank; default matches production's fetchMovebankEventsForWindow.
+export const DEFAULT_WINDOWED_EVENT_ATTRS = [
+  'individual_id', 'timestamp', 'location_lat', 'location_long', 'individual_taxon_canonical_name',
+];
+
+export type MovebankWindowedEventDetailedResult = {
+  events: MovebankEventWithTaxon[];
+  handshake: MovebankHandshakeResult | 'error';
+  http_status_class: '2xx' | '4xx' | '5xx' | 'error';
+  truncated: boolean;
+  response_bytes: number;
+  header_columns: string[];
+  access_denied_message: boolean;
+  taxon_column_present: boolean;
+  attrs_used: string[];
+  elapsed_ms: number;
+  error?: string;
+};
+
+export async function fetchMovebankEventsForWindowDetailed(
+  studyId: string,
+  windowStart: Date,
+  windowEnd: Date,
+  opts: {
+    licenseType?: string;
+    record?: boolean;
+    sensorFilter?: boolean;
+    attrs?: string[];
+  } = {}
+): Promise<MovebankWindowedEventDetailedResult> {
+  const { licenseType, record = false, sensorFilter = true, attrs = DEFAULT_WINDOWED_EVENT_ATTRS } = opts;
+  const start = Date.now();
+
+  let url = 'https://www.movebank.org/movebank/service/direct-read?entity_type=event'
+    + `&study_id=${studyId}`;
+  if (sensorFilter) url += `&sensor_type_id=${GPS_SENSOR_TYPE_ID}`;
+  url += `&timestamp_start=${movebankTimestampParam(windowStart)}`
+    + `&timestamp_end=${movebankTimestampParam(windowEnd)}`
+    + `&attributes=${attrs.join(',')}`;
+
+  try {
+    const { text, handshake, responseBytes, truncated: byteTruncated } = await movebankRequest(
+      url, MAX_RESPONSE_BYTES, { studyId, licenseType, record }
+    );
+
+    if (handshake === 'aborted_noncommercial') {
+      return {
+        events: [], handshake, http_status_class: '2xx', truncated: false,
+        response_bytes: responseBytes, header_columns: [], access_denied_message: false,
+        taxon_column_present: false, attrs_used: attrs, elapsed_ms: Date.now() - start,
+      };
+    }
+
+    const accessDenied = isAccessDenied(text);
+    // Extract header columns from the first non-empty CSV line.
+    const firstLine = text.split('\n').find(l => l.trim().length > 0) ?? '';
+    const headerColumns = firstLine ? firstLine.split(',').map(c => c.trim()) : [];
+    const taxonColumnPresent = headerColumns.includes('individual_taxon_canonical_name');
+
+    const rows = parseCsv(text, MAX_EVENT_ROWS);
+    const rowTruncated = rows.length >= MAX_EVENT_ROWS;
+    const events: MovebankEventWithTaxon[] = [];
+    if (!accessDenied) {
+      for (const r of rows) {
+        const lat = parseFloat(r.location_lat ?? r['location-lat']);
+        const lon = parseFloat(r.location_long ?? r['location-long']);
+        if (!r.timestamp || isNaN(lat) || isNaN(lon)) continue;
+        events.push({
+          individualId: r.individual_id ?? r['individual-id'] ?? '',
+          timestamp: r.timestamp,
+          lat, lon,
+          taxonCanonicalName: r.individual_taxon_canonical_name ?? '',
+        });
+      }
+    }
+
+    return {
+      events, handshake, http_status_class: '2xx',
+      truncated: byteTruncated || rowTruncated,
+      response_bytes: responseBytes,
+      header_columns: headerColumns,
+      access_denied_message: accessDenied,
+      taxon_column_present: taxonColumnPresent,
+      attrs_used: attrs,
+      elapsed_ms: Date.now() - start,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown error';
+    const statusMatch = /Movebank HTTP ([45])\d\d/.exec(msg);
+    const httpStatusClass: '4xx' | '5xx' | 'error' = statusMatch
+      ? (`${statusMatch[1]}xx` as '4xx' | '5xx')
+      : 'error';
+    return {
+      events: [], handshake: 'error', http_status_class: httpStatusClass,
+      truncated: false, response_bytes: 0, header_columns: [],
+      access_denied_message: false, taxon_column_present: false,
+      attrs_used: attrs, elapsed_ms: Date.now() - start, error: msg,
     };
   }
 }

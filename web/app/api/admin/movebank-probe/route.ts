@@ -8,6 +8,7 @@ import {
   fetchMovebankIndividuals,
   fetchMovebankStudyMeta,
   fetchMovebankEventsVariant,
+  fetchMovebankEventsForWindowDetailed,
   probeStudyAttribute,
   isCommercialSafeLicense,
   taxonMatchesAny,
@@ -15,12 +16,14 @@ import {
   STUDY_QUERY_PARAM_NAMES,
   STUDY_META_ATTRIBUTES,
   STUDY_PARAM_SHAPES,
+  DEFAULT_WINDOWED_EVENT_ATTRS,
   type MovebankStudy,
   type MovebankEventVariantOptions,
   type MovebankEventWithTaxon,
   type StudyAttributeProbeResult,
 } from '@/lib/swarm/agents/outdoor/movebankCollarFetch';
-import { topTaxonNameCounts } from '@/lib/swarm/agents/outdoor/collar/jobRunner';
+import { topTaxonNameCounts, classifyMovebankError } from '@/lib/swarm/agents/outdoor/collar/jobRunner';
+import { cooldownRemainingMs, registerMovebankFailure } from '@/lib/swarm/agents/outdoor/collar/lease';
 
 // FF-093 addendum — live diagnostic probe so Jason can verify Movebank
 // credentials, real license_type spellings, the license handshake, and the
@@ -30,6 +33,19 @@ import { topTaxonNameCounts } from '@/lib/swarm/agents/outdoor/collar/jobRunner'
 // itself still runs either way (Movebank requires it per session
 // regardless), only the movebank_license_acceptances audit row is gated.
 export const maxDuration = 120;
+
+// Batch1b item 2 — attrs= allow-list for the windowed probe.
+// Only these attribute names may be requested; anything else gets a 400 so
+// Jason can test one attribute at a time without risk of sending a
+// free-form attribute that Movebank treats as an error.
+const WINDOWED_PROBE_ATTR_ALLOWLIST = new Set([
+  'individual_id', 'timestamp', 'location_lat', 'location_long',
+  'individual_taxon_canonical_name', 'individual_local_identifier',
+  'tag_local_identifier', 'visible',
+]);
+// Matches fetchMovebankEventsForWindow's production attribute list exactly
+// (single source of truth: DEFAULT_WINDOWED_EVENT_ATTRS from the library).
+const DEFAULT_WINDOWED_PROBE_ATTRS = DEFAULT_WINDOWED_EVENT_ATTRS;
 
 const DEFAULT_LAT = 40.948;
 const DEFAULT_LON = -110.668;
@@ -256,6 +272,93 @@ export async function GET(request: Request) {
     return NextResponse.json(report);
   }
 
+  // Batch1b item 1 — STANDALONE windowed probe (P0).
+  // When study_id + window_start + window_end are ALL present, run ONLY the
+  // windowed probe and return immediately. This avoids the 31s full-study
+  // path that timed out and triggered 429 cooldowns. probeOneStudy,
+  // fetchMovebankStudyMeta, fetchMovebankIndividuals, and variants a-d are
+  // NOT called in this mode.
+  if (directStudyId && windowStartParam && windowEndParam) {
+    report.mode = 'windowed_probe';
+    report.study_id = directStudyId;
+
+    // Respect lease/cooldown. Probe is manual — no lease taken — but the
+    // cooldown must still be checked to avoid a request when Movebank is
+    // in backoff. After any abort/timeout/429/5xx, set the cooldown (same
+    // as the worker) so subsequent probe calls wait the right interval.
+    const cooldownMs = await cooldownRemainingMs();
+    if (cooldownMs > 0) {
+      return NextResponse.json({ skipped: true, cooldown_remaining_ms: cooldownMs });
+    }
+
+    const windowStart = new Date(windowStartParam);
+    const windowEnd = new Date(windowEndParam);
+    if (isNaN(windowStart.getTime()) || isNaN(windowEnd.getTime())) {
+      report.error = 'window_start/window_end must be valid date strings';
+      return NextResponse.json(report, { status: 400 });
+    }
+
+    // attrs= allow-list validation (item 2).
+    const attrsParam = searchParams.get('attrs');
+    let probeAttrs: string[];
+    if (attrsParam) {
+      const requested = attrsParam.split(',').map(a => a.trim()).filter(Boolean);
+      const invalid = requested.filter(a => !WINDOWED_PROBE_ATTR_ALLOWLIST.has(a));
+      if (invalid.length > 0) {
+        report.error = `Unknown attrs: ${invalid.join(', ')}. Allowed: ${Array.from(WINDOWED_PROBE_ATTR_ALLOWLIST).join(', ')}`;
+        return NextResponse.json(report, { status: 400 });
+      }
+      probeAttrs = requested;
+    } else {
+      probeAttrs = DEFAULT_WINDOWED_PROBE_ATTRS;
+    }
+
+    const sensorFilter = sensorParam !== '0';
+    const windowProbeStart = Date.now();
+
+    const result = await fetchMovebankEventsForWindowDetailed(
+      directStudyId, windowStart, windowEnd,
+      { licenseType: directLicenseType ?? undefined, record, sensorFilter, attrs: probeAttrs }
+    );
+
+    // Set cooldown on Movebank errors (no lease taken, cooldown still applies).
+    if (result.error || result.handshake === 'error') {
+      const kind = classifyMovebankError(new Error(result.error ?? 'Movebank error'));
+      if (kind !== 'other') {
+        await registerMovebankFailure(kind).catch(() => undefined);
+      }
+    }
+
+    const scientificNames = MOVEBANK_TAXON_NAMES[species] ?? null;
+    const speciesMatchEvents = scientificNames
+      ? result.events.filter(e => e.taxonCanonicalName && scientificNames.some(n => n.toLowerCase() === e.taxonCanonicalName.toLowerCase()))
+      : result.events;
+    const inRadius = speciesMatchEvents.filter(e => haversineKm(lat, lon, e.lat, e.lon) <= EVENT_RADIUS_KM);
+
+    report.windowed_probe = {
+      window_start: windowStart.toISOString(),
+      window_end: windowEnd.toISOString(),
+      sensor_filter: sensorFilter,
+      handshake: result.handshake,
+      http_status_class: result.http_status_class,
+      truncated: result.truncated,
+      response_bytes: result.response_bytes,
+      header_columns: result.header_columns,
+      access_denied_message: result.access_denied_message,
+      taxon_column_present: result.taxon_column_present,
+      rows_fetched: result.events.length,
+      rows_species_match: scientificNames ? speciesMatchEvents.length : null,
+      rows_in_radius: inRadius.length,
+      top_taxon_names: topTaxonNameCounts(result.events),
+      attrs_used: result.attrs_used,
+      elapsed_ms: Date.now() - windowProbeStart,
+      ...(result.error && { error: result.error }),
+    };
+
+    report.elapsed_ms = Date.now() - start;
+    return NextResponse.json(report);
+  }
+
   // Fix round item 3 — bisect=study_meta: isolates whether a single study
   // attribute name is the problem, vs. the way the study itself is
   // identified. Per Jason's explicit instruction, a baseline call using only
@@ -285,13 +388,15 @@ export async function GET(request: Request) {
       return NextResponse.json(report);
     }
 
+    // Batch1b item 3: probe each attribute as `id,<attr>` (always include `id`).
+    // Evidence: baseline `attributes=id` succeeds; prior probes omitting `id` 5xx'd.
     const attributeResults: Record<string, StudyAttributeProbeResult | { skipped: true; reason: string }> = {};
     for (const attr of STUDY_META_ATTRIBUTES) {
       if (Date.now() - start > DEADLINE_MS) {
         attributeResults[attr] = { skipped: true, reason: 'deadline reached' };
         continue;
       }
-      attributeResults[attr] = await probeStudyAttribute(directStudyId, attr);
+      attributeResults[attr] = await probeStudyAttribute(directStudyId, `id,${attr}`);
     }
     report.attributes = attributeResults;
     report.elapsed_ms = Date.now() - start;
@@ -317,18 +422,27 @@ export async function GET(request: Request) {
 
     report.mode = 'bisect_study_meta_params';
     report.study_id = directStudyId;
+    // Batch1b item 3: all shapes now probe `attributes=id,taxon_ids` (not just
+    // `taxon_ids`) — the hypothesis is that Movebank requires `id` in the list.
+    // Shape D added: same as the plain baseline (study_id, no i_have_download_access)
+    // but with `id,taxon_ids` — isolates whether the `id` prefix alone is enough.
     report.shape_definitions = {
-      A: 'study_id=<id> + i_have_download_access=true',
-      B: 'id=<id> instead of study_id=<id>',
-      C: 'id=<id> + i_have_download_access=true',
+      A: 'study_id=<id> + i_have_download_access=true + attributes=id,taxon_ids',
+      B: 'id=<id> (not study_id) + attributes=id,taxon_ids',
+      C: 'id=<id> + i_have_download_access=true + attributes=id,taxon_ids',
+      D: 'study_id=<id> (no i_have_download_access) + attributes=id,taxon_ids',
     };
 
-    const shapeIds: Array<'A' | 'B' | 'C'> = ['A', 'B', 'C'];
+    const shapeIds: Array<'A' | 'B' | 'C' | 'D'> = ['A', 'B', 'C', 'D'];
     const taxonResultsByShape: Record<string, StudyAttributeProbeResult> = {};
-    let workingShapeId: 'A' | 'B' | 'C' | null = null;
+    let workingShapeId: 'A' | 'B' | 'C' | 'D' | null = null;
 
     for (const shapeId of shapeIds) {
-      const result = await probeStudyAttribute(directStudyId, 'taxon_ids', STUDY_PARAM_SHAPES[shapeId]);
+      if (Date.now() - start > DEADLINE_MS) {
+        taxonResultsByShape[shapeId] = { ok: false, http_status_class: 'error', elapsed_ms: 0 };
+        continue;
+      }
+      const result = await probeStudyAttribute(directStudyId, 'id,taxon_ids', STUDY_PARAM_SHAPES[shapeId]);
       taxonResultsByShape[shapeId] = result;
       if (result.ok && !workingShapeId) workingShapeId = shapeId;
     }
@@ -336,13 +450,28 @@ export async function GET(request: Request) {
     report.working_shape = workingShapeId;
 
     if (!workingShapeId) {
-      report.note = 'None of shapes A/B/C changed the outcome for taxon_ids — the request shape is not what caused the earlier HTTP 500s.';
-      report.elapsed_ms = Date.now() - start;
-      return NextResponse.json(report);
+      report.note = 'None of shapes A/B/C/D changed the outcome for id,taxon_ids — see individuals_variants for the alternative entity_type=individual probe.';
+    } else {
+      report.license_terms_result = await probeStudyAttribute(directStudyId, 'id,license_terms', STUDY_PARAM_SHAPES[workingShapeId]);
+      report.note = `Shape ${workingShapeId} worked for id,taxon_ids. fetchMovebankStudyMeta already updated to use attributes=id,... in this batch — confirm the license_terms_result above.`;
     }
 
-    report.license_terms_result = await probeStudyAttribute(directStudyId, 'license_terms', STUDY_PARAM_SHAPES[workingShapeId]);
-    report.note = `Shape ${workingShapeId} worked for taxon_ids. fetchMovebankStudyMeta/fetchMovebankIndividuals have NOT been switched to it automatically — report this result back so that one-line production change (and the same shape on the individuals call) can be made with live confirmation rather than a guess.`;
+    // Individuals call variants — test study-level taxon_canonical_name vs
+    // event-level individual_taxon_canonical_name (both prefixed with id).
+    const individualsVariants: Record<string, StudyAttributeProbeResult | { skipped: true; reason: string }> = {};
+    for (const [variantName, attrStr] of [
+      ['id,local_identifier,taxon_canonical_name', 'id,local_identifier,taxon_canonical_name'],
+      ['id,local_identifier,individual_taxon_canonical_name', 'id,local_identifier,individual_taxon_canonical_name'],
+    ] as const) {
+      if (Date.now() - start > DEADLINE_MS) {
+        individualsVariants[variantName] = { skipped: true, reason: 'deadline reached' };
+        continue;
+      }
+      individualsVariants[variantName] = await probeStudyAttribute(
+        directStudyId, attrStr, undefined, 'individual'
+      );
+    }
+    report.individuals_variants = individualsVariants;
     report.elapsed_ms = Date.now() - start;
     return NextResponse.json(report);
   }
