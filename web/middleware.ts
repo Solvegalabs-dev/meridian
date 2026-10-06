@@ -54,8 +54,10 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/api/cron/score-horizons') ||
     pathname.startsWith('/api/cron/agent-swarm') ||
     pathname.startsWith('/api/cron/strike-brief-push') ||
+    // FF-092: these routes authenticate themselves. Partners call them with a key, not a session.
     pathname.startsWith('/api/objectives/create') ||
     pathname.startsWith('/api/mip/') ||
+    pathname.startsWith('/api/partner/') ||
     pathname.startsWith('/reset-password') ||
     pathname.startsWith('/forgot-password') ||
     pathname.startsWith('/legal') ||

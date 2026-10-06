@@ -11,6 +11,15 @@ export async function GET(req: NextRequest) {
   const objectiveId = req.nextUrl.searchParams.get('objective_id')
   if (!objectiveId) return NextResponse.json({ error: 'objective_id required' }, { status: 400 })
 
+  // FF-092: RLS alone is not the gate. The objective must belong to the caller, or the answer is 404.
+  const { data: owned } = await supabase
+    .from('objectives')
+    .select('id')
+    .eq('id', objectiveId)
+    .eq('user_id', user.id)
+    .maybeSingle()
+  if (!owned) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
   // Columns: id, agent_key, objective_id, observed_value (numeric), source, recorded_at
   const { data, error } = await supabase
     .from('agent_signal_history')

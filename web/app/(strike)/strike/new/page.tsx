@@ -93,8 +93,6 @@ export default function StrikeNewPage() {
           geo,
           timing,
           priority_stack: [],
-          org_source: 'strike',
-          user_id: user.id,
         }),
       })
 

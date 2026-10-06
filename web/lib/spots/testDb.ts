@@ -8,6 +8,7 @@ class Query implements PromiseLike<Result> {
   private op: 'select' | 'insert' | 'update' | 'delete' | 'upsert' = 'select'
   private payload: Row = {}
   private sortCol: string | null = null
+  private limitN: number | null = null
 
   constructor(private db: FakeDb, private table: string) {}
 
@@ -20,6 +21,7 @@ class Query implements PromiseLike<Result> {
     return this
   }
   order(col: string) { this.sortCol = col; return this }
+  limit(n: number) { this.limitN = n; return this }
   insert(row: Row) { this.op = 'insert'; this.payload = row; return this }
   upsert(row: Row) { this.op = 'upsert'; this.payload = row; return this }
   update(patch: Row) { this.op = 'update'; this.payload = patch; return this }
@@ -49,7 +51,7 @@ class Query implements PromiseLike<Result> {
       this.db.tables[this.table] = rows.filter(r => !matched.includes(r))
       return { data: null, error: null }
     }
-    return { data: matched, error: null }
+    return { data: this.limitN === null ? matched : matched.slice(0, this.limitN), error: null }
   }
 
   private sorted(data: unknown): unknown {

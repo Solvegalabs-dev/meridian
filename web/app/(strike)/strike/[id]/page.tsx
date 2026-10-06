@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
-import { createServiceClient } from '@/lib/supabase/server'
+import { createClient, createServiceClient } from '@/lib/supabase/server'
+import { requireObjectiveAccess, ObjectiveAccessError } from '@/lib/auth/ownership'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
 import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
 import { loadObjectiveWindow } from '@/lib/objectives/objectiveWindow'
@@ -144,27 +145,29 @@ async function mapBriefRow(
   }
 }
 
+// Columns the Strike page and its panels read. Explicit, so a new sensitive column is not exposed by default.
+const STRIKE_PAGE_COLUMNS = [
+  'status', 'ended_at', 'ended_reason', 'created_at',
+  'taxonomy_key', 'domain', 'geo', 'timing', 'hunt_code', 'hunt_unit_id',
+  'state', 'county', 'lat', 'lon',
+  'nws_grid_office', 'nws_grid_x', 'nws_grid_y', 'nws_zone_id',
+  'usgs_gauge_ids', 'snotel_station_ids', 'elevation_ft_avg',
+  'assigned_agents', 'agent_build_status',
+]
+
 export default async function StrikePage({ params }: { params: { id: string } }) {
+  // Session first. The objective must belong to the signed-in user; anything else is a 404.
+  const { data: { user } } = await createClient().auth.getUser()
+  if (!user) notFound()
+
   const supabase = createServiceClient()
-
-  // Try profile PK first, fall back to arc objective_id FK
-  let { data: objective } = await supabase
-    .from('objective_profiles')
-    .select('*')
-    .eq('id', params.id)
-    .maybeSingle()
-
-  if (!objective) {
-    const { data: byArcId } = await supabase
-      .from('objective_profiles')
-      .select('*')
-      .eq('objective_id', params.id)
-      .maybeSingle()
-    objective = byArcId
+  let objective: Awaited<ReturnType<typeof requireObjectiveAccess>>
+  try {
+    objective = await requireObjectiveAccess(supabase, user.id, params.id, STRIKE_PAGE_COLUMNS)
+  } catch (err) {
+    if (err instanceof ObjectiveAccessError) notFound()
+    throw err
   }
-
-  console.log('[strike/[id]] params.id:', params.id, 'objective id:', (objective as Record<string, unknown> | null)?.id ?? null)
-  if (!objective) notFound()
 
   const arcObjectiveId = (objective.objective_id as string | null) ?? params.id
 
@@ -247,7 +250,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
         )}
         <StrikeBriefClient
           brief={closedBrief}
-          objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
+          objective={objective as unknown as Parameters<typeof StrikeBriefClient>[0]['objective']}
           title={title}
           hasBrief={briefRow !== null}
           evaluation={evaluation}
@@ -268,7 +271,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
       {noLocation && <div className={NOTICE_CLASSES.opens}>Location not set. Add a hunt spot to get local intel.</div>}
       <StrikeBriefClient
         brief={brief}
-        objective={objective as Parameters<typeof StrikeBriefClient>[0]['objective']}
+        objective={objective as unknown as Parameters<typeof StrikeBriefClient>[0]['objective']}
         title={title}
         hasBrief={briefRow !== null}
         evaluation={evaluation}
