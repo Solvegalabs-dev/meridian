@@ -3,6 +3,8 @@ import { cookies } from 'next/headers'
 import { createServerClient } from '@supabase/ssr'
 import { createServiceClient } from '@/lib/supabase/server'
 import CampaignView from '@/components/strike/CampaignView'
+import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
+import { isUserInvited } from '@/lib/auth/inviteGate'
 import { evaluateProfilesWindow, PROFILE_WINDOW_COLUMNS, type ObjectiveWindowProfile } from '@/lib/objectives/objectiveWindow'
 import { resolveEndedNotice } from '@/lib/strikeBrief/closedBrief'
 
@@ -30,8 +32,11 @@ export default async function StrikePage() {
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) redirect('/login')
 
-  const userId = user.id
   const supabase = createServiceClient()
+  // FF-092 Part 2.3: not invited means the screen and no data.
+  if (!(await isUserInvited(supabase, user))) return <InviteOnlyScreen />
+
+  const userId = user.id
 
   const { data: campaigns } = await supabase
     .from('hunt_campaigns')

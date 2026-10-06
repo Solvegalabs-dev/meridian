@@ -8,7 +8,9 @@ import { GET } from './route'
 // Refresh path (partner_key=strike): the route reads the stored row and must report its created_at.
 const rows: Record<string, unknown> = {}
 
+// FF-092: the route needs a session, and the objective must belong to that user.
 vi.mock('@/lib/supabase/server', () => ({
+  createClient: () => ({ auth: { getUser: async () => ({ data: { user: { id: 'user-1' } } }) } }),
   createServiceClient: () => ({
     from: (table: string) => {
       const chain: Record<string, unknown> = {}
@@ -29,7 +31,7 @@ const HOUR = 3600_000
 const get = () => GET(new Request('http://localhost/api/mip/brief?objective_id=OBJ-1&partner_key=strike'))
 
 beforeEach(() => {
-  rows.objective_profiles = { id: 'PROF-1', objective_id: 'OBJ-1', taxonomy_key: 'elk.bull.archery', geo: {}, timing: {} }
+  rows.objective_profiles = { id: 'PROF-1', objective_id: 'OBJ-1', user_id: 'user-1', taxonomy_key: 'elk.bull.archery', geo: {}, timing: {} }
   rows.strike_briefs = null
 })
 

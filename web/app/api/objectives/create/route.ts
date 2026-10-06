@@ -1,14 +1,25 @@
 // POST /api/objectives/create — MIP Objective Intake
-// Core: intake contract is universal. org_source is the cohort partition key.
-// Third-vertical test: BaseMaps, GoHunt, and FishBrain all POST to this same route — YES
+// Core: intake contract is universal. Two doors, decided by the request (FF-092):
+//   Session (Strike): the signed-in user owns the objective. org_source is 'strike'.
+//     The body cannot name a user. The user must be on the invite list (403 if not).
+//   Partner (Authorization: Bearer <key>): the key decides the partner, its org_source, and its
+//     service owner. org_source and user_id in the body are ignored. partner_user_ref is the partner's
+//     opaque id for its customer.
+// Every objective gets an objectives row linked to its objective_profiles row, so the sweep and crons see it.
 import { NextRequest, NextResponse } from 'next/server'
 import { waitUntil } from '@vercel/functions'
-import { createServiceClient } from '@/lib/supabase/server'
+import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { resolveAgentBundle } from '@/lib/swarm/objectiveRouter'
 import { resolveFullGeography } from '@/lib/geo/locationResolver'
 import { normalizeHuntCode } from '@/lib/hunts/huntCode'
+import { authenticatePartner, isPartnerRequest } from '@/lib/auth/partnerAuth'
+import { partnerRateLimitResponse } from '@/lib/auth/rateLimit'
+import { isUserInvited, INVITE_ONLY_MESSAGE } from '@/lib/auth/inviteGate'
+import { createLinkedObjective, LinkedObjectiveError } from '@/lib/objectives/linkedObjective'
 
 export const dynamic = 'force-dynamic'
+
+const MAX_PARTNER_REF = 128
 
 type CreateObjectiveBody = {
   domain: string
@@ -16,13 +27,59 @@ type CreateObjectiveBody = {
   geo: { state?: string; unit?: string; lat?: number; lon?: number }
   priority_stack: unknown[]
   timing: Record<string, unknown>
-  org_source?: string
-  user_id?: string
+  partner_user_ref?: unknown
+}
+
+type Caller = {
+  ownerUserId: string
+  orgSource: string
+  partnerId: string | null
+  partnerRef: string | null
+}
+
+// Returns the caller, or the response to send (401, 429, 503 or 400).
+async function resolveCaller(request: NextRequest, body: CreateObjectiveBody): Promise<Caller | NextResponse> {
+  if (isPartnerRequest(request)) {
+    const partner = await authenticatePartner(request)
+    if (!partner) return NextResponse.json({ error: 'Invalid or revoked partner key' }, { status: 401 })
+
+    const limited = partnerRateLimitResponse(partner)
+    if (limited) return limited
+
+    if (!partner.ownerUserId) {
+      console.error('[objectives/create] partner has no service owner:', partner.slug)
+      return NextResponse.json({ error: 'Partner is not set up yet. Contact Meridian.' }, { status: 503 })
+    }
+
+    const ref = body.partner_user_ref
+    if (ref !== undefined && ref !== null) {
+      if (typeof ref !== 'string' || ref.trim() === '' || ref.length > MAX_PARTNER_REF) {
+        return NextResponse.json(
+          { error: `partner_user_ref must be a non-empty string up to ${MAX_PARTNER_REF} characters` },
+          { status: 400 },
+        )
+      }
+    }
+
+    return {
+      ownerUserId: partner.ownerUserId,
+      orgSource: partner.slug,
+      partnerId: partner.partnerId,
+      partnerRef: typeof ref === 'string' ? ref.trim() : null,
+    }
+  }
+
+  const { data: { user } } = await createClient().auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // FF-092 Part 2.3: the session door is invite-only. Partner keys never reach this branch.
+  if (!(await isUserInvited(createServiceClient(), user))) {
+    return NextResponse.json({ error: INVITE_ONLY_MESSAGE }, { status: 403 })
+  }
+  return { ownerUserId: user.id, orgSource: 'strike', partnerId: null, partnerRef: null }
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = createServiceClient()
-
   let body: CreateObjectiveBody
   try {
     body = await request.json()
@@ -31,7 +88,6 @@ export async function POST(request: NextRequest) {
   }
 
   const { domain, taxonomy_key, geo, priority_stack, timing } = body
-  const org_source = body.org_source ?? 'arc'
 
   if (!domain || !taxonomy_key || !geo || !priority_stack || !timing) {
     return NextResponse.json(
@@ -40,35 +96,13 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  const caller = await resolveCaller(request, body)
+  if (caller instanceof NextResponse) return caller
+
+  const supabase = createServiceClient()
+
   // Resolve agent bundle from registry
   const { agents, buildStatus } = await resolveAgentBundle(taxonomy_key, geo)
-
-  // Determine user from explicit user_id (authenticated intake) or org_source service account
-  let profile: { id: string } | null = null
-  if (body.user_id) {
-    const { data } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('id', body.user_id)
-      .maybeSingle()
-    profile = data
-  } else {
-    const { data } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('org_source', org_source)
-      .limit(1)
-      .maybeSingle()
-    profile = data
-  }
-
-  // If BaseMaps org_source → set account_type = enterprise on their profile
-  if (org_source === 'basemaps' && profile) {
-    await supabase
-      .from('profiles')
-      .update({ account_type: 'enterprise' })
-      .eq('id', profile.id)
-  }
 
   const { lat, lon } = geo
 
@@ -76,55 +110,62 @@ export async function POST(request: NextRequest) {
   const huntCode = normalizeHuntCode(geo.unit)
   const stateColumn = typeof geo.state === 'string' && geo.state.trim() ? geo.state.trim().toUpperCase() : null
 
-  // Insert objective_profiles row
-  const { data: objProfile, error: insertError } = await supabase
-    .from('objective_profiles')
-    .insert({
-      user_id: profile?.id ?? null,
-      org_source,
-      domain,
-      taxonomy_key,
-      geo,
-      priority_stack,
+  let created
+  try {
+    created = await createLinkedObjective(supabase, {
+      ownerUserId: caller.ownerUserId,
+      taxonomyKey: taxonomy_key,
+      huntCode,
       timing,
-      assigned_agents: agents,
-      agent_build_status: buildStatus === 'ready'
-        ? 'ready'
-        : buildStatus === 'partial'
-          ? 'building'
-          : 'queued',
-      status: 'active',
-      ...(lat != null ? { lat } : {}),
-      ...(lon != null ? { lon } : {}),
-      ...(stateColumn ? { state: stateColumn } : {}),
-      ...(huntCode ? { hunt_code: huntCode } : {}),
+      profile: {
+        org_source: caller.orgSource,
+        partner_id: caller.partnerId,
+        partner_user_ref: caller.partnerRef,
+        domain,
+        taxonomy_key,
+        geo,
+        priority_stack,
+        timing,
+        assigned_agents: agents,
+        agent_build_status: buildStatus === 'ready'
+          ? 'ready'
+          : buildStatus === 'partial'
+            ? 'building'
+            : 'queued',
+        status: 'active',
+        ...(lat != null ? { lat } : {}),
+        ...(lon != null ? { lon } : {}),
+        ...(stateColumn ? { state: stateColumn } : {}),
+        ...(huntCode ? { hunt_code: huntCode } : {}),
+      },
     })
-    .select('id')
-    .single()
-
-  if (insertError) {
-    console.error('[objectives/create] insert failed', insertError)
-    return NextResponse.json({ error: insertError.message }, { status: 500 })
+  } catch (err) {
+    // Log the message only. The payload can hold coordinates.
+    const message = err instanceof LinkedObjectiveError ? err.cause_message ?? err.message : 'unknown'
+    console.error('[objectives/create] insert failed:', message)
+    return NextResponse.json({ error: 'Could not create the objective. Try again.' }, { status: 500 })
   }
 
   // Resolve full geography (FF-089) if lat/lon provided — non-blocking, best-effort.
   // waitUntil keeps the function alive after the response so the ~8s resolve completes.
-  if (lat != null && lon != null && objProfile?.id) {
+  if (lat != null && lon != null) {
     waitUntil(resolveFullGeography(lat, lon).then(async (geo) => {
       if (!geo) return
       const { error } = await supabase
         .from('objective_profiles')
         .update(geo)
-        .eq('id', objProfile.id)
+        .eq('id', created.profileId)
       if (error) console.error('[objectives/create] geography update failed:', error.message)
     }).catch(e => console.error('[objectives/create] geography update failed:', e)))
   }
 
   return NextResponse.json(
     {
-      objective_id: objProfile.id,
+      // objective_id stays the objective_profiles id, as before. arc_objective_id is the objectives id.
+      objective_id: created.profileId,
+      arc_objective_id: created.objectiveId,
       assigned_agents: agents,
-      agent_build_status: objProfile ? 'ready' : buildStatus,
+      agent_build_status: 'ready',
     },
     { status: 201 }
   )

@@ -4,8 +4,11 @@
 // partner_key=strike returns StrikeBriefResponse shape (full brief from strike_briefs)
 // partner_key=basemaps adds X-MIP-Partner header; attribution always 'Powered by Meridian Arc'
 import { NextResponse } from 'next/server'
-import { createServiceClient } from '@/lib/supabase/server'
+import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { getMipBriefPayload } from '@/lib/mip/briefPayload'
+import { authenticatePartner, isPartnerRequest } from '@/lib/auth/partnerAuth'
+import { partnerRateLimitResponse } from '@/lib/auth/rateLimit'
+import { ObjectiveAccessError, requireObjectiveAccess, requirePartnerObjective } from '@/lib/auth/ownership'
 import { loadObjectiveWindow, isEndedState } from '@/lib/objectives/objectiveWindow'
 import { closedSynthesis } from '@/lib/strikeBrief/closedBrief'
 import { briefGeneratedAt } from '@/lib/strike/briefFreshness'
@@ -164,40 +167,83 @@ async function handleStrikeBrief(
   }, { headers })
 }
 
-function partnerHeaders(partnerKey: string | null): Record<string, string> {
-  if (partnerKey === 'basemaps') return { 'X-MIP-Partner': 'basemaps' }
+function partnerHeaders(partnerSlug: string | null): Record<string, string> {
+  if (partnerSlug === 'basemaps') return { 'X-MIP-Partner': 'basemaps' }
   return {}
 }
 
+// Two doors (FF-092 Part 3.4). The request decides which one applies.
+//   Partner: an Authorization header. The key decides the partner. The objective's partner_id must
+//            match the key's partner, else 404. partner_key, if sent, must repeat the key's slug.
+//   Session: no Authorization header. The signed-in user must own the objective, else 404.
+//            partner_key may be absent, 'strike' or 'arc' (the Strike screens send 'strike' or 'arc').
+// Neither door applies (no key and no session): 401.
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const objectiveId = searchParams.get('objective_id')
   const partnerKey = searchParams.get('partner_key')
+  const supabase = createServiceClient()
+
+  if (isPartnerRequest(request)) {
+    const partner = await authenticatePartner(request)
+    if (!partner) {
+      return NextResponse.json({ error: 'Invalid or revoked partner key' }, { status: 401 })
+    }
+    const limited = partnerRateLimitResponse(partner)
+    if (limited) return limited
+
+    if (!objectiveId) {
+      return NextResponse.json({ error: 'objective_id required' }, { status: 400 })
+    }
+    if (partnerKey && partnerKey !== partner.slug) {
+      return NextResponse.json({ error: 'partner_key does not match the partner key' }, { status: 403 })
+    }
+
+    let profile
+    try {
+      profile = await requirePartnerObjective(supabase, partner.partnerId, objectiveId)
+    } catch (err) {
+      if (err instanceof ObjectiveAccessError) return NextResponse.json({ error: 'Objective not found' }, { status: 404 })
+      throw err
+    }
+
+    const { payload, notFound } = await getMipBriefPayload(supabase, profile.id)
+    if (notFound) return NextResponse.json({ error: 'Objective not found' }, { status: 404 })
+    return NextResponse.json(payload, { headers: partnerHeaders(partner.slug) })
+  }
+
+  // A partner_key other than the session values can only be used with a key.
+  if (partnerKey && partnerKey !== 'strike' && partnerKey !== 'arc') {
+    return NextResponse.json({ error: 'Partner requests need an Authorization header' }, { status: 401 })
+  }
+
+  const { data: { user } } = await createClient().auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   if (!objectiveId) {
     return NextResponse.json({ error: 'objective_id required' }, { status: 400 })
   }
 
-  const supabase = createServiceClient()
+  let profile
+  try {
+    profile = await requireObjectiveAccess(supabase, user.id, objectiveId, ['objective_id'])
+  } catch (err) {
+    if (err instanceof ObjectiveAccessError) return NextResponse.json({ error: 'Objective not found' }, { status: 404 })
+    throw err
+  }
 
-  // Strike partner: dedicated response shape built from strike_briefs directly
-  // objectiveId from URL may be profile PK — resolve to arc objective_id before querying
+  // Strike screen: dedicated response shape built from strike_briefs directly.
+  // Resolve to the arc objective_id, which is the FK on strike_briefs.
   if (partnerKey === 'strike') {
-    const { data: profileLookup } = await supabase
-      .from('objective_profiles')
-      .select('objective_id')
-      .eq('id', objectiveId)
-      .maybeSingle()
-    const arcObjectiveId = (profileLookup?.objective_id as string | null) ?? objectiveId
-    console.log('[strike dispatch] url objectiveId:', objectiveId, '→ arcObjectiveId:', arcObjectiveId)
+    const arcObjectiveId = (profile.objective_id as string | null) ?? objectiveId
     return handleStrikeBrief(supabase, arcObjectiveId)
   }
 
-  // Generic MIP payload — resolves objective_profiles PK or arc objective_id either way
-  const { payload, notFound } = await getMipBriefPayload(supabase, objectiveId)
+  // Generic MIP payload, read by the verified profile PK
+  const { payload, notFound } = await getMipBriefPayload(supabase, profile.id)
   if (notFound) {
     return NextResponse.json({ error: 'Objective not found' }, { status: 404 })
   }
 
-  return NextResponse.json(payload, { headers: partnerHeaders(partnerKey) })
+  return NextResponse.json(payload)
 }

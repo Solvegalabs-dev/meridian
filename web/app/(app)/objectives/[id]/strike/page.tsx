@@ -1,43 +1,41 @@
 import { notFound as nextNotFound } from 'next/navigation'
-import { createServiceClient } from '@/lib/supabase/server'
+import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { getMipBriefPayload } from '@/lib/mip/briefPayload'
+import { requireObjectiveAccess, ObjectiveAccessError } from '@/lib/auth/ownership'
 import StrikeBriefView from '@/components/strike/mip/StrikeBriefView'
 import { strikeDetailHref } from '@/lib/strike/strikeLinks'
 
 export const dynamic = 'force-dynamic'
 
 export default async function ObjectiveStrikePage({ params }: { params: { id: string } }) {
-  const supabase = createServiceClient()
+  // The signed-in user must own the objective. Any other id is a 404, whatever the id is.
+  const { data: { user } } = await createClient().auth.getUser()
+  if (!user) nextNotFound()
 
-  // params.id may be an objective_profiles PK or an arc objective_id — resolve both ways
-  // Profile PK first, then arc objective_id, matching /strike/[id].
-  let { data: profileRow } = await supabase
-    .from('objective_profiles')
-    .select('id, objective_id, taxonomy_key')
-    .eq('id', params.id)
-    .maybeSingle()
-  if (!profileRow) {
-    const { data: byArcId } = await supabase
-      .from('objective_profiles')
-      .select('id, objective_id, taxonomy_key')
-      .eq('objective_id', params.id)
-      .maybeSingle()
-    profileRow = byArcId
+  const supabase = createServiceClient()
+  let profileRow: Awaited<ReturnType<typeof requireObjectiveAccess>>
+  try {
+    profileRow = await requireObjectiveAccess(supabase, user.id, params.id, ['taxonomy_key'])
+  } catch (err) {
+    if (err instanceof ObjectiveAccessError) nextNotFound()
+    throw err
   }
 
-  const arcObjectiveId = (profileRow?.objective_id as string | null) ?? params.id
+  const arcObjectiveId = (profileRow.objective_id as string | null) ?? params.id
 
   const { data: obj } = await supabase
     .from('objectives')
     .select('title')
     .eq('id', arcObjectiveId)
+    .eq('user_id', user.id)
     .maybeSingle()
 
   const objectiveTitle = (obj?.title as string | null)
-    ?? (profileRow?.taxonomy_key as string | null)?.replace(/\./g, ' · ')
+    ?? (profileRow.taxonomy_key as string | null)?.replace(/\./g, ' · ')
     ?? 'Objective'
 
-  const { payload, notFound: briefNotFound } = await getMipBriefPayload(supabase, params.id)
+  // Use the resolved profile PK, so the payload never reads a different row than the one checked above.
+  const { payload, notFound: briefNotFound } = await getMipBriefPayload(supabase, profileRow.id)
   if (briefNotFound) nextNotFound()
 
   return (
@@ -45,7 +43,7 @@ export default async function ObjectiveStrikePage({ params }: { params: { id: st
       objectiveId={params.id}
       objectiveTitle={objectiveTitle}
       initialBrief={payload}
-      fullStrikeHref={strikeDetailHref({ profileId: (profileRow?.id as string | undefined) ?? null, objectiveId: arcObjectiveId })}
+      fullStrikeHref={strikeDetailHref({ profileId: profileRow.id, objectiveId: arcObjectiveId })}
     />
   )
 }
