@@ -41,12 +41,16 @@ function chain<T>(resolver: () => Promise<T>, record?: (method: string, args: un
 type MockSupabaseConfig = {
   rpcResult?: { data: unknown; error: unknown }
   licenseAcceptanceExists?: boolean
+  // When false, the license acceptance lookup returns nothing. When upsertError
+  // is also true, the upsert (catalog fallback or study_metadata) also fails.
+  licenseUpsertError?: boolean
   catalogRow?: { license_type: string | null; taxon_ids: string | null; citation: string | null } | null
 }
 
 function makeMockSupabase(config: MockSupabaseConfig) {
   const recorder = makeTableRecorder()
   const rpcMock = vi.fn(async () => config.rpcResult ?? { data: null, error: null })
+  let licenseCallCount = 0
 
   const client = {
     rpc: rpcMock,
@@ -54,6 +58,11 @@ function makeMockSupabase(config: MockSupabaseConfig) {
       recorder.calls.push({ method: `from:${table}`, args: [] })
 
       if (table === 'movebank_license_acceptances') {
+        licenseCallCount++
+        // First call is the select lookup; subsequent calls are upserts.
+        if (licenseCallCount > 1 && config.licenseUpsertError) {
+          return chain(async () => ({ error: new Error('DB upsert failed') }), (m, a) => recorder.calls.push({ method: `${table}.${m}`, args: a }))
+        }
         return chain(async () => ({ data: config.licenseAcceptanceExists ? { study_id: 1 } : null }), (m, a) => recorder.calls.push({ method: `${table}.${m}`, args: a }))
       }
       if (table === 'movebank_study_catalog') {
@@ -274,6 +283,35 @@ describe('filterEventsBySpeciesForJob (A2 — multi-species study, never mix spe
 
     const result = await filterWithMock('123', 'Cervus elaphus', [], SCIENTIFIC_NAMES)
     expect(result).toEqual({ outcome: 'filtered', events: [] })
+    expect(fetchIndividualsSpy).not.toHaveBeenCalled()
+  })
+
+  it('item 4: a 5xx on fetchMovebankIndividuals never kills a job when events carry the taxon attribute', async () => {
+    // Batch1b item 4: the individuals endpoint is never reached when events
+    // already carry `individual_taxon_canonical_name`. The early-return at the
+    // event-level attribute path is the guarantee — confirm a hypothetical 5xx
+    // from the individuals call is truly unreachable in this code path.
+    const fetchIndividualsSpy = vi.fn().mockRejectedValue(new Error('HTTP 500 — individuals endpoint failed'))
+    vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+      return { ...actual, fetchMovebankIndividuals: fetchIndividualsSpy }
+    })
+    vi.resetModules()
+    const { filterEventsBySpeciesForJob: filterWithMock } = await import('./jobRunner')
+
+    const events: MovebankEventWithTaxon[] = [
+      event('2019-10-01T13:00:00Z', 'elk-1', 'Cervus elaphus'),
+      event('2019-10-01T14:00:00Z', 'deer-1', 'Odocoileus hemionus'),
+      event('2019-10-01T15:00:00Z', 'elk-2', 'Cervus canadensis'), // second acceptable elk name
+    ]
+    const result = await filterWithMock('123', 'Cervus elaphus,Odocoileus hemionus', events, SCIENTIFIC_NAMES)
+
+    // Events carry taxon — filtered by event-level attribute, individuals never touched.
+    expect(result.outcome).toBe('filtered')
+    if (result.outcome === 'filtered') {
+      expect(result.events.map(e => e.individualId)).toEqual(['elk-1', 'elk-2'])
+    }
+    // The mock must not have been called — the 5xx is never reached.
     expect(fetchIndividualsSpy).not.toHaveBeenCalled()
   })
 })
@@ -588,7 +626,10 @@ describe('runOneJob integration (truncation split + no-overlap guarantee)', () =
     expect(maxInFlight).toBe(1)
   })
 
-  it('A5 fail-closed: requeues (not dead) when license recording fails, and never fetches events', async () => {
+  it('A5 fail-closed: requeues (not dead) when both meta fetch and catalog upsert fail, and never fetches events', async () => {
+    // Batch1b item 3 catalog fallback: if meta fails AND the upsert also fails,
+    // the job is requeued with 'license_not_recorded' — never fetches events.
+    // licenseUpsertError: true simulates the catalog fallback upsert also failing.
     const job = {
       id: 'job-1', objective_id: 'obj-1', species_taxon_key: 'elk.bull', role: 'primary' as const,
       study_id: 123, geo_hash: '9xyz5', local_tz: 'America/Denver',
@@ -599,6 +640,7 @@ describe('runOneJob integration (truncation split + no-overlap guarantee)', () =
     const { client, recorder } = makeMockSupabase({
       rpcResult: { data: job, error: null },
       licenseAcceptanceExists: false, // forces an attempt to record the license before any event fetch
+      licenseUpsertError: true, // catalog fallback upsert also fails — true fail-closed
       catalogRow: { license_type: 'CC_0', taxon_ids: 'Cervus elaphus', citation: '' },
     })
     vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
@@ -641,6 +683,7 @@ describe('runOneJob integration (truncation split + no-overlap guarantee)', () =
     const { client, recorder } = makeMockSupabase({
       rpcResult: { data: job, error: null },
       licenseAcceptanceExists: false,
+      licenseUpsertError: true, // catalog fallback upsert also fails
       catalogRow: { license_type: 'CC_0', taxon_ids: 'Cervus elaphus', citation: '' },
     })
     vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
