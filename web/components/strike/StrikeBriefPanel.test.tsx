@@ -113,3 +113,51 @@ describe('StrikeBriefPanel', () => {
     expect(html).not.toContain('Pre-season outlook')
   })
 })
+
+describe('StrikeBriefPanel: no location (FF-095 Part 3)', () => {
+  it('tells the user to add a hunt spot on the Prep tab, with a button, instead of "sweep pending"', () => {
+    const html = render({ brief: brief({ time_windows: null }), noLocation: true, onGoToPrep: () => {} })
+    expect(html).toContain('Add a hunt spot on the Prep tab to start your brief')
+    expect(html).toContain('Go to Prep')
+    expect(html).not.toContain('Intelligence sweep pending')
+    expect(html).not.toContain('Check back after the next run')
+    // The button is at least 44 px tall.
+    expect(html).toMatch(/<button[^>]*min-h-\[44px\]/)
+  })
+
+  it('the button switches to the Prep tab', () => {
+    const goToPrep = vi.fn()
+    const tree = StrikeBriefPanel({
+      brief: brief({ time_windows: null }), isOnline: true, onRefresh: async () => 'same' as const,
+      windowState: 'active', noLocation: true, onGoToPrep: goToPrep,
+    }) as unknown as { props: { children: unknown } }
+
+    const buttons: Array<{ props: { onClick?: () => void } }> = []
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk)
+      if (!node || typeof node !== 'object') return
+      const el = node as { type?: unknown; props?: { children?: unknown; onClick?: () => void } }
+      if (el.type === 'button') buttons.push(el as { props: { onClick?: () => void } })
+      walk(el.props?.children)
+    }
+    walk(tree)
+
+    expect(buttons).toHaveLength(1)
+    buttons[0].props.onClick?.()
+    expect(goToPrep).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the existing pending text for an objective that has a location but no brief yet', () => {
+    const html = render({ brief: brief({ time_windows: null }), noLocation: false, onGoToPrep: () => {} })
+    expect(html).toContain('Intelligence sweep pending')
+    expect(html).toContain('Check back after the next run')
+    expect(html).not.toContain('Add a hunt spot')
+    expect(html).not.toContain('Go to Prep')
+  })
+
+  it('does not change a brief that exists, with or without a location', () => {
+    const html = render({ brief: brief(), noLocation: true, onGoToPrep: () => {} })
+    expect(html).toContain('>GO<')
+    expect(html).not.toContain('Add a hunt spot')
+  })
+})

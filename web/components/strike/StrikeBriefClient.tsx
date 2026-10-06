@@ -14,6 +14,7 @@ import { useStrikeCache } from '@/hooks/useStrikeCache'
 import type { WindowEvaluation } from '@/lib/objectives/windowState'
 import { defaultStrikeTab, type StrikeTab } from '@/lib/strike/defaultTab'
 import { checkForNewerBrief, type BriefRefreshResult } from '@/lib/strike/briefRefresh'
+import { hasLocation } from '@/lib/agents/geoLocation'
 
 // "Brief" (not "Strike Brief") so five tabs fit at 375 px without truncation.
 const TAB_LABELS: Record<StrikeTab, string> = {
@@ -164,6 +165,8 @@ export default function StrikeBriefClient({
             onRefresh={refresh}
             windowState={evaluation?.state ?? null}
             tripStart={evaluation?.state === 'upcoming' ? evaluation.detail.trip_start ?? null : null}
+            noLocation={!hasLocation(objective as Parameters<typeof hasLocation>[0])}
+            onGoToPrep={() => setActiveTab('prep')}
           />
         )}
         {activeTab === 'intel' && (

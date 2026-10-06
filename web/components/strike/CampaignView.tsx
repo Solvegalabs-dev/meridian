@@ -8,6 +8,9 @@ import { endedNoticeLabel, type EndedNotice } from '@/lib/strikeBrief/closedBrie
 import { formatDateOnly } from '@/lib/utils/dateOnly'
 import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
 import { formatReason } from '@/lib/strike/reasonLabels'
+import { WINDOW_CHIP_TONE } from '@/lib/strike/windowStatus'
+import { verdictStyle } from '@/lib/strike/verdictStyles'
+import { OTHER_OBJECTIVE_CLASSES as OC, type OtherObjective } from '@/lib/strike/otherObjectives'
 
 type UnitProfile = {
   id?: string
@@ -175,7 +178,37 @@ function PivotCard({ unit }: { unit: EnrichedUnit }) {
   )
 }
 
-export default function CampaignView({ campaigns }: { campaigns: Campaign[] }) {
+// A Strike objective that is not part of a campaign (FF-095 Part 1). Links to its strike page.
+function OtherObjectiveRow({ item }: { item: OtherObjective }) {
+  const verdict = item.verdict ? verdictStyle(item.verdict) : null
+  return (
+    <Link href={`/strike/${item.id}`} className={OC.row}>
+      <div className="flex-1 min-w-0">
+        <div className={`${item.group === 'ended' ? OC.titleEnded : OC.title} break-words`}>{item.title}</div>
+        <div className={`${OC.subtitle} truncate`}>{item.subtitle}</div>
+        {item.dates && <div className={OC.dates}>{item.dates}</div>}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {item.chip && (
+          <span
+            className={OC.chip}
+            style={{ backgroundColor: WINDOW_CHIP_TONE[item.chip.tone].bg, color: WINDOW_CHIP_TONE[item.chip.tone].color }}
+          >
+            {item.chip.label}
+          </span>
+        )}
+        {verdict && (
+          <span className={OC.verdict} style={{ backgroundColor: verdict.bg, color: verdict.color }}>
+            {verdict.label}
+          </span>
+        )}
+        <span aria-hidden="true" className={OC.chevron}>›</span>
+      </div>
+    </Link>
+  )
+}
+
+export default function CampaignView({ campaigns, others = [] }: { campaigns: Campaign[]; others?: OtherObjective[] }) {
   return (
     <div className="min-h-screen bg-slate-900 text-white flex flex-col">
       {/* Header */}
@@ -194,14 +227,14 @@ export default function CampaignView({ campaigns }: { campaigns: Campaign[] }) {
 
       {/* Body */}
       <div className="flex-1 px-0 py-4 space-y-4">
-        {campaigns.length === 0 ? (
-          <div className="text-center py-16 text-slate-400 px-4">
-            <div className="text-sm">No active campaigns.</div>
-            <Link href="/strike/new" className="text-blue-400 text-sm mt-2 inline-block">
-              Create your first objective →
-            </Link>
+        {campaigns.length === 0 && others.length === 0 && (
+          <div className={OC.prompt}>
+            <div className={OC.promptTitle}>Start your first objective</div>
+            <div className={OC.promptBody}>Pick what you are after and where. Meridian builds your daily brief from there.</div>
+            <Link href="/strike/new" className={OC.promptButton}>New objective</Link>
           </div>
-        ) : (
+        )}
+        {campaigns.length > 0 && (
           [...campaigns].sort((a, b) => Number(isClosedCampaign(a)) - Number(isClosedCampaign(b))).map(campaign => {
             const isFishing = isFishingTaxonomyKey(campaign.taxonomy_key ?? '')
             const pivotUnits = livePivotUnits(campaign)
@@ -236,6 +269,15 @@ export default function CampaignView({ campaigns }: { campaigns: Campaign[] }) {
               </div>
             )
           })
+        )}
+
+        {others.length > 0 && (
+          <section aria-labelledby="other-objectives-heading">
+            <h2 id="other-objectives-heading" className={OC.heading}>Other objectives</h2>
+            <div className={OC.card}>
+              {others.map(item => <OtherObjectiveRow key={item.id} item={item} />)}
+            </div>
+          </section>
         )}
       </div>
 

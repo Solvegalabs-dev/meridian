@@ -4,6 +4,13 @@ import { formatDateOnly } from '@/lib/utils/dateOnly'
 
 export type WindowChip = { label: string; tone: 'live' | 'pending' | 'ended' }
 
+// Opaque hex pairs so a chip reads the same on any page background. Each pair is checked for 4.5:1 in a test.
+export const WINDOW_CHIP_TONE: Record<WindowChip['tone'], { bg: string; color: string }> = {
+  live:    { bg: '#14532d', color: '#4ade80' },
+  pending: { bg: '#1e3a8a', color: '#bfdbfe' },
+  ended:   { bg: '#334155', color: '#e2e8f0' },
+}
+
 // Before the hunt window opens: a verdict here is a pre-season outlook, not a hunt-day call.
 export const PRESEASON_CAPTION = 'Pre-season outlook, not a hunt-day call'
 

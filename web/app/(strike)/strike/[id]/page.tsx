@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { requireObjectiveAccess, ObjectiveAccessError } from '@/lib/auth/ownership'
 import { isUserInvited } from '@/lib/auth/inviteGate'
+import { resolveObjectiveTitle } from '@/lib/objectives/objectiveTitle'
 import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
 import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
@@ -208,8 +209,13 @@ export default async function StrikePage({ params }: { params: { id: string } })
     .select('title')
     .eq('id', arcObjectiveId)
     .maybeSingle()
-  const title = (objectiveRow?.title as string | null | undefined)
-    ?? String(objective.taxonomy_key ?? '').replace(/\./g, ' · ')
+  const title = resolveObjectiveTitle({
+    storedTitle: objectiveRow?.title as string | null | undefined,
+    taxonomyKey: objective.taxonomy_key as string | null,
+    state: objective.state as string | null,
+    huntCode: objective.hunt_code as string | null,
+    waterBody: (objective.geo as { water_body?: unknown } | null)?.water_body as string | null | undefined,
+  })
 
   // FF-089 P0: window state is evaluated at render time. The sweep is not the only trigger.
   const windowCheck = await loadObjectiveWindow(supabase, arcObjectiveId)
