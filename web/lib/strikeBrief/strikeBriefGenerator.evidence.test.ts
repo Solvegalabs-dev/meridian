@@ -144,7 +144,7 @@ describe('a brief with evidence', () => {
     setup({ readings: [FLOW, TEMP] })
     await generateStrikeBrief('obj-1', 'u1')
     const prompt = promptSent()
-    expect(prompt).toContain('Streamflow: 2,490 cfs, USGS observed')
+    expect(prompt).toContain('State-level streamflow (not this water): 2,490 cfs, USGS observed')
     expect(prompt).toContain('Water temperature: 45.5 F (7.5 C), USGS observed')
   })
 
@@ -162,8 +162,25 @@ describe('a brief with evidence', () => {
     await generateStrikeBrief('obj-1', 'u1')
     const prompt = promptSent()
     expect(prompt).toContain('never give a number without its unit')
-    expect(prompt).toContain('MISSING DATA: no water temperature reading.')
+    expect(prompt).toContain('MISSING DATA: no water temperature reading yet; no streamflow reading for this water yet.')
     expect(prompt).toContain('say so in one clause')
+  })
+
+  it('a state-level streamflow reading is labeled as not this water, and the rule forbids calling it the flow of this spot', async () => {
+    setup({ readings: [FLOW, TEMP] })
+    await generateStrikeBrief('obj-1', 'u1')
+    const prompt = promptSent()
+    expect(prompt).toContain('State-level streamflow (not this water): 2,490 cfs, USGS observed')
+    expect(prompt).not.toMatch(/- Streamflow: /)
+    expect(prompt).toContain('5. A state-level reading must never be described as the flow of this spot.')
+  })
+
+  it('with a state-level streamflow reading and a water temperature, it still says there is no streamflow reading for this water', async () => {
+    setup({ readings: [FLOW, TEMP] })
+    await generateStrikeBrief('obj-1', 'u1')
+    // The evidence block's own line (rule 4 below it also has an example sentence, so match from the line start).
+    const line = promptSent().match(/^MISSING DATA: .*$/m)?.[0]
+    expect(line).toBe('MISSING DATA: no streamflow reading for this water yet.')
   })
 
   it('the prompt lists only the objective\'s own names as usable place names', async () => {
@@ -203,7 +220,7 @@ describe('buildStrikeBriefPrompt', () => {
   })
 
   it('always carries the four evidence rules, with or without a count', () => {
-    for (const evidence of [undefined, { count: 0, lines: [], missing: [] }, { count: 1, lines: ['Streamflow: 2,490 cfs, USGS observed'], missing: [] }]) {
+    for (const evidence of [undefined, { count: 0, lines: [], missing: [] }, { count: 1, lines: ['State-level streamflow (not this water): 2,490 cfs, USGS observed'], missing: [] }]) {
       const prompt = buildStrikeBriefPrompt(base({ evidence }), '0600')
       expect(prompt).toContain('EVIDENCE RULES')
       expect(prompt).toContain('PLACE NAMES')

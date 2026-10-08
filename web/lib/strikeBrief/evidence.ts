@@ -78,7 +78,9 @@ const FORMATTERS: Record<string, { label: string; format: Formatter }> = {
     label: 'Water temperature',
     format: v => `${fmt(v * 9 / 5 + 32)} F (${fmt(v)} C)`,
   },
-  OUTDOOR_USGS_STREAMFLOW_STATE: { label: 'Streamflow', format: v => `${grouped(v)} cfs` },
+  // A state-level figure: it is the same kind of number for every objective in the state, so it says nothing
+  // about this water. The label says so, and the prompt forbids describing it as this spot's flow.
+  OUTDOOR_USGS_STREAMFLOW_STATE: { label: 'State-level streamflow (not this water)', format: v => `${grouped(v)} cfs` },
   OUTDOOR_USGS_DISSOLVED_O2: { label: 'Dissolved oxygen', format: v => `${fmt(v)} mg/L` },
   OUTDOOR_SALMON_PROGRESSION: { label: 'Salmon run progress', format: v => `${fmt(v, 0)}% of the annual run` },
   OUTDOOR_USACE_BONNEVILLE: { label: 'Bonneville fish count', format: v => `${grouped(v)} fish per day` },
@@ -104,11 +106,14 @@ export function formatReading(agentKey: string, value: number, opts: { source?: 
   return `${entry.label}: ${entry.format(value, { observed, recordedAt })}, ${sourceLabel(agentKey, observed)}`
 }
 
-// Data categories a brief should say are missing when they have no reading, by domain.
-const EXPECTED: Record<string, Array<{ key: string; name: string }>> = {
+// Data categories a brief should say are missing when they have no reading for THIS spot, by domain. `keys` are
+// the agents that count as a spot-level reading. Streamflow has none yet: OUTDOOR_USGS_STREAMFLOW_STATE is a
+// state-level figure and does not satisfy it, so a fishing brief says there is no streamflow reading for this
+// water until a spot-level agent exists (add its key here).
+const EXPECTED: Record<string, Array<{ keys: string[]; name: string }>> = {
   fishing: [
-    { key: 'OUTDOOR_USGS_WATER_TEMP', name: 'water temperature' },
-    { key: 'OUTDOOR_USGS_STREAMFLOW_STATE', name: 'streamflow' },
+    { keys: ['OUTDOOR_USGS_WATER_TEMP'], name: 'water temperature reading' },
+    { keys: [], name: 'streamflow reading for this water' },
   ],
 }
 
@@ -153,7 +158,7 @@ export function buildEvidence(input: { readings: Reading[]; signals: TaggedSigna
   }
 
   const expected = EXPECTED[input.domain ?? ''] ?? []
-  const missing = expected.filter(e => !latest.has(e.key)).map(e => e.name)
+  const missing = expected.filter(e => !e.keys.some(key => latest.has(key))).map(e => e.name)
 
   return { count: usable.length + signals.length, lines, missing }
 }

@@ -339,7 +339,7 @@ There is nothing to confirm. Write only general seasonal context, every sentence
 Do not cite any reading, value, trend, closure or condition as current.`
     : `EVIDENCE (last ${EVIDENCE_WINDOW_DAYS} days; the only things you may state as confirmed):
 ${evidence && evidence.lines.length > 0 ? evidence.lines.map(l => `- ${l}`).join('\n') : '- Signals were tagged to this objective, but no reading with a known unit is available.'}
-${evidence && evidence.missing.length > 0 ? `MISSING DATA: no ${evidence.missing.join(' and no ')} reading.` : ''}`.trim();
+${evidence && evidence.missing.length > 0 ? `MISSING DATA: ${evidence.missing.map(m => `no ${m} yet`).join('; ')}.` : ''}`.trim();
 
   const placeNames = context.placeNames && context.placeNames.length > 0
     ? context.placeNames.join('; ')
@@ -354,7 +354,8 @@ ${evidence && evidence.missing.length > 0 ? `MISSING DATA: no ${evidence.missing
    unless the name is in the EVIDENCE block or in this list of the objective's own fields: ${placeNames}.
    Do not infer a watershed, drainage or "corridor" from the terrain data. Say "your spot", or use the water body name above.
 3. UNITS: never give a number without its unit. Use the units and conversions exactly as written in the EVIDENCE block.
-4. MISSING DATA: if a data category is missing, say so in one clause (for example "no water temperature reading yet").`;
+4. MISSING DATA: if a data category is missing, say so in one clause (for example "no water temperature reading yet").
+5. A state-level reading must never be described as the flow of this spot.`;
 
   return `You are Meridian's Strike Brief engine for the outdoor / ${isFishing ? 'fishing' : 'hunting'} domain.
 

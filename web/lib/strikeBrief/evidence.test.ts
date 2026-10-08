@@ -55,7 +55,7 @@ describe('estimated zero readings are not evidence', () => {
     const e = buildEvidence({ readings: [placeholder], signals: [], domain: 'fishing', now: NOW })
     expect(e.count).toBe(0)
     expect(e.lines).toEqual([])
-    expect(e.missing).toContain('water temperature')
+    expect(e.missing).toContain('water temperature reading')
   })
 
   it('an observed 0 is a real measurement, and a nonzero estimate is kept but labeled as a projection', () => {
@@ -76,7 +76,7 @@ describe('labeled values with units', () => {
   })
 
   it('streamflow is in cfs with a thousands separator', () => {
-    expect(formatReading('OUTDOOR_USGS_STREAMFLOW_STATE', 2490, { source: 'observed' })).toBe('Streamflow: 2,490 cfs, USGS observed')
+    expect(formatReading('OUTDOOR_USGS_STREAMFLOW_STATE', 2490, { source: 'observed' })).toBe('State-level streamflow (not this water): 2,490 cfs, USGS observed')
   })
 
   it('other known readings carry their units', () => {
@@ -140,9 +140,27 @@ describe('labeled values with units', () => {
 })
 
 describe('missing data', () => {
-  it('names the fishing categories that have no reading', () => {
+  it('names the fishing categories that have no reading for this water', () => {
     const e = buildEvidence({ readings: [reading()], signals: [], domain: 'fishing', now: NOW })
-    expect(e.missing).toEqual(['water temperature']) // streamflow is present
+    // The state-level streamflow reading is present, but it is not a reading for this water.
+    expect(e.missing).toEqual(['water temperature reading', 'streamflow reading for this water'])
+  })
+
+  it('a state-level streamflow reading never clears the streamflow clause', () => {
+    const e = buildEvidence({
+      readings: [reading({ agent_key: 'OUTDOOR_USGS_WATER_TEMP', observed_value: 7.5 }), reading({ observed_value: 2490 })],
+      signals: [],
+      domain: 'fishing',
+      now: NOW,
+    })
+    expect(e.missing).toEqual(['streamflow reading for this water'])
+    expect(e.count).toBe(2) // it is still evidence that something was recorded
+  })
+
+  it('a spot-level streamflow agent, once one exists in the list, would clear it', () => {
+    // Today no agent is listed for spot-level streamflow, so the clause always shows for fishing.
+    const e = buildEvidence({ readings: [], signals: [], domain: 'fishing', now: NOW })
+    expect(e.missing).toContain('streamflow reading for this water')
   })
 
   it('names nothing for a domain with no expected categories', () => {
