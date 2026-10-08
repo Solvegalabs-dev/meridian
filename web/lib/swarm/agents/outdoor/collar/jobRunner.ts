@@ -223,7 +223,7 @@ export async function sampleElevations(events: Array<{ lat: number; lon: number 
   for (let i = 0; i < sample.length; i += ELEVATION_BATCH_SIZE) {
     const batch = sample.slice(i, i + ELEVATION_BATCH_SIZE);
     const results = await Promise.all(batch.map(e => queryElevation(e.lat, e.lon)));
-    for (const r of results) if (r !== null) elevations.push(r);
+    for (const r of results) if (r !== null) elevations.push(Math.round(r));
   }
   return elevations;
 }
@@ -423,14 +423,18 @@ async function enqueueSplitJobs(job: CollarJob, windows: TimeWindow[]): Promise<
     split_depth: job.split_depth + 1,
     status: 'queued',
   }));
-  await supabase
+  const { error: splitError } = await supabase
     .from('collar_jobs')
     .upsert(rows, { onConflict: 'objective_id,species_taxon_key,study_id,window_start,window_end', ignoreDuplicates: true });
+  if (splitError) {
+    console.error(`[collar-worker] enqueueSplitJobs failed for job ${job.id}:`, splitError.message);
+    throw new Error(`enqueueSplitJobs DB error: ${splitError.message}`);
+  }
 }
 
 async function writeAggregate(job: CollarJob, catalogRow: CatalogRow, binned: BinnedAggregate, elevSamples: number[]): Promise<void> {
   const supabase = createServiceClient();
-  await supabase
+  const { error } = await supabase
     .from('collar_study_aggregates')
     .upsert({
       study_id: job.study_id,
@@ -450,6 +454,10 @@ async function writeAggregate(job: CollarJob, catalogRow: CatalogRow, binned: Bi
       license_type: catalogRow.license_type,
       citation: catalogRow.citation,
     }, { onConflict: 'study_id,geo_hash,local_tz,window_start,window_end' });
+  if (error) {
+    console.error(`[collar-worker] writeAggregate failed for job ${job.id} study ${job.study_id}:`, error.message);
+    throw new Error(`writeAggregate DB error: ${error.message}`);
+  }
 }
 
 // Counts-only diagnostic summary written to collar_jobs.stats (fix round
@@ -571,7 +579,7 @@ async function processJob(job: CollarJob): Promise<ProcessOutcome> {
 
 async function finalizeJob(jobId: string, outcome: ProcessOutcome): Promise<void> {
   const supabase = createServiceClient();
-  await supabase
+  const { error } = await supabase
     .from('collar_jobs')
     .update({
       status: outcome.status,
@@ -581,6 +589,10 @@ async function finalizeJob(jobId: string, outcome: ProcessOutcome): Promise<void
       stats: outcome.stats ?? null,
     })
     .eq('id', jobId);
+  if (error) {
+    console.error(`[collar-worker] finalizeJob failed for job ${jobId}:`, error.message);
+    throw new Error(`finalizeJob DB error: ${error.message}`);
+  }
 }
 
 async function handleJobFailure(job: CollarJob, err: unknown): Promise<void> {
