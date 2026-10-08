@@ -4,7 +4,8 @@ import { useEffect, useState, type FormEvent } from 'react'
 import {
   accuracyLabel,
   isLowAccuracy,
-  parseCoordinatePair,
+  readPaste,
+  validateCoordinates,
 } from '@/lib/spots/coordinates'
 
 export type SpotView = {
@@ -161,6 +162,41 @@ export function SpotsNote({ fishing }: { fishing: boolean }) {
 
 type FormValues = { name: string; lat: string; lon: string }
 
+export const PASTE_PLACEHOLDER = '40.127, -111.020'
+export const PASTE_HELP = 'Paste from Google Maps. Degrees and N, S, E, W are converted for you.'
+
+export function coordinatesTip(fishing: boolean): string {
+  return fishing
+    ? 'Tip: long-press the water on Google Maps to copy its coordinates.'
+    : 'Tip: long-press the spot on Google Maps to copy its coordinates.'
+}
+
+// Save never calls the server with empty or invalid coordinates: it returns the coordinate message instead.
+// (An empty box reads as 0 once it is a number, which used to reach the weather lookup and fail there.)
+export async function submitSpotForm(
+  values: FormValues,
+  onSubmit: (values: FormValues) => Promise<string | null>,
+): Promise<string | null> {
+  const problem = validateCoordinates(values.lat, values.lon)
+  if (problem) return problem
+  return onSubmit(values)
+}
+
+// The paste box with its helper text and, when text is present but unreadable, the message. Presentational.
+export function PasteField({ value, onChange }: { value: string; onChange: (text: string) => void }) {
+  const result = readPaste(value)
+  return (
+    <div className="space-y-1">
+      <label className="block text-sm text-slate-200">
+        Paste coordinates
+        <input className={INPUT} placeholder={PASTE_PLACEHOLDER} value={value} onChange={e => onChange(e.target.value)} />
+      </label>
+      <p className="text-sm text-slate-300">{PASTE_HELP}</p>
+      {result.status === 'unreadable' && <p role="alert" className="text-sm text-red-200">{result.message}</p>}
+    </div>
+  )
+}
+
 // Add or edit form. Coordinates stay editable after a phone reading: the phone may be at the trailhead.
 export function SpotForm({
   initial,
@@ -184,8 +220,9 @@ export function SpotForm({
 
   function applyPaste(text: string) {
     setPaste(text)
-    const pair = parseCoordinatePair(text)
-    if (pair) setValues(v => ({ ...v, lat: String(pair.lat), lon: String(pair.lon) }))
+    // Readable: fill both boxes in decimal. Empty or unreadable: leave Latitude and Longitude and the text alone.
+    const result = readPaste(text)
+    if (result.status === 'ok') setValues(v => ({ ...v, lat: String(result.lat), lon: String(result.lon) }))
   }
 
   function useMyLocation() {
@@ -215,7 +252,7 @@ export function SpotForm({
     e.preventDefault()
     setBusy(true)
     setMessage(null)
-    const error = await onSubmit(values)
+    const error = await submitSpotForm(values, onSubmit)
     setBusy(false)
     if (error) setMessage(error)
   }
@@ -227,13 +264,8 @@ export function SpotForm({
         Name
         <input className={INPUT} maxLength={40} value={values.name} onChange={e => setValues(v => ({ ...v, name: e.target.value }))} />
       </label>
-      <label className="block text-sm text-slate-200">
-        Paste coordinates
-        <input className={INPUT} placeholder="40.917, -111.397" value={paste} onChange={e => applyPaste(e.target.value)} />
-      </label>
-      <p className="text-sm text-slate-300">
-        {fishing ? 'Tip: long-press the water on Google Maps to copy its coordinates.' : 'Tip: long-press a spot on onX or Google Maps to copy its coordinates.'}
-      </p>
+      <PasteField value={paste} onChange={applyPaste} />
+      <p className="text-sm text-slate-300">{coordinatesTip(fishing)}</p>
       <div className="grid grid-cols-2 gap-2">
         <label className="block text-sm text-slate-200">
           Latitude
@@ -299,7 +331,8 @@ export default function SpotsPanel({ objectiveId, huntCode = null, fishing = fal
     const res = await fetch(base, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: values.name, lat: Number(values.lat), lon: Number(values.lon) }),
+      // Sent as typed (not Number()): an empty box would become 0, and the server refuses empty values itself.
+      body: JSON.stringify({ name: values.name, lat: values.lat.trim(), lon: values.lon.trim() }),
     })
     const body = await res.json().catch(() => ({}))
     if (!res.ok) return (body as { error?: string }).error ?? 'Could not add the spot.'
@@ -313,7 +346,8 @@ export default function SpotsPanel({ objectiveId, huntCode = null, fishing = fal
     const res = await fetch(`${base}/${spot.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: values.name, lat: Number(values.lat), lon: Number(values.lon) }),
+      // Sent as typed (not Number()): an empty box would become 0, and the server refuses empty values itself.
+      body: JSON.stringify({ name: values.name, lat: values.lat.trim(), lon: values.lon.trim() }),
     })
     const body = await res.json().catch(() => ({}))
     if (!res.ok) return (body as { error?: string }).error ?? 'Could not save the spot.'

@@ -159,13 +159,14 @@ describe('fishing spots: style rules', () => {
     expect(html).toMatch(/<p class="text-sm[^"]*">Drop a pin/)
   })
 
-  it('the add form uses a fishing coordinates tip for fishing and keeps the onX tip for hunting', () => {
+  it('the add form tip says "the water" for fishing and "the spot" for hunting (FF-097)', () => {
     const noop = async () => null
     const fish = renderToStaticMarkup(<SpotForm initial={{ name: '', lat: '', lon: '' }} submitLabel="Save spot" fishing onSubmit={noop} onCancel={() => {}} />)
     expect(fish).toContain('long-press the water on Google Maps')
     expect(fish).not.toContain('onX')
 
     const hunt = renderToStaticMarkup(<SpotForm initial={{ name: '', lat: '', lon: '' }} submitLabel="Save spot" onSubmit={noop} onCancel={() => {}} />)
-    expect(hunt).toContain('onX or Google Maps')
+    expect(hunt).toContain('Tip: long-press the spot on Google Maps to copy its coordinates.')
+    expect(hunt).not.toContain('onX')
   })
 })
