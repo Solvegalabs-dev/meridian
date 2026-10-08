@@ -1,6 +1,7 @@
 // Validation for the objective edit form and PATCH /api/strike/objectives/[id] (FF-096 Part 2).
 // Pure and client-safe: the form checks with it before sending, and the route checks again on the server.
 import { parseCalendarDate } from '@/lib/objectives/windowState'
+import { checkTripDate } from '@/lib/strike/tripDateRange'
 
 export const MAX_TITLE_LENGTH = 120
 export const MAX_NOTE_LENGTH = 1000
@@ -15,7 +16,7 @@ export type ObjectivePatch = {
 export type PatchValidation = { ok: true; value: ObjectivePatch } | { ok: false; error: string }
 
 // Only title, trip_start, trip_end and note are read. Everything else in the body is ignored.
-export function validateObjectivePatch(body: Record<string, unknown>): PatchValidation {
+export function validateObjectivePatch(body: Record<string, unknown>, now: Date = new Date()): PatchValidation {
   const value: ObjectivePatch = {}
 
   if ('title' in body) {
@@ -31,9 +32,10 @@ export function validateObjectivePatch(body: Record<string, unknown>): PatchVali
     if (!(key in body)) continue
     const raw = body[key]
     if (raw === null || raw === '') { value[key] = null; continue }
-    const parsed = parseCalendarDate(raw)
-    if (!parsed) return { ok: false, error: `${key === 'trip_start' ? 'Trip start' : 'Trip end'} must be a date like 2026-10-15.` }
-    value[key] = parsed
+    // FF-096b: a real date, and within last year to three years ahead.
+    const problem = checkTripDate(raw, key === 'trip_start' ? 'Trip start' : 'Trip end', now)
+    if (problem) return { ok: false, error: problem }
+    value[key] = parseCalendarDate(raw)
   }
 
   if ('note' in body) {
@@ -54,7 +56,7 @@ export type DetailsDraft = { title: string; tripStart: string; tripEnd: string; 
 
 // What the details form sends: only the fields that changed, so an untouched title is never written back.
 // Returns the request body, or the message to show. `body` is empty when nothing changed.
-export function buildDetailsPatch(saved: DetailsDraft, draft: DetailsDraft):
+export function buildDetailsPatch(saved: DetailsDraft, draft: DetailsDraft, now: Date = new Date()):
   { ok: true; body: Record<string, unknown> } | { ok: false; error: string } {
   const body: Record<string, unknown> = {}
   if (draft.title !== saved.title) body.title = draft.title
@@ -63,7 +65,7 @@ export function buildDetailsPatch(saved: DetailsDraft, draft: DetailsDraft):
   if (draft.note !== saved.note) body.note = draft.note || null
   if (Object.keys(body).length === 0) return { ok: true, body }
 
-  const checked = validateObjectivePatch(body)
+  const checked = validateObjectivePatch(body, now)
   if (!checked.ok) return { ok: false, error: checked.error }
 
   // The end is judged against the other date as it will be saved, not only against what was typed.

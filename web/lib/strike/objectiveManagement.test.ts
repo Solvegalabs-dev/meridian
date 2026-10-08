@@ -171,7 +171,7 @@ describe('restoreObjective', () => {
 })
 
 describe('validateObjectivePatch', () => {
-  const ok = (body: Record<string, unknown>) => validateObjectivePatch(body)
+  const ok = (body: Record<string, unknown>) => validateObjectivePatch(body, NOW)
 
   it('accepts a valid title, dates and note, trimming the text', () => {
     expect(ok({ title: '  Green  River   opener ', trip_start: '2026-10-10', trip_end: '2026-10-14', note: ' bring waders ' })).toEqual({

@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
 import { normalizeHuntCode } from '@/lib/hunts/huntCode'
 import { coverageDecision, type CoverageMode } from '@/lib/strike/coverage'
+import { checkTripDate, tripDateBounds } from '@/lib/strike/tripDateRange'
 
 const TAXONOMY_OPTIONS = [
   // Hunting
@@ -72,9 +73,14 @@ export default function StrikeNewPage() {
     }
   }
 
+  const dateBounds = tripDateBounds()
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
+    // FF-096b: a year outside last year to three years ahead (or a typo like 0027) is stopped before anything else.
+    const dateProblem = checkTripDate(form.trip_start, 'Trip start') ?? checkTripDate(form.trip_end, 'Trip end')
+    if (dateProblem) { setError(dateProblem); return }
     if (coverage?.confirmed !== true) {
       setSubmitting(true)
       const check = await checkCoverage()
@@ -290,6 +296,8 @@ export default function StrikeNewPage() {
               <div className="text-xs text-slate-500 mb-1">Start</div>
               <input
                 type="date"
+                min={dateBounds.min}
+                max={dateBounds.max}
                 value={form.trip_start}
                 onChange={e => set('trip_start', e.target.value)}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm [color-scheme:dark]"
@@ -299,6 +307,8 @@ export default function StrikeNewPage() {
               <div className="text-xs text-slate-500 mb-1">End</div>
               <input
                 type="date"
+                min={dateBounds.min}
+                max={dateBounds.max}
                 value={form.trip_end}
                 onChange={e => set('trip_end', e.target.value)}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm [color-scheme:dark]"

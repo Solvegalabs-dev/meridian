@@ -11,12 +11,14 @@ import { waitUntil } from '@vercel/functions'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { resolveAgentBundle } from '@/lib/swarm/objectiveRouter'
 import { resolveFullGeography } from '@/lib/geo/locationResolver'
+import { toProfileColumns } from '@/lib/geo/profileColumns'
 import { normalizeHuntCode } from '@/lib/hunts/huntCode'
 import { authenticatePartner, isPartnerRequest } from '@/lib/auth/partnerAuth'
 import { partnerRateLimitResponse } from '@/lib/auth/rateLimit'
 import { isUserInvited, INVITE_ONLY_MESSAGE } from '@/lib/auth/inviteGate'
 import { checkCoverage, coverageNotice, toStateCode, COVERAGE_MODE } from '@/lib/strike/coverage'
 import { loadSeasonIndex } from '@/lib/strike/coverageData'
+import { checkTripDate } from '@/lib/strike/tripDateRange'
 import { createLinkedObjective, LinkedObjectiveError } from '@/lib/objectives/linkedObjective'
 
 export const dynamic = 'force-dynamic'
@@ -101,6 +103,14 @@ export async function POST(request: NextRequest) {
   const caller = await resolveCaller(request, body)
   if (caller instanceof NextResponse) return caller
 
+  // FF-096b: Strike trip dates must be real and within last year to three years ahead (a year 0027 was once saved).
+  // Partner requests keep their own contract.
+  if (caller.partnerId === null) {
+    const tripWindow = timing as { trip_start?: unknown; trip_end?: unknown }
+    const problem = checkTripDate(tripWindow.trip_start, 'Trip start') ?? checkTripDate(tripWindow.trip_end, 'Trip end')
+    if (problem) return NextResponse.json({ error: problem, code: 'invalid_dates' }, { status: 400 })
+  }
+
   const supabase = createServiceClient()
 
   // FF-096 Part 3: with COVERAGE_MODE 'block', a Strike (session) objective we have no data for is refused.
@@ -167,7 +177,7 @@ export async function POST(request: NextRequest) {
       if (!geo) return
       const { error } = await supabase
         .from('objective_profiles')
-        .update(geo)
+        .update(toProfileColumns(geo))
         .eq('id', created.profileId)
       if (error) console.error('[objectives/create] geography update failed:', error.message)
     }).catch(e => console.error('[objectives/create] geography update failed:', e)))

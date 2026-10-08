@@ -20,7 +20,7 @@ vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }))
 
 const KEY = 'partner-key-basemaps-0123456789abcdef'
 const body = (taxonomy_key: string, state: string) => ({
-  domain: taxonomy_key.split('.')[0], taxonomy_key, geo: { state }, priority_stack: [], timing: { trip_end: '2099-11-15' },
+  domain: taxonomy_key.split('.')[0], taxonomy_key, geo: { state }, priority_stack: [], timing: { trip_end: `${new Date().getUTCFullYear()}-11-15` },
 })
 const req = (b: unknown, auth?: string) => new NextRequest('http://localhost/api/objectives/create', {
   method: 'POST', body: JSON.stringify(b), headers: { 'Content-Type': 'application/json', ...(auth ? { authorization: auth } : {}) },

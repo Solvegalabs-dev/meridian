@@ -29,7 +29,7 @@ const BODY = {
   taxonomy_key: 'elk.bull.archery',
   geo: { state: 'ut', unit: 'EA2004', lat: 40.5, lon: -111.2 },
   priority_stack: [],
-  timing: { trip_end: '2026-11-15' },
+  timing: { trip_end: `${new Date().getUTCFullYear()}-11-15` },
 }
 
 function req(body: unknown, auth?: string) {
@@ -240,3 +240,40 @@ describe('POST /api/objectives/create: partner door', () => {
     expect(db.tables.objectives).toHaveLength(0)
   })
 })
+
+describe('POST /api/objectives/create: trip date range (FF-096b)', () => {
+  const YEAR = new Date().getUTCFullYear()
+
+  it('refuses a session objective whose trip dates are outside last year to three years ahead', async () => {
+    sessionUser = INVITED
+    for (const timing of [
+      { trip_start: '0027-10-01', trip_end: `${YEAR}-10-15` },
+      { trip_start: `${YEAR}-10-01`, trip_end: `${YEAR + 4}-10-15` },
+      { trip_end: `${YEAR - 2}-06-01` },
+    ]) {
+      const res = await POST(req({ ...BODY, timing }))
+      expect(res.status).toBe(400)
+      expect((await res.json()).code).toBe('invalid_dates')
+    }
+    expect(db.tables.objectives).toHaveLength(0)
+    expect(db.tables.objective_profiles).toHaveLength(0)
+  })
+
+  it('names the range in the message', async () => {
+    sessionUser = INVITED
+    const res = await POST(req({ ...BODY, timing: { trip_end: `${YEAR + 4}-10-15` } }))
+    expect((await res.json()).error).toBe(`Trip dates must be between ${YEAR - 1} and ${YEAR + 3}.`)
+  })
+
+  it('accepts dates at the edges, and an objective with no dates', async () => {
+    sessionUser = INVITED
+    expect((await POST(req({ ...BODY, timing: { trip_start: `${YEAR - 1}-01-01`, trip_end: `${YEAR + 3}-12-31` } }))).status).toBe(201)
+    expect((await POST(req({ ...BODY, timing: {} }))).status).toBe(201)
+  })
+
+  it('does not apply to a partner key (their contract is unchanged)', async () => {
+    const res = await POST(req({ ...BODY, timing: { trip_end: `${YEAR + 6}-10-15` } }, `Bearer ${PARTNER_KEY}`))
+    expect(res.status).toBe(201)
+  })
+})
+
