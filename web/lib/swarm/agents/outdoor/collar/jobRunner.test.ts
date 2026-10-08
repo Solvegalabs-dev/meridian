@@ -44,6 +44,8 @@ type MockSupabaseConfig = {
   // When false, the license acceptance lookup returns nothing. When upsertError
   // is also true, the upsert (catalog fallback or study_metadata) also fails.
   licenseUpsertError?: boolean
+  // When true, collar_study_aggregates upsert returns a DB error so writeAggregate throws.
+  aggregateWriteError?: boolean
   catalogRow?: { license_type: string | null; taxon_ids: string | null; citation: string | null } | null
 }
 
@@ -72,6 +74,9 @@ function makeMockSupabase(config: MockSupabaseConfig) {
         return chain(async () => ({ data: [] }), (m, a) => recorder.calls.push({ method: `${table}.${m}`, args: a }))
       }
       if (table === 'collar_study_aggregates') {
+        if (config.aggregateWriteError) {
+          return chain(async () => ({ error: { message: 'invalid input syntax for type integer' } }), (m, a) => recorder.calls.push({ method: `${table}.${m}`, args: a }))
+        }
         return chain(async () => ({ data: null }), (m, a) => recorder.calls.push({ method: `${table}.${m}`, args: a }))
       }
       return chain(async () => ({ data: null }), (m, a) => recorder.calls.push({ method: `${table}.${m}`, args: a }))
@@ -898,5 +903,161 @@ describe('runOneJob integration (truncation split + no-overlap guarantee)', () =
     })
     expect(typeof stats.elapsed_ms).toBe('number')
     expect(JSON.stringify(stats)).not.toContain('license') // no raw license text ever stored here
+  })
+})
+
+// --- batch1d: aggregate write silently fails (elevation decimals + error propagation) ---
+describe('batch1d: sampleElevations rounds + writeAggregate error propagation', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    process.env.MOVEBANK_USERNAME = 'testuser'
+    process.env.MOVEBANK_PASSWORD = 'testpass'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.doUnmock('@/lib/supabase/server')
+    vi.doUnmock('../movebankCollarFetch')
+    vi.resetModules()
+  })
+
+  it('sampleElevations: rounds decimal feet from USGS to whole integers (5432.17 → 5432)', async () => {
+    // USGS EPQS returns floats; elev_samples is int4[] — decimals cause a Postgres error.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ value: 5432.17 }),
+    })
+
+    const { sampleElevations } = await import('./jobRunner')
+    const result = await sampleElevations([
+      { lat: 39.7, lon: -105.1 },
+      { lat: 39.8, lon: -105.2 },
+    ])
+
+    expect(result).toEqual([5432, 5432])
+    // All values must be integers — no decimal point.
+    for (const v of result) {
+      expect(Number.isInteger(v)).toBe(true)
+    }
+  })
+
+  it('sampleElevations: mixed decimals all rounded (7.9 → 8, 0.1 → 0)', async () => {
+    let call = 0
+    fetchMock.mockImplementation(() => {
+      const vals = [7.9, 0.1]
+      return Promise.resolve({ ok: true, json: async () => ({ value: vals[call++] }) })
+    })
+
+    const { sampleElevations } = await import('./jobRunner')
+    const result = await sampleElevations([{ lat: 1, lon: 1 }, { lat: 2, lon: 2 }])
+
+    expect(result).toEqual([8, 0])
+    for (const v of result) expect(Number.isInteger(v)).toBe(true)
+  })
+
+  it('writeAggregate DB error causes processJob to fail, not finish as done', async () => {
+    // Root cause of job 803b5dd9: writeAggregate upsert returned a Postgres error
+    // (decimal in int4[]) but the error was swallowed — job appeared done with no aggregate.
+    const job = {
+      id: 'job-agg-err', objective_id: 'obj-1', species_taxon_key: 'elk.bull', role: 'primary' as const,
+      study_id: 123, geo_hash: '9xyz5', local_tz: 'America/Denver',
+      window_start: '2019-10-01T00:00:00.000Z', window_end: '2019-10-16T00:00:00.000Z',
+      split_depth: 0, status: 'running', attempts: 1, max_attempts: 3,
+      run_after: '2019-10-01T00:00:00.000Z', locked_until: null, last_error: null,
+    }
+    const { client, recorder } = makeMockSupabase({
+      rpcResult: { data: job, error: null },
+      licenseAcceptanceExists: true,
+      catalogRow: { license_type: 'CC_0', taxon_ids: 'Cervus elaphus', citation: null },
+      aggregateWriteError: true,
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+
+    const { lat: objLat, lon: objLon } = decodeGeohash(job.geo_hash)
+    const events = [
+      { individualId: 'i1', timestamp: '2019-10-01 08:00:00', lat: objLat, lon: objLon, taxonCanonicalName: 'Cervus elaphus' },
+    ]
+    vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+      return {
+        ...actual,
+        fetchMovebankEventsForWindow: vi.fn().mockResolvedValue({ events, handshake: 'not_required', truncated: false }),
+      }
+    })
+    // Elevation fetch resolves ok (integer value so it doesn't interfere).
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ value: 5000 }) })
+    vi.resetModules()
+
+    const { runOneJob } = await import('./jobRunner')
+    const result = await runOneJob()
+
+    // Must NOT finish as done — the aggregate was never written.
+    expect(result.status).not.toBe('done')
+    const updateCalls = recorder.calls.filter(c => c.method === 'collar_jobs.update')
+    const lastUpdate = updateCalls[updateCalls.length - 1]
+    expect(['queued', 'dead', 'failed']).toContain((lastUpdate?.args[0] as { status: string }).status)
+    // The aggregate upsert was attempted but errored.
+    expect(recorder.calls.some(c => c.method === 'collar_study_aggregates.upsert')).toBe(true)
+  })
+
+  it('writeAggregate payload: all int4 columns contain only integer values', async () => {
+    // Verify types on n_fixes, n_individuals, years_present, event_radius_km, elev_samples.
+    const job = {
+      id: 'job-types', objective_id: 'obj-1', species_taxon_key: 'elk.bull', role: 'primary' as const,
+      study_id: 123, geo_hash: '9xyz5', local_tz: 'America/Denver',
+      window_start: '2019-10-01T00:00:00.000Z', window_end: '2019-10-16T00:00:00.000Z',
+      split_depth: 0, status: 'running', attempts: 1, max_attempts: 3,
+      run_after: '2019-10-01T00:00:00.000Z', locked_until: null, last_error: null,
+    }
+    const { client, recorder } = makeMockSupabase({
+      rpcResult: { data: job, error: null },
+      licenseAcceptanceExists: true,
+      catalogRow: { license_type: 'CC_0', taxon_ids: 'Cervus elaphus', citation: null },
+    })
+    vi.doMock('@/lib/supabase/server', () => ({ createServiceClient: () => client }))
+
+    const { lat: objLat, lon: objLon } = decodeGeohash(job.geo_hash)
+    const events = [
+      { individualId: 'i1', timestamp: '2019-10-01 08:00:00', lat: objLat, lon: objLon, taxonCanonicalName: 'Cervus elaphus' },
+      { individualId: 'i2', timestamp: '2019-10-03 09:00:00', lat: objLat, lon: objLon, taxonCanonicalName: 'Cervus elaphus' },
+      { individualId: 'i1', timestamp: '2019-10-05 10:00:00', lat: objLat, lon: objLon, taxonCanonicalName: 'Cervus elaphus' },
+    ]
+    vi.doMock('../movebankCollarFetch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../movebankCollarFetch')>()
+      return {
+        ...actual,
+        fetchMovebankEventsForWindow: vi.fn().mockResolvedValue({ events, handshake: 'not_required', truncated: false }),
+      }
+    })
+    // USGS returns a decimal — after Math.round this must become an integer in the payload.
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ value: 7234.89 }) })
+    vi.resetModules()
+
+    const { runOneJob } = await import('./jobRunner')
+    const result = await runOneJob()
+
+    expect(result.status).toBe('done')
+    const aggUpsert = recorder.calls.find(c => c.method === 'collar_study_aggregates.upsert')
+    expect(aggUpsert).toBeDefined()
+    const payload = aggUpsert!.args[0] as Record<string, unknown>
+
+    expect(Number.isInteger(payload.n_fixes)).toBe(true)
+    expect(Number.isInteger(payload.n_individuals)).toBe(true)
+    expect(Number.isInteger(payload.event_radius_km)).toBe(true)
+    const yearsPresent = payload.years_present as number[]
+    expect(Array.isArray(yearsPresent)).toBe(true)
+    for (const y of yearsPresent) expect(Number.isInteger(y)).toBe(true)
+    const elevSamples = payload.elev_samples as number[]
+    expect(Array.isArray(elevSamples)).toBe(true)
+    for (const e of elevSamples) expect(Number.isInteger(e)).toBe(true)
+    // Verify actual values are reasonable (3 events, 2 unique individuals, 1 year).
+    expect(payload.n_fixes).toBe(3)
+    expect(payload.n_individuals).toBe(2)
+    expect(yearsPresent).toEqual([2019])
+    // elev_samples are Math.round(7234.89) = 7235.
+    expect(elevSamples.every(v => v === 7235)).toBe(true)
   })
 })
