@@ -104,12 +104,12 @@ describe('refreshMessage', () => {
 
   it('same: names the time of the latest brief', () => {
     const msg = refreshMessage('same', OLD)
-    expect(msg).toMatch(/^No newer brief\. The latest is from .+\. Briefs update with each scheduled sweep\.$/)
+    expect(msg).toMatch(/^No newer brief\. The latest is from .+\. Tap Run Sweep for a fresh one\.$/)
     expect(msg).not.toContain('undefined')
   })
 
   it('same with no generated time: no time clause', () => {
-    expect(refreshMessage('same', null)).toBe('No newer brief. Briefs update with each scheduled sweep.')
+    expect(refreshMessage('same', null)).toBe('No newer brief. Tap Run Sweep for a fresh one.')
   })
 
   it('new', () => {

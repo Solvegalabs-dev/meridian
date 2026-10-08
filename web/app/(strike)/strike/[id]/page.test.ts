@@ -181,3 +181,56 @@ describe('Strike page: remove action and note (FF-096)', () => {
     expect(props?.title).toBe('Bull elk, archery')
   })
 })
+
+describe('Strike page: sweep info for Run Sweep (FF-098)', () => {
+  const owner = () => { sessionUser = { id: 'user-1', email: 'owner@example.com' } }
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
+  const sweepOf = (tree: unknown) => clientProps(tree)?.sweep as { lastSweepAt: string | null; nextSweepAt: string | null; latestDataAt: string | null }
+
+  it('passes nothing when the user has never swept and nothing is tagged', async () => {
+    owner()
+    const sweep = sweepOf(await StrikePage({ params: { id: 'prof-1' } }))
+    expect(sweep).toEqual({ lastSweepAt: null, nextSweepAt: null, latestDataAt: null })
+  })
+
+  it('passes the last sweep, the 23-hour limit and the sweep as the latest data', async () => {
+    owner()
+    const last = hoursAgo(2)
+    db.tables.profiles = [{ id: 'user-1', account_type: 'beta', last_sweep_at: last }]
+    const sweep = sweepOf(await StrikePage({ params: { id: 'prof-1' } }))
+    expect(sweep.lastSweepAt).toBe(last)
+    expect(sweep.latestDataAt).toBe(last)
+    expect(new Date(sweep.nextSweepAt as string).getTime()).toBe(new Date(last).getTime() + 23 * 3600_000)
+  })
+
+  it('has no limit once 23 hours have passed', async () => {
+    owner()
+    db.tables.profiles = [{ id: 'user-1', account_type: 'beta', last_sweep_at: hoursAgo(30) }]
+    expect(sweepOf(await StrikePage({ params: { id: 'prof-1' } })).nextSweepAt).toBeNull()
+  })
+
+  it('a signal tagged to this objective is sweep data', async () => {
+    owner()
+    const tagged = hoursAgo(10)
+    db.tables.signals = [{ id: 's1', user_id: 'user-1', objective_ids: ['arc-1'], created_at: tagged }]
+    expect(sweepOf(await StrikePage({ params: { id: 'prof-1' } })).latestDataAt).toBe(tagged)
+  })
+
+  it("another objective's signal and another user's signal are not", async () => {
+    owner()
+    db.tables.signals = [
+      { id: 's1', user_id: 'user-1', objective_ids: ['some-other-objective'], created_at: hoursAgo(1) },
+      { id: 's2', user_id: 'user-2', objective_ids: ['arc-1'], created_at: hoursAgo(1) },
+    ]
+    expect(sweepOf(await StrikePage({ params: { id: 'prof-1' } })).latestDataAt).toBeNull()
+  })
+
+  it('a sweep from before this objective was created did not cover it', async () => {
+    owner()
+    db.tables.objective_profiles[0].created_at = hoursAgo(1)
+    db.tables.profiles = [{ id: 'user-1', account_type: 'beta', last_sweep_at: hoursAgo(48) }]
+    const sweep = sweepOf(await StrikePage({ params: { id: 'prof-1' } }))
+    expect(sweep.latestDataAt).toBeNull()
+    expect(sweep.lastSweepAt).not.toBeNull()
+  })
+})

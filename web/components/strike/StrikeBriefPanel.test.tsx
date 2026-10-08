@@ -81,13 +81,13 @@ describe('StrikeBriefPanel', () => {
 
   it('pending state, upcoming hunt: says when briefs start', () => {
     const html = render({ brief: brief({ time_windows: null }), windowState: 'upcoming', tripStart: '2026-10-15' })
-    expect(html).toContain('Intelligence sweep pending')
+    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
     expect(html).toContain('Briefs start when your trip window opens (Oct 15).')
   })
 
   it('pending state without an upcoming hunt has no start line', () => {
     const html = render({ brief: brief({ time_windows: null }), windowState: 'active' })
-    expect(html).toContain('Intelligence sweep pending')
+    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
     expect(html).not.toContain('Briefs start')
   })
 
@@ -147,10 +147,11 @@ describe('StrikeBriefPanel: no location (FF-095 Part 3)', () => {
     expect(goToPrep).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps the existing pending text for an objective that has a location but no brief yet', () => {
+  it('an objective that has a location but no brief yet gets the Run Sweep prompt, not the old scheduled-sweep text', () => {
     const html = render({ brief: brief({ time_windows: null }), noLocation: false, onGoToPrep: () => {} })
-    expect(html).toContain('Intelligence sweep pending')
-    expect(html).toContain('Check back after the next run')
+    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).not.toContain('Intelligence sweep pending')
+    expect(html).not.toContain('Check back after the next run')
     expect(html).not.toContain('Add a hunt spot')
     expect(html).not.toContain('Go to Prep')
   })

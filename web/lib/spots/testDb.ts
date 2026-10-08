@@ -15,6 +15,8 @@ class Query implements PromiseLike<Result> {
   select() { return this }
   eq(col: string, val: unknown) { this.filters.push(r => r[col] === val); return this }
   in(col: string, vals: unknown[]) { this.filters.push(r => vals.includes(r[col])); return this }
+  // Array column contains every given value (supabase .contains).
+  contains(col: string, vals: unknown[]) { this.filters.push(r => Array.isArray(r[col]) && vals.every(v => (r[col] as unknown[]).includes(v))); return this }
   // Supports the one form the app uses: not(col, 'is', null).
   not(col: string, op: string, val: unknown) {
     if (op === 'is' && val === null) this.filters.push(r => r[col] !== null && r[col] !== undefined)
