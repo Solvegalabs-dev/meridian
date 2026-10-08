@@ -75,7 +75,14 @@ export function fakeSupabase(respond: FakeResponder) {
       },
       not() { return b },
       is() { return b },
-      gte() { return b },
+      gte(col: string, val: unknown) {
+        call.filters.push([col, 'gte', val])
+        return b
+      },
+      contains(col: string, val: unknown) {
+        call.filters.push([col, 'contains', val])
+        return b
+      },
       order() { return b },
       limit() { return b },
       maybeSingle() {

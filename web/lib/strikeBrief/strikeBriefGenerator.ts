@@ -9,6 +9,7 @@ import { FISHING_PROMPT_ADDENDUM, FISHING_WINDOW_INSTRUCTIONS } from '@/lib/stri
 import { loadObjectiveWindow, isEndedState } from '@/lib/objectives/objectiveWindow';
 import type { WindowEvaluation } from '@/lib/objectives/windowState';
 import { buildClosedBriefFields, formatBriefDate, type StrikeGoNoGo } from './closedBrief';
+import { loadEvidence, ZERO_EVIDENCE_BANNER, EVIDENCE_WINDOW_DAYS, type Evidence } from './evidence';
 
 // Values the model may return. CLOSED is written only by code (closedBrief.ts).
 const MODEL_GO_NO_GO = ['GO', 'NO_GO', 'CONDITIONAL', 'MONITOR'] as const;
@@ -45,6 +46,11 @@ export type StrikeBriefContext = {
   patternMatchScore: number | null;
   confidenceTier: string;
   agentHits: string[];
+  // FF-098: what the model may state as confirmed, with units. Count 0 means a no-evidence brief.
+  evidence?: Evidence;
+  // FF-098: the only place names the model may use: the objective's own fields (title, water body, unit, region,
+  // state, county, spot name). Nothing is inferred from coordinates.
+  placeNames?: string[];
   geoProfile: { lat?: number; lng?: number } | null;
   domainProfile: object | null;
   locationProfile: {
@@ -158,7 +164,7 @@ export async function buildStrikeBriefContext(
   // Location profile from objective_profiles (lat/lon, NWS gridpoint, geo unit label, domain)
   const { data: locationProfile } = await supabase
     .from('objective_profiles')
-    .select('lat, lon, geo, nws_grid_office, nws_grid_x, nws_grid_y, elevation_ft, domain')
+    .select('lat, lon, geo, nws_grid_office, nws_grid_x, nws_grid_y, elevation_ft, domain, state, county')
     .eq('objective_id', objectiveId)
     .maybeSingle();
 
@@ -166,6 +172,28 @@ export async function buildStrikeBriefContext(
   if (domain === 'elk_hunt' && locationProfile) {
     domain = (locationProfile as { domain?: string }).domain ?? domain;
   }
+
+  // FF-098: evidence for the last 14 days, and the spot name for the allowed place names.
+  const evidence = await loadEvidence(supabase, { objectiveId, userId, domain });
+  const { data: spotRow } = await supabase
+    .from('objective_spots')
+    .select('name')
+    .eq('objective_id', objectiveId)
+    .eq('is_active', true)
+    .maybeSingle();
+  const profileGeo = (locationProfile?.geo ?? {}) as { unit?: string; region?: string; state?: string; water_body?: string };
+  const placeNames = Array.from(new Set(
+    [
+      obj?.title,
+      profileGeo.water_body,
+      profileGeo.unit,
+      profileGeo.region,
+      profileGeo.state,
+      (locationProfile as { state?: string | null } | null)?.state,
+      (locationProfile as { county?: string | null } | null)?.county,
+      (spotRow as { name?: string | null } | null)?.name,
+    ].filter((v): v is string => typeof v === 'string' && v.trim() !== '').map(v => v.trim())
+  ));
 
   // Terrain cache — most recent entry for this objective (non-fatal if absent)
   const { data: terrainCacheRow } = await supabase
@@ -210,6 +238,8 @@ export async function buildStrikeBriefContext(
     patternMatchScore: pattern ? Number(pattern.similarity_score) : null,
     confidenceTier,
     agentHits,
+    evidence,
+    placeNames,
     geoProfile: geoScope ?? null,
     domainProfile: profile ?? null,
     locationProfile: locationProfile ? {
@@ -265,9 +295,6 @@ export function buildStrikeBriefPrompt(context: StrikeBriefContext, timeWindow: 
   if (loc) {
     const geo = loc.geo ?? {};
     const unitLabel = [geo.unit, geo.region, geo.state].filter(Boolean).join(' — ');
-    const coords = (loc.lat != null && loc.lon != null)
-      ? `Coordinates: ${loc.lat}°N, ${Math.abs(loc.lon)}°W`
-      : '';
     const nws = (loc.nws_grid_office && loc.nws_grid_x != null && loc.nws_grid_y != null)
       ? `NWS gridpoint: ${loc.nws_grid_office} ${loc.nws_grid_x}/${loc.nws_grid_y}`
       : '';
@@ -287,17 +314,14 @@ export function buildStrikeBriefPrompt(context: StrikeBriefContext, timeWindow: 
     }
 
     locationBlock = `
-LOCATION CONTEXT (make every directional and terrain reference specific to this location):
+LOCATION CONTEXT (terrain facts for this spot, not a list of places):
 ${unitLabel ? `Unit: ${unitLabel}` : ''}
-${coords}
 ${nws}
 ${elev}
 ${terrainLine}
 
-Derive all wind, thermal, approach, and terrain references from this specific location.
-Do not use generic directional language. Name specific terrain features where derivable
-from elevation and aspect data. Reference water sources by drainage position relative
-to these coordinates, not generic corridor language.
+Use elevation, aspect and the terrain data above for wind, thermal and approach references.
+Do not name a place from them: see the PLACE NAMES rule below.
 `.replace(/\n{3,}/g, '\n\n').trim();
   }
 
@@ -306,6 +330,31 @@ to these coordinates, not generic corridor language.
     : `DOMAIN CONSTRAINT: This is an elk hunting brief. Discard any aquatic insect, hatch window, salmon, or fish ladder data — these are cross-domain noise. Do not reference water temperature in the context of fish or insect activity. Water temperature is only relevant as an elk hydration signal.
 
 WATER TEMPERATURE NOTE: USGS water temperature data is included as an ELK HYDRATION signal only. A 10°C creek temperature crossing indicates elk will prioritize this water source. Do not interpret water temperature as a fish or aquatic insect signal. Do not mention fish, aquatic insects, or hatch windows in this brief.`;
+
+  const evidence = context.evidence;
+  const noEvidence = evidence !== undefined && evidence.count === 0;
+  const evidenceBlock = noEvidence
+    ? `EVIDENCE (last ${EVIDENCE_WINDOW_DAYS} days): NONE. No readings and no signals exist for this objective.
+There is nothing to confirm. Write only general seasonal context, every sentence worded as typical for the time of year.
+Do not cite any reading, value, trend, closure or condition as current.`
+    : `EVIDENCE (last ${EVIDENCE_WINDOW_DAYS} days; the only things you may state as confirmed):
+${evidence && evidence.lines.length > 0 ? evidence.lines.map(l => `- ${l}`).join('\n') : '- Signals were tagged to this objective, but no reading with a known unit is available.'}
+${evidence && evidence.missing.length > 0 ? `MISSING DATA: no ${evidence.missing.join(' and no ')} reading.` : ''}`.trim();
+
+  const placeNames = context.placeNames && context.placeNames.length > 0
+    ? context.placeNames.join('; ')
+    : '(none: say "your spot")';
+
+  const evidenceRules = `EVIDENCE RULES (these override everything else below):
+1. Two kinds of statements, kept apart in the synthesis and the windows.
+   CONFIRMED: only what the EVIDENCE block shows. Cite the reading and its value with its unit.
+   TYPICAL: general knowledge of the season. Allowed and encouraged, because a hedged seasonal note is useful.
+   Always introduce it with "Typical for this time of year, not confirmed:" and never word it as a fact about today.
+2. PLACE NAMES: never name a river, creek, road, trailhead, closure, forest, land agency, drainage, corridor or region
+   unless the name is in the EVIDENCE block or in this list of the objective's own fields: ${placeNames}.
+   Do not infer a watershed, drainage or "corridor" from the terrain data. Say "your spot", or use the water body name above.
+3. UNITS: never give a number without its unit. Use the units and conversions exactly as written in the EVIDENCE block.
+4. MISSING DATA: if a data category is missing, say so in one clause (for example "no water temperature reading yet").`;
 
   return `You are Meridian's Strike Brief engine for the outdoor / ${isFishing ? 'fishing' : 'hunting'} domain.
 
@@ -316,16 +365,20 @@ DOMAIN: ${context.domain}
 PATTERN MATCH: ${context.patternMatchYear ? `Current conditions match ${context.patternMatchYear} at ${context.patternMatchScore}% similarity` : 'No pattern match'}
 CONFIDENCE TIER: ${context.confidenceTier}
 ${windowFact ? `HUNT WINDOW (hard fact, overrides any inference): ${windowFact}\n` : ''}
-${locationBlock ? locationBlock + '\n\n' : ''}SIGNAL BRIEF (from sub-agents):
+${locationBlock ? locationBlock + '\n\n' : ''}${evidenceBlock}
+
+BACKGROUND, NOT EVIDENCE (a general profile of this kind of objective; do not state it as confirmed for this spot):
 ${context.signalBrief}
 
-DOMAIN EVENTS (from enrichment engine):
+BACKGROUND EVENTS (general enrichment events, not confirmed for this spot):
 ${context.domainEvents}
 
-AGENT HITS TODAY:
+AGENTS THAT FIRED TODAY (names only, no values; do not describe what they read):
 ${activeAgentHits.length > 0 ? activeAgentHits.join('\n') : 'No new agent hits today'}
 
 ${domainConstraintBlock}
+
+${evidenceRules}
 
 INTELLIGENCE INTEGRITY STANDARD:
 - T1: Government/agency structured data — state as fact
@@ -451,6 +504,23 @@ export class LocationNotSetError extends Error {
   }
 }
 
+// The cheapest model, for a brief that has nothing to confirm.
+const NO_EVIDENCE_MODEL = 'claude-haiku-4-5-20251001';
+// The lowest confidence tier the code uses (see TIER_PCT).
+const LOWEST_CONFIDENCE_TIER = 'T4';
+
+// True when the stored brief is a no-evidence brief and evidence has since arrived.
+async function isStaleNoEvidenceBrief(
+  supabase: ReturnType<typeof createServiceClient>,
+  brief: StrikeBriefRow,
+  objectiveId: string,
+  userId: string,
+): Promise<boolean> {
+  if (!brief.synthesis?.includes(ZERO_EVIDENCE_BANNER)) return false;
+  const evidence = await loadEvidence(supabase, { objectiveId, userId });
+  return evidence.count > 0;
+}
+
 export async function generateStrikeBrief(
   objectiveId: string,
   userId: string
@@ -492,17 +562,22 @@ export async function generateStrikeBrief(
     .or('go_no_go.is.null,go_no_go.neq.CLOSED')
     .maybeSingle();
 
-  if (existing) return existing as StrikeBriefRow;
+  // A no-evidence brief is replaced once evidence exists (for example after Run Sweep), so the banner does not outlive
+  // the data that makes it untrue.
+  if (existing && !(await isStaleNoEvidenceBrief(supabase, existing as StrikeBriefRow, objectiveId, userId))) {
+    return existing as StrikeBriefRow;
+  }
 
   // Build context
   const context = await buildStrikeBriefContext(objectiveId, userId);
   const prompt = buildStrikeBriefPrompt(context, timeWindow, windowNotice?.fact);
 
-  // Call Sonnet
+  // FF-098: with no evidence the brief is still written, on the cheap model, as typical-for-the-season only.
+  const noEvidence = context.evidence !== undefined && context.evidence.count === 0;
   const anthropic = getAnthropicClient();
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 800,
+    model: noEvidence ? NO_EVIDENCE_MODEL : 'claude-sonnet-4-6',
+    max_tokens: noEvidence ? 500 : 800,
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -535,6 +610,14 @@ export async function generateStrikeBrief(
     synthesis = `${windowNotice.prefix} ${synthesis}`;
   }
 
+  // No evidence: the code fixes the banner, the verdict and the tier. The model cannot raise them.
+  let tierToStore: string = parsed.confidence_tier ?? context.confidenceTier;
+  if (noEvidence) {
+    synthesis = `${ZERO_EVIDENCE_BANNER}\n\n${synthesis}`;
+    goNoGo = 'MONITOR';
+    tierToStore = LOWEST_CONFIDENCE_TIER;
+  }
+
   // Upsert on the unique (objective, date, window) key: the only row it can replace is a
   // CLOSED row from before the hunt reactivated (the cache check above skips other rows).
   const { data: brief, error } = await supabase
@@ -547,14 +630,17 @@ export async function generateStrikeBrief(
       time_window: timeWindow,
       domain: context.domain,
       synthesis,
-      lead_signal: parsed.lead_signal ?? null,
+      // No evidence means no lead signal and no agent hits, so no chips are built from this brief.
+      lead_signal: noEvidence ? null : (parsed.lead_signal ?? null),
       go_no_go: goNoGo,
-      condition_delta: parsed.condition_delta ?? null,
+      condition_delta: noEvidence ? null : (parsed.condition_delta ?? null),
       pattern_match_year: context.patternMatchYear,
-      confidence_tier: parsed.confidence_tier ?? context.confidenceTier,
-      agent_hits: context.domain === 'fishing'
-        ? context.agentHits
-        : context.agentHits.filter(h => !isFishingTerm(h)),
+      confidence_tier: tierToStore,
+      agent_hits: noEvidence
+        ? []
+        : context.domain === 'fishing'
+          ? context.agentHits
+          : context.agentHits.filter(h => !isFishingTerm(h)),
     }, { onConflict: 'objective_id,brief_date,time_window' })
     .select()
     .single();
