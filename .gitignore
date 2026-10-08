@@ -1,3 +1,8 @@
 .vercel
 .env*
 .hunt_unit_chunks
+
+# local env dumps (never commit)
+vercel.env
+*.env
+!.env.example
