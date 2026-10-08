@@ -12,6 +12,7 @@ import { formatDateOnly } from '@/lib/utils/dateOnly'
 import { ZERO_EVIDENCE_BANNER } from '@/lib/strikeBrief/evidence'
 import { NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
 import type { ReactNode } from 'react'
+import SignalChipRow, { parseChips } from './SignalChipRow'
 
 type TimeWindow = {
   window: string
@@ -106,6 +107,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
   const map_pins     = brief.map_pins ?? []
   const sources      = brief.sources ?? []
   const { lead_signal, summary } = brief
+  const chips        = parseChips(brief.signal_chips)
   const closed = isClosedBrief(brief)
   const verdict = verdictStyle(brief.go_no_go)
   const generatedAt = brief.brief_generated_at ?? null
@@ -118,6 +120,9 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
     <div className="px-4 py-4 space-y-5">
       {/* A brief written with no evidence says so in its first line; the prompt gives the one tap that fixes it. */}
       {brief.summary?.includes(ZERO_EVIDENCE_BANNER) ? emptyPrompt : stalePrompt}
+
+      {/* Real readings from the agents (FF-099). Nothing here when no agent has recorded one. */}
+      {chips.length > 0 && <SignalChipRow chips={chips} />}
 
       {/* VERDICT: first thing on the tab. A closed hunt shows its message in the page notice, not a pill. */}
       {verdict && !closed && (

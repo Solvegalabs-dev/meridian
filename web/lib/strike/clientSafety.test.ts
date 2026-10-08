@@ -57,6 +57,14 @@ const CLIENT_ENTRIES = [
   'components/strike/RunSweepPrompt.tsx',
   'components/strike/StrikeBriefPanel.tsx',
   'components/strike/StrikeBriefClient.tsx',
+  // FF-099
+  'lib/strike/signalFormat.ts',
+  'lib/strike/signalCards.ts',
+  'lib/strike/signalChips.ts',
+  'components/strike/MoonIcon.tsx',
+  'components/strike/SignalChipRow.tsx',
+  'components/strike/StrikeSignalsPanel.tsx',
+  'components/strike/StrikeIntelPanel.tsx',
 ]
 
 describe('FF-096 client-safe modules', () => {

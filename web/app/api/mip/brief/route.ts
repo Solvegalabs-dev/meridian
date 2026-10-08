@@ -12,6 +12,7 @@ import { ObjectiveAccessError, requireObjectiveAccess, requirePartnerObjective }
 import { loadObjectiveWindow, isEndedState } from '@/lib/objectives/objectiveWindow'
 import { closedSynthesis } from '@/lib/strikeBrief/closedBrief'
 import { briefGeneratedAt } from '@/lib/strike/briefFreshness'
+import { loadSignalChips } from '@/lib/strike/signalChips'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,22 +20,6 @@ function agentKeyToLabel(key: string): string {
   // OUTDOOR_NOAA_TEMP → "NOAA Temp" · UNIV_FRED_CPI → "FRED CPI"
   const parts = key.split('_').slice(1)
   return parts.map(p => p.charAt(0) + p.slice(1).toLowerCase()).join(' ')
-}
-
-// Strike chip map — static signal labels derived from agent_hits (OUTDOOR agents only)
-type ChipDef = { label: string; derive: () => { value: string; status: 'ok' | 'warn' | 'critical' } }
-const CHIP_MAP: Record<string, ChipDef> = {
-  OUTDOOR_MOON_PHASE:            { label: 'Moon Phase (Meeus)', derive: () => ({ value: 'Waning 34%',   status: 'ok'   }) },
-  OUTDOOR_NOAA_FIRE_RISK:        { label: 'NOAA Fire Risk',     derive: () => ({ value: 'Moderate',     status: 'warn' }) },
-  OUTDOOR_DROUGHT_MONITOR:       { label: 'NOAA Drought Monitor', derive: () => ({ value: 'D2–D3',      status: 'warn' }) },
-  OUTDOOR_NOAA_DROUGHT_STATE:    { label: 'NOAA Drought Monitor', derive: () => ({ value: 'D2–D3',      status: 'warn' }) },
-  OUTDOOR_USGS_STREAMFLOW_STATE: { label: 'USGS Streamflow',    derive: () => ({ value: 'Below avg',    status: 'warn' }) },
-  OUTDOOR_WINDY_API:             { label: 'Windy.com',          derive: () => ({ value: 'NW 8mph',      status: 'ok'   }) },
-  OUTDOOR_DWR_HARVEST_UT:        { label: 'UDWR Herd Survey',   derive: () => ({ value: '53% target',   status: 'warn' }) },
-  OUTDOOR_DWR_PERMITS_UT:        { label: 'UDWR Permits',       derive: () => ({ value: 'Open',         status: 'ok'   }) },
-  OUTDOOR_USFS_CLOSURE:          { label: 'USFS Closure',       derive: () => ({ value: 'Active',       status: 'warn' }) },
-  OUTDOOR_INAT_OBSERVATIONS:     { label: 'iNaturalist',        derive: () => ({ value: 'Active',       status: 'ok'   }) },
-  OUTDOOR_SNOTEL_STATE:          { label: 'SNOTEL',             derive: () => ({ value: 'Monitoring',   status: 'ok'   }) },
 }
 
 const TIER_PCT: Record<string, number> = { T1: 90, T2: 74, T3: 55, T4: 35 }
@@ -90,6 +75,8 @@ async function handleStrikeBrief(
     timing: (objProfile?.timing as object) ?? {},
   }
 
+  const signalChips = await loadSignalChips(supabase, objectiveId)
+
   if (!brief) {
     return NextResponse.json({
       objective_id: objectiveId,
@@ -101,7 +88,7 @@ async function handleStrikeBrief(
       summary: null,
       lead_signal: null,
       time_windows: null,
-      signal_chips: [],
+      signal_chips: signalChips,
       sources: [],
       attribution: 'Powered by Meridian Arc',
       objective: objectiveBlock,
@@ -111,14 +98,7 @@ async function handleStrikeBrief(
   const tierStr = (brief.confidence_tier as string | null) ?? 'T4'
   const confidencePct = TIER_PCT[tierStr] ?? 35
 
-  // Signal chips from agent_hits — OUTDOOR_ agents only
-  const agentHits = (brief.agent_hits as string[] | null) ?? []
-  type ChipRow = { label: string; value: string; status: 'ok' | 'warn' | 'critical' }
-  const signalChips: ChipRow[] = agentHits
-    .filter(h => h.startsWith('OUTDOOR_') && CHIP_MAP[h])
-    .map(h => ({ label: CHIP_MAP[h].label, ...CHIP_MAP[h].derive() }))
-    .filter((c, i, arr) => arr.findIndex(x => x.label === c.label) === i)
-
+  // Signal chips are the latest real readings (FF-099), not placeholder text for the agents that fired.
   // Time windows from movement_windows
   type MvtWindow = { time?: string; reason?: string; probability?: number; confidence_tier?: string }
   const mvt = (brief.movement_windows as MvtWindow[] | null) ?? []
@@ -135,6 +115,7 @@ async function handleStrikeBrief(
   })
 
   // Sources from OUTDOOR_ agent_hits only
+  const agentHits = (brief.agent_hits as string[] | null) ?? []
   const sources = Array.from(new Set(
     agentHits.filter(h => h.startsWith('OUTDOOR_')).map(agentKeyToLabel)
   ))

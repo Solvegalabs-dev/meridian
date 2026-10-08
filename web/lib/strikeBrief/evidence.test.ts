@@ -108,7 +108,7 @@ describe('labeled values with units', () => {
     const text = e.lines.join('\n')
     expect(text).not.toContain('1013')
     expect(text).toContain('value not shown because its unit is not available')
-    expect(text).toContain('noaa barometric')
+    expect(text.toLowerCase()).toContain('barometric pressure')
   })
 
   it('every listed reading line has a unit and an age', () => {

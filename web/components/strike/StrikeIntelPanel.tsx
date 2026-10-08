@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react'
 import { NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
+import SignalChipRow, { parseChips } from './SignalChipRow'
 
 type Props = {
   brief: Record<string, unknown> | null
@@ -12,9 +13,7 @@ type Props = {
 }
 
 export default function StrikeIntelPanel({ brief, emptyPrompt, stalePrompt }: Props) {
-  const chips = (brief?.signal_chips ?? []) as Array<{ label: string; value: string; status: string }>
-  const statusColor = (s: string) =>
-    s === 'ok' ? 'text-green-400' : s === 'critical' ? 'text-red-400' : 'text-amber-400'
+  const chips = parseChips(brief?.signal_chips)
 
   return (
     <div className="p-4">
@@ -24,14 +23,7 @@ export default function StrikeIntelPanel({ brief, emptyPrompt, stalePrompt }: Pr
       ) : (
         <>
         {stalePrompt && <div className="mb-3">{stalePrompt}</div>}
-        <div className="grid grid-cols-2 gap-2">
-          {chips.map((c, i) => (
-            <div key={i} className="bg-slate-800 rounded-lg p-3">
-              <div className="text-xs text-slate-400">{c.label}</div>
-              <div className={`text-sm font-medium mt-0.5 ${statusColor(c.status)}`}>{c.value}</div>
-            </div>
-          ))}
-        </div>
+        <SignalChipRow chips={chips} />
         </>
       )}
     </div>
