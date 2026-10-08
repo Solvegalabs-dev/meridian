@@ -1,7 +1,8 @@
 'use client'
 
-import { useState } from 'react'
 import MeridianBeacon from '@/components/brand/MeridianBeacon'
+import { useRunSweep } from '@/lib/sweep/useRunSweep'
+import { formatLastSweep, formatNextSweep } from '@/lib/sweep/runSweep'
 
 interface SweepButtonProps {
   lastSweepAt?: string | null
@@ -10,60 +11,11 @@ interface SweepButtonProps {
 }
 
 export default function SweepButton({ lastSweepAt, nextSweepAt: nextSweepAtProp, onSweepComplete }: SweepButtonProps) {
-  const [isRunning, setIsRunning] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [nextSweepAt, setNextSweepAt] = useState<string | null>(nextSweepAtProp ?? null)
-
-  const isRateLimited = nextSweepAt !== null && new Date(nextSweepAt) > new Date()
-
-  async function handleSweep() {
-    if (isRateLimited) return
-    setIsRunning(true)
-    setError(null)
-
-    try {
-      const res = await fetch('/api/sweep', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-
-      const data = await res.json() as { error?: string; next_sweep_at?: string; [key: string]: unknown }
-
-      if (!res.ok) {
-        if (res.status === 429 && data.next_sweep_at) {
-          setNextSweepAt(data.next_sweep_at)
-        } else {
-          setError(data.error ?? 'Sweep failed')
-        }
-        return
-      }
-
-      onSweepComplete?.(data)
-      window.location.reload()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sweep failed')
-    } finally {
-      setIsRunning(false)
-    }
-  }
-
-  function formatLastSweep(dateStr: string) {
-    const diffHours = Math.floor((Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60))
-    if (diffHours < 1) return 'Just now'
-    if (diffHours < 24) return `${diffHours}h ago`
-    return `${Math.floor(diffHours / 24)}d ago`
-  }
-
-  function formatNextSweep(dateStr: string) {
-    const diffMs = new Date(dateStr).getTime() - Date.now()
-    if (diffMs <= 0) return 'now'
-    const mins = Math.ceil(diffMs / (1000 * 60))
-    if (mins < 60) return `in ${mins}m`
-    const h = Math.floor(mins / 60)
-    const m = mins % 60
-    return m > 0 ? `in ${h}h ${m}m` : `in ${h}h`
-  }
+  // The action and its states are shared with Strike (FF-098): see lib/sweep/useRunSweep.ts.
+  const { isRunning, error, nextSweepAt, rateLimited: isRateLimited, run: handleSweep } = useRunSweep({
+    nextSweepAt: nextSweepAtProp,
+    onSweepComplete,
+  })
 
   const disabled = isRunning || isRateLimited
 

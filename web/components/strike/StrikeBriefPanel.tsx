@@ -9,6 +9,9 @@ import type { BriefRefreshResult } from '@/lib/strike/briefRefresh'
 import { PRESEASON_CAPTION } from '@/lib/strike/windowStatus'
 import type { WindowState } from '@/lib/objectives/windowState'
 import { formatDateOnly } from '@/lib/utils/dateOnly'
+import { ZERO_EVIDENCE_BANNER } from '@/lib/strikeBrief/evidence'
+import { NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
+import type { ReactNode } from 'react'
 
 type TimeWindow = {
   window: string
@@ -45,6 +48,10 @@ type Props = {
   // True when the objective has no location (FF-095 Part 3). The pending text then says how to fix that.
   noLocation?: boolean
   onGoToPrep?: () => void
+  // FF-098: the Run Sweep prompt. emptyPrompt is shown when there is no brief.
+  // stalePrompt shows above a brief when the sweep data is old. Both include the Run Sweep button.
+  emptyPrompt?: ReactNode
+  stalePrompt?: ReactNode
 }
 
 // Opaque backgrounds only (no /60 alpha). Label text is slate-300 (passes 4.5:1 on slate-800).
@@ -63,7 +70,7 @@ const PRIORITY_TEXT: Record<string, string> = {
   low:    'text-green-400',
 }
 
-export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowState, tripStart, noLocation, onGoToPrep }: Props) {
+export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowState, tripStart, noLocation, onGoToPrep, emptyPrompt, stalePrompt }: Props) {
   // time_windows === null means no brief row found (stub). time_windows === [] means
   // brief exists but movement_windows not yet populated: show content, not full pending.
   if (!brief || brief.time_windows === null) {
@@ -83,10 +90,8 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
             )}
           </>
         ) : (
-          <>
-            <div className="text-slate-200 font-medium">Intelligence sweep pending</div>
-            <div className="text-slate-300">The scheduled sweep writes this brief. Check back after the next run.</div>
-          </>
+          // The user runs sweeps; nothing scheduled writes this brief for them (FF-098).
+          emptyPrompt ?? <div className="text-slate-100">{NO_DATA_PROMPT}</div>
         )}
         {windowState === 'upcoming' && tripStart && (
           <div className="text-slate-300">
@@ -111,6 +116,9 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
 
   return (
     <div className="px-4 py-4 space-y-5">
+      {/* A brief written with no evidence says so in its first line; the prompt gives the one tap that fixes it. */}
+      {brief.summary?.includes(ZERO_EVIDENCE_BANNER) ? emptyPrompt : stalePrompt}
+
       {/* VERDICT: first thing on the tab. A closed hunt shows its message in the page notice, not a pill. */}
       {verdict && !closed && (
         <section className="space-y-2">
@@ -177,7 +185,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
         <section>
           <div className={LABEL}>Strike summary</div>
           <div className={CARD}>
-            <div className="text-slate-100 text-sm leading-relaxed">{summary}</div>
+            <div className="text-slate-100 text-sm leading-relaxed whitespace-pre-line">{summary}</div>
           </div>
         </section>
       )}

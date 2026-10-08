@@ -68,7 +68,7 @@ export function refreshMessage(result: BriefRefreshResult, generatedAt: string |
       return "Couldn't check right now. Try again in a minute."
     case 'same':
       return generatedAt
-        ? `No newer brief. The latest is from ${briefTimeLabel(generatedAt)}. Briefs update with each scheduled sweep.`
-        : 'No newer brief. Briefs update with each scheduled sweep.'
+        ? `No newer brief. The latest is from ${briefTimeLabel(generatedAt)}. Tap Run Sweep for a fresh one.`
+        : 'No newer brief. Tap Run Sweep for a fresh one.'
   }
 }

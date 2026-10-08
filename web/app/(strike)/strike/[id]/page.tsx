@@ -4,6 +4,7 @@ import { requireObjectiveAccess, ObjectiveAccessError } from '@/lib/auth/ownersh
 import { isUserInvited } from '@/lib/auth/inviteGate'
 import { resolveObjectiveTitle } from '@/lib/objectives/objectiveTitle'
 import { isCampaignUnit } from '@/lib/strike/campaignUnit'
+import { computeSweepInfo } from '@/lib/strike/sweepStatus'
 import RemovedObjectiveNotice from '@/components/strike/RemovedObjectiveNotice'
 import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
@@ -228,6 +229,27 @@ export default async function StrikePage({ params }: { params: { id: string } })
     .eq('id', arcObjectiveId)
     .maybeSingle()
   const note = (objectiveRow?.notes as string | null | undefined) ?? null
+
+  // FF-098: the user's last sweep (and when the next is allowed) and the newest signal tagged to this objective.
+  // Two small reads: they decide whether the tabs point at Run Sweep.
+  const [{ data: sweepProfile }, { data: latestSignal }] = await Promise.all([
+    supabase.from('profiles').select('account_type, last_sweep_at').eq('id', user.id).maybeSingle(),
+    supabase
+      .from('signals')
+      .select('created_at')
+      .eq('user_id', user.id)
+      .contains('objective_ids', [arcObjectiveId])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+  const sweep = computeSweepInfo({
+    accountType: sweepProfile?.account_type as string | null | undefined,
+    email: user.email,
+    lastSweepAt: sweepProfile?.last_sweep_at as string | null | undefined,
+    objectiveCreatedAt: objective.created_at as string | null | undefined,
+    latestSignalAt: latestSignal?.created_at as string | null | undefined,
+  })
   const title = resolveObjectiveTitle({
     storedTitle: objectiveRow?.title as string | null | undefined,
     taxonomyKey: objective.taxonomy_key as string | null,
@@ -283,6 +305,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
           objective={objective as unknown as Parameters<typeof StrikeBriefClient>[0]['objective']}
           title={title}
           note={note}
+          sweep={sweep}
           canRemove={canRemove}
           hasBrief={briefRow !== null}
           evaluation={evaluation}
@@ -306,6 +329,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
         objective={objective as unknown as Parameters<typeof StrikeBriefClient>[0]['objective']}
         title={title}
         note={note}
+        sweep={sweep}
         canRemove={canRemove}
         hasBrief={briefRow !== null}
         evaluation={evaluation}

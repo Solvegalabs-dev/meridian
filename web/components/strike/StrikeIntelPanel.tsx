@@ -1,8 +1,17 @@
 'use client'
 
-type Props = { brief: Record<string, unknown> | null; objective: Record<string, unknown> }
+import type { ReactNode } from 'react'
+import { NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
 
-export default function StrikeIntelPanel({ brief }: Props) {
+type Props = {
+  brief: Record<string, unknown> | null
+  objective: Record<string, unknown>
+  // FF-098: the Run Sweep prompt, in place of "No signal data yet", and above old data.
+  emptyPrompt?: ReactNode
+  stalePrompt?: ReactNode
+}
+
+export default function StrikeIntelPanel({ brief, emptyPrompt, stalePrompt }: Props) {
   const chips = (brief?.signal_chips ?? []) as Array<{ label: string; value: string; status: string }>
   const statusColor = (s: string) =>
     s === 'ok' ? 'text-green-400' : s === 'critical' ? 'text-red-400' : 'text-amber-400'
@@ -11,8 +20,10 @@ export default function StrikeIntelPanel({ brief }: Props) {
     <div className="p-4">
       <div className="text-xs text-slate-400 uppercase tracking-wider mb-3">Signal Chips</div>
       {chips.length === 0 ? (
-        <div className="text-slate-500 text-sm">No signal data yet.</div>
+        emptyPrompt ?? <div className="text-slate-100 text-sm">{NO_DATA_PROMPT}</div>
       ) : (
+        <>
+        {stalePrompt && <div className="mb-3">{stalePrompt}</div>}
         <div className="grid grid-cols-2 gap-2">
           {chips.map((c, i) => (
             <div key={i} className="bg-slate-800 rounded-lg p-3">
@@ -21,6 +32,7 @@ export default function StrikeIntelPanel({ brief }: Props) {
             </div>
           ))}
         </div>
+        </>
       )}
     </div>
   )

@@ -24,7 +24,7 @@ describe('StrikeFooter refresh status', () => {
 
   it('shows the "same" note with the time of the latest brief', () => {
     const html = renderToStaticMarkup(<RefreshStatus result="same" generatedAt={GENERATED} />)
-    expect(html).toContain('Briefs update with each scheduled sweep.')
+    expect(html).toContain('Tap Run Sweep for a fresh one.')
   })
 
   it('renders an empty status region before any check', () => {

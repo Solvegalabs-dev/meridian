@@ -49,6 +49,14 @@ const CLIENT_ENTRIES = [
   'components/strike/RemovedObjectiveNotice.tsx',
   'components/strike/CampaignView.tsx',
   'app/(strike)/strike/new/page.tsx',
+  // FF-098
+  'lib/strike/sweepStatus.ts',
+  'lib/sweep/useRunSweep.ts',
+  'lib/strikeBrief/evidence.ts',
+  'components/strike/RunSweepButton.tsx',
+  'components/strike/RunSweepPrompt.tsx',
+  'components/strike/StrikeBriefPanel.tsx',
+  'components/strike/StrikeBriefClient.tsx',
 ]
 
 describe('FF-096 client-safe modules', () => {

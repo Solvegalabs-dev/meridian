@@ -73,6 +73,14 @@ const SEASON_NOT_OPEN = {
   season_end: '2026-11-30',
 }
 
+// One reading a day old: enough evidence that the brief is written the normal way.
+const RECENT_READING = {
+  agent_key: 'OUTDOOR_USGS_STREAMFLOW_STATE',
+  observed_value: 2490,
+  source: 'observed',
+  recorded_at: '2026-10-02T12:00:00Z',
+}
+
 function modelReply(fields: Record<string, unknown>) {
   return { content: [{ type: 'text', text: JSON.stringify({ synthesis: 'Hunt the north face.', lead_signal: 'Wind', condition_delta: null, confidence_tier: 'T2', ...fields }) }] }
 }
@@ -81,6 +89,9 @@ function setup(opts: {
   profile: Record<string, unknown> | null
   seasons?: unknown[]
   modelFields?: Record<string, unknown>
+  // FF-098: by default the objective has a recent reading, so these tests exercise the evidence path.
+  // Pass [] to exercise a brief with no evidence.
+  readings?: unknown[]
 }) {
   const db: FakeSupabase = fakeSupabase((call) => {
     switch (call.table) {
@@ -88,6 +99,8 @@ function setup(opts: {
         return { data: opts.profile }
       case 'hunt_seasons':
         return { data: opts.seasons ?? [] }
+      case 'agent_signal_history':
+        return { data: opts.readings ?? [RECENT_READING] }
       case 'strike_briefs':
         if (call.op === 'upsert' || call.op === 'insert') return { data: { id: 'brief-1', ...(call.payload as object) } }
         return { data: null }

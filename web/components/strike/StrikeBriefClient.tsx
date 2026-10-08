@@ -11,6 +11,9 @@ import StrikeSignalsPanel from './StrikeSignalsPanel'
 import StrikeNotesPanel from './StrikeNotesPanel'
 import OfflineBanner from './OfflineBanner'
 import ObjectiveMenu from './ObjectiveMenu'
+import RunSweepButton from './RunSweepButton'
+import RunSweepPrompt from './RunSweepPrompt'
+import { sweepPromptFor, emptyTabPrompt, type SweepInfo } from '@/lib/strike/sweepStatus'
 import { useStrikeCache } from '@/hooks/useStrikeCache'
 import type { WindowEvaluation } from '@/lib/objectives/windowState'
 import { defaultStrikeTab, type StrikeTab } from '@/lib/strike/defaultTab'
@@ -44,6 +47,8 @@ type Props = {
   title: string
   // objectives.notes, shown and edited on the Prep tab (FF-096).
   note?: string | null
+  // FF-098: last sweep, when the next one is allowed, and the newest sweep data for this objective.
+  sweep?: SweepInfo
   // False for a campaign unit: it cannot be removed from here yet (FF-096).
   canRemove?: boolean
   // False when no strike_briefs row exists; the brief object then holds placeholder fields.
@@ -57,6 +62,7 @@ export default function StrikeBriefClient({
   title,
   note = null,
   canRemove = false,
+  sweep = { lastSweepAt: null, nextSweepAt: null, latestDataAt: null },
   hasBrief,
   evaluation,
 }: Props) {
@@ -110,6 +116,14 @@ export default function StrikeBriefClient({
     return () => clearInterval(interval)
   }, [refresh])
 
+  // No sweep data, or old data: the tabs point at Run Sweep (nothing runs a user sweep on a schedule).
+  const stale = sweepPromptFor(sweep.latestDataAt)
+  const promptFor = (p: Parameters<typeof RunSweepPrompt>[0]['prompt']) => (
+    <RunSweepPrompt prompt={p} lastSweepAt={sweep.lastSweepAt} nextSweepAt={sweep.nextSweepAt} />
+  )
+  const emptyPrompt = promptFor(emptyTabPrompt(sweep.latestDataAt))
+  const stalePrompt = stale.kind === 'stale' ? promptFor(stale) : null
+
   const displayBrief = isOnline ? brief : (cachedBrief as unknown as Record<string, unknown> | null ?? brief)
 
   return (
@@ -134,6 +148,11 @@ export default function StrikeBriefClient({
           </Link>
           <ObjectiveMenu objectiveId={objective.id} title={title} canRemove={canRemove} />
         </div>
+      </div>
+
+      {/* One sweep covers every active objective. Same action as Mission Control. */}
+      <div className="px-4 pb-1">
+        <RunSweepButton lastSweepAt={sweep.lastSweepAt} nextSweepAt={sweep.nextSweepAt} />
       </div>
 
       <StrikeHeader
@@ -178,13 +197,15 @@ export default function StrikeBriefClient({
             tripStart={evaluation?.state === 'upcoming' ? evaluation.detail.trip_start ?? null : null}
             noLocation={!hasLocation(objective as Parameters<typeof hasLocation>[0])}
             onGoToPrep={() => setActiveTab('prep')}
+            emptyPrompt={emptyPrompt}
+            stalePrompt={stalePrompt}
           />
         )}
         {activeTab === 'intel' && (
-          <StrikeIntelPanel brief={displayBrief} objective={objective as unknown as Record<string, unknown>} />
+          <StrikeIntelPanel brief={displayBrief} objective={objective as unknown as Record<string, unknown>} emptyPrompt={emptyPrompt} stalePrompt={stalePrompt} />
         )}
         {activeTab === 'signals' && (
-          <StrikeSignalsPanel objectiveId={arcObjectiveId} />
+          <StrikeSignalsPanel objectiveId={arcObjectiveId} emptyPrompt={emptyPrompt} stalePrompt={stalePrompt} />
         )}
         {activeTab === 'notes' && (
           <StrikeNotesPanel objectiveId={arcObjectiveId} />

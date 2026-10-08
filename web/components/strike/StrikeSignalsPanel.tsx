@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
+import { NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
 
 type Signal = {
   id: string
@@ -131,7 +132,12 @@ function SignalCard({ group }: { group: SignalGroup }) {
   )
 }
 
-export default function StrikeSignalsPanel({ objectiveId }: { objectiveId: string }) {
+export default function StrikeSignalsPanel({ objectiveId, emptyPrompt, stalePrompt }: {
+  objectiveId: string
+  // FF-098: the Run Sweep prompt, in place of the old "check back" text, and above old data.
+  emptyPrompt?: ReactNode
+  stalePrompt?: ReactNode
+}) {
   const [groups, setGroups] = useState<SignalGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -167,15 +173,25 @@ export default function StrikeSignalsPanel({ objectiveId }: { objectiveId: strin
     )
   }
 
+  return <SignalsBody groups={groups} emptyPrompt={emptyPrompt} stalePrompt={stalePrompt} />
+}
+
+// Presentational: the loaded state. Exported so the empty and stale states can be checked without a browser.
+export function SignalsBody({ groups, emptyPrompt, stalePrompt }: {
+  groups: SignalGroup[]
+  emptyPrompt?: ReactNode
+  stalePrompt?: ReactNode
+}) {
   return (
     <div className="p-4 pb-8">
       <div className="text-xs text-slate-400 uppercase tracking-wider mb-3">Agent Signals</div>
       {groups.length === 0 ? (
-        <div className="text-slate-500 text-sm">
-          Signals are building — check back after the next sweep.
-        </div>
+        emptyPrompt ?? <div className="text-slate-100 text-sm">{NO_DATA_PROMPT}</div>
       ) : (
-        groups.map(g => <SignalCard key={g.label} group={g} />)
+        <>
+          {stalePrompt && <div className="mb-3">{stalePrompt}</div>}
+          {groups.map(g => <SignalCard key={g.label} group={g} />)}
+        </>
       )}
     </div>
   )
