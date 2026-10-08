@@ -7,6 +7,7 @@ import { windowStatusChip, type WindowChip } from '@/lib/strike/windowStatus'
 import { endedNoticeLabel, resolveEndedNotice } from '@/lib/strikeBrief/closedBrief'
 import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
 import { formatDateOnly } from '@/lib/utils/dateOnly'
+import { checkCoverage, type SeasonIndex } from '@/lib/strike/coverage'
 
 export type OtherObjectiveGroup = 'active' | 'upcoming' | 'ended'
 
@@ -22,6 +23,8 @@ export type OtherObjective = {
   verdict: string | null
   group: OtherObjectiveGroup
   createdAt: string | null
+  // FF-096 Part 3: we have no data for this species and state. A label only; it changes nothing about briefs.
+  limitedData: boolean
 }
 
 export type OtherProfileRow = ObjectiveWindowProfile & {
@@ -69,6 +72,8 @@ export function buildOtherObjectives(input: {
   briefs: Map<string, OtherBrief>
   // objectives.title per objective_id.
   storedTitles: Map<string, string | null>
+  // The hunt_seasons index, null when it could not be read. Omit to skip the coverage label.
+  seasonIndex?: SeasonIndex | null
 }): OtherObjective[] {
   const items = input.profiles.map((p): OtherObjective => {
     const key = evaluationKey(p)
@@ -97,6 +102,9 @@ export function buildOtherObjectives(input: {
       verdict,
       group: groupFor(evaluation, ended !== null),
       createdAt: p.created_at,
+      limitedData: input.seasonIndex === undefined
+        ? false
+        : checkCoverage({ taxonomyKey: p.taxonomy_key, state: p.state, seasonIndex: input.seasonIndex }).covered === false,
     }
   })
   return sortOtherObjectives(items)
@@ -104,6 +112,9 @@ export function buildOtherObjectives(input: {
 
 // Row classes. Opaque backgrounds only (no /30 alpha), no opacity, and each text size meets the floor:
 // body text 14 px (text-sm) or larger, labels 12 px (text-xs) or larger, the row at least 44 px tall.
+// The "Limited data" label: opaque amber pair, same palette as the CONDITIONAL verdict pill.
+export const LIMITED_DATA_TONE = { bg: '#78350f', color: '#fde68a' } as const
+
 export const OTHER_OBJECTIVE_CLASSES = {
   heading: 'px-4 mb-2 text-xs font-medium uppercase tracking-wider text-slate-300',
   card: 'bg-slate-800 rounded-xl mx-4 overflow-hidden',
@@ -112,9 +123,15 @@ export const OTHER_OBJECTIVE_CLASSES = {
   titleEnded: 'text-base font-medium text-slate-300',
   subtitle: 'text-xs text-slate-300',
   chip: 'text-xs font-medium px-2 py-1 rounded',
+  limited: 'text-xs font-medium px-2 py-1 rounded',
   verdict: 'text-xs font-bold px-2 py-1 rounded',
   dates: 'text-xs text-slate-300',
   chevron: 'text-slate-300 text-base',
+  removedSummary: 'flex items-center min-h-[44px] px-4 text-sm font-medium text-slate-200 cursor-pointer',
+  removedRow: 'flex items-center gap-3 px-4 py-2 min-h-[56px] border-b border-slate-700 last:border-0',
+  removedTitle: 'flex-1 min-w-0 text-sm text-slate-200 break-words',
+  restoreButton: 'min-h-[44px] px-4 rounded-lg text-sm font-medium bg-slate-700 hover:bg-slate-600 text-white transition-colors flex-shrink-0',
+  removedMessage: 'px-4 py-2 text-sm text-slate-100',
   prompt: 'text-center py-16 px-4',
   promptTitle: 'text-base font-medium text-white',
   promptBody: 'text-sm text-slate-300 mt-1',

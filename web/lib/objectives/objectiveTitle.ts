@@ -4,7 +4,7 @@
 //   "elk.cow.archery" + UT + EA2004             -> "EA2004 antlerless elk (Utah)"
 // With a hunt number the method is left out: the number already names the hunt.
 
-const STATE_NAMES: Record<string, string> = {
+export const STATE_NAMES: Record<string, string> = {
   AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado',
   CT: 'Connecticut', DE: 'Delaware', DC: 'District of Columbia', FL: 'Florida', GA: 'Georgia',
   HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky',
@@ -41,7 +41,7 @@ function capitalizeFirst(text: string): string {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : text
 }
 
-function stateName(state: string | null | undefined): string | null {
+export function stateName(state: string | null | undefined): string | null {
   const raw = (state ?? '').trim()
   if (!raw) return null
   const byCode = STATE_NAMES[raw.toUpperCase()]

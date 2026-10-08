@@ -10,6 +10,7 @@ import StrikeIntelPanel from './StrikeIntelPanel'
 import StrikeSignalsPanel from './StrikeSignalsPanel'
 import StrikeNotesPanel from './StrikeNotesPanel'
 import OfflineBanner from './OfflineBanner'
+import ObjectiveMenu from './ObjectiveMenu'
 import { useStrikeCache } from '@/hooks/useStrikeCache'
 import type { WindowEvaluation } from '@/lib/objectives/windowState'
 import { defaultStrikeTab, type StrikeTab } from '@/lib/strike/defaultTab'
@@ -40,6 +41,10 @@ type Props = {
   brief: Record<string, unknown>
   objective: ObjectiveProfile
   title: string
+  // objectives.notes, shown and edited on the Prep tab (FF-096).
+  note?: string | null
+  // False for a campaign unit: it cannot be removed from here yet (FF-096).
+  canRemove?: boolean
   // False when no strike_briefs row exists; the brief object then holds placeholder fields.
   hasBrief: boolean
   evaluation: WindowEvaluation | null
@@ -49,6 +54,8 @@ export default function StrikeBriefClient({
   brief: initialBrief,
   objective,
   title,
+  note = null,
+  canRemove = false,
   hasBrief,
   evaluation,
 }: Props) {
@@ -117,12 +124,15 @@ export default function StrikeBriefClient({
         >
           ← Objectives
         </button>
-        <Link
-          href={`/objectives/${arcObjectiveId}`}
-          className="min-h-[44px] flex items-center text-sm text-blue-300 hover:text-blue-200 transition-colors"
-        >
-          Mission Control
-        </Link>
+        <div className="flex items-center gap-1">
+          <Link
+            href={`/objectives/${arcObjectiveId}`}
+            className="min-h-[44px] flex items-center text-sm text-blue-300 hover:text-blue-200 transition-colors"
+          >
+            Mission Control
+          </Link>
+          <ObjectiveMenu objectiveId={objective.id} title={title} canRemove={canRemove} />
+        </div>
       </div>
 
       <StrikeHeader
@@ -156,7 +166,7 @@ export default function StrikeBriefClient({
       {/* Panel */}
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'prep' && (
-          <StrikePrepPanel objective={objective as unknown as Record<string, unknown>} brief={displayBrief} />
+          <StrikePrepPanel objective={objective as unknown as Record<string, unknown>} brief={displayBrief} title={title} note={note} />
         )}
         {activeTab === 'strike' && (
           <StrikeBriefPanel

@@ -3,10 +3,12 @@ import { evaluateWindowState, type WindowEvaluation } from '@/lib/objectives/win
 import { contrastRatio } from '@/lib/utils/contrast'
 import { WINDOW_CHIP_TONE } from './windowStatus'
 import { TIER_CHIP, verdictStyle } from './verdictStyles'
+import { buildSeasonIndex } from './coverage'
 import {
   buildOtherObjectives,
   evaluationKey,
   sortOtherObjectives,
+  LIMITED_DATA_TONE,
   OTHER_OBJECTIVE_CLASSES,
   type OtherObjective,
   type OtherProfileRow,
@@ -141,7 +143,7 @@ describe('buildOtherObjectives', () => {
 
 describe('sortOtherObjectives', () => {
   const item = (id: string, group: OtherObjective['group'], createdAt: string | null): OtherObjective => ({
-    id, title: id, subtitle: '', chip: null, dates: null, verdict: null, group, createdAt,
+    id, title: id, subtitle: '', chip: null, dates: null, verdict: null, group, createdAt, limitedData: false,
   })
 
   it('does not mutate its input and puts a missing created date last in its group', () => {
@@ -193,5 +195,52 @@ describe('Other objectives styles', () => {
     expect(contrastRatio('#ffffff', '#1e293b')).toBeGreaterThanOrEqual(4.5)
     expect(contrastRatio('#cbd5e1', '#1e293b')).toBeGreaterThanOrEqual(4.5)
     expect(contrastRatio('#cbd5e1', '#0f172a')).toBeGreaterThanOrEqual(4.5)
+  })
+})
+
+describe('Limited data (FF-096 Part 3)', () => {
+  const index = buildSeasonIndex([{ state: 'UT', species: 'elk' }])
+  const run = (p: OtherProfileRow, seasonIndex?: ReturnType<typeof buildSeasonIndex> | null) =>
+    buildOtherObjectives({ profiles: [p], evaluations: new Map([[evaluationKey(p), evalFor(p)]]), briefs: new Map(), storedTitles: new Map(), seasonIndex })[0]
+
+  it('flags a species and state with no data, and not one with data', () => {
+    expect(run(profile('ks', { taxonomy_key: 'turkey.eastern.archery', state: 'KS', geo: null }), index).limitedData).toBe(true)
+    expect(run(profile('ut', { taxonomy_key: 'elk.bull.archery', state: 'UT', geo: null }), index).limitedData).toBe(false)
+    expect(run(profile('trout'), index).limitedData).toBe(false) // Utah trout: the fishing config covers it
+  })
+
+  it('does not flag an objective whose state is unknown, or when the season data could not be read', () => {
+    expect(run(profile('nostate', { taxonomy_key: 'turkey.eastern.archery', state: null, geo: null }), index).limitedData).toBe(false)
+    expect(run(profile('ks', { taxonomy_key: 'turkey.eastern.archery', state: 'KS', geo: null }), null).limitedData).toBe(false)
+  })
+
+  it('does not evaluate coverage at all when no index is passed', () => {
+    expect(run(profile('ks', { taxonomy_key: 'turkey.eastern.archery', state: 'KS', geo: null })).limitedData).toBe(false)
+  })
+
+  it('does not change the title, chip, group or verdict of the row', () => {
+    const p = profile('ks', { taxonomy_key: 'turkey.eastern.archery', state: 'KS', geo: null })
+    const flagged = run(p, index)
+    const plain = run(p)
+    expect({ ...flagged, limitedData: false }).toEqual(plain)
+  })
+
+  it('the chip colours meet 4.5:1 and use no alpha', () => {
+    expect(contrastRatio(LIMITED_DATA_TONE.color, LIMITED_DATA_TONE.bg)).toBeGreaterThanOrEqual(4.5)
+    expect(OTHER_OBJECTIVE_CLASSES.limited).not.toMatch(/\/\d+/)
+  })
+})
+
+describe('Removed objectives styles (FF-096 Part 1)', () => {
+  it('text is 14 px or more, and the summary and rows are 44 px or taller', () => {
+    expect(OTHER_OBJECTIVE_CLASSES.removedSummary).toMatch(/text-sm/)
+    expect(OTHER_OBJECTIVE_CLASSES.removedSummary).toMatch(/min-h-\[44px\]/)
+    expect(OTHER_OBJECTIVE_CLASSES.removedRow).toMatch(/min-h-\[(4[4-9]|[5-9]\d)px\]/)
+    expect(OTHER_OBJECTIVE_CLASSES.removedTitle).toMatch(/text-sm/)
+    expect(OTHER_OBJECTIVE_CLASSES.restoreButton).toMatch(/min-h-\[44px\]/)
+    for (const key of ['removedSummary', 'removedRow', 'removedTitle', 'restoreButton', 'removedMessage'] as const) {
+      expect(OTHER_OBJECTIVE_CLASSES[key]).not.toMatch(/\/\d+/)
+      expect(OTHER_OBJECTIVE_CLASSES[key]).not.toMatch(/opacity-/)
+    }
   })
 })

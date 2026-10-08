@@ -103,7 +103,7 @@ describe('CampaignView: Other objectives (FF-095 Part 1)', () => {
   type Other = NonNullable<Parameters<typeof CampaignView>[0]['others']>[number]
   const other = (over: Partial<Other> = {}): Other => ({
     id: 'prof-20', title: 'Sockeye salmon, river migration (Alaska)', subtitle: 'salmon · sockeye · river_migration',
-    chip: { label: 'Active', tone: 'live' }, dates: null, verdict: null, group: 'active', createdAt: '2026-10-02T00:00:00Z', ...over,
+    chip: { label: 'Active', tone: 'live' }, dates: null, verdict: null, group: 'active', createdAt: '2026-10-02T00:00:00Z', limitedData: false, ...over,
   })
   const renderWith = (campaigns: ReturnType<typeof campaign>[], others: Other[]) =>
     renderToStaticMarkup(<CampaignView campaigns={campaigns} others={others} />)
@@ -183,5 +183,43 @@ describe('CampaignView: Other objectives (FF-095 Part 1)', () => {
     const withOthers = renderWith([campaign('c1', 'Unit 5A elk', [unit()])], [other()])
     // Take the Other objectives section out and the page is byte-for-byte the old one.
     expect(withOthers.replace(/<section aria-labelledby="other-objectives-heading">[\s\S]*?<\/section>/, '')).toBe(without)
+  })
+})
+
+describe('CampaignView: Limited data and Removed objectives (FF-096)', () => {
+  type Other = NonNullable<Parameters<typeof CampaignView>[0]['others']>[number]
+  const other = (over: Partial<Other> = {}): Other => ({
+    id: 'p1', title: 'Wild turkey, archery (Kansas)', subtitle: 'turkey · eastern · archery',
+    chip: { label: 'Active', tone: 'live' }, dates: null, verdict: null, group: 'active', createdAt: null, limitedData: false, ...over,
+  })
+
+  it('shows a "Limited data" chip only on a row flagged limitedData', () => {
+    const html = renderToStaticMarkup(<CampaignView campaigns={[]} others={[other({ limitedData: true }), other({ id: 'p2', title: 'Covered one' })]} />)
+    expect((html.match(/Limited data/g) ?? []).length).toBe(1)
+    expect(html.indexOf('Limited data')).toBeLessThan(html.indexOf('Covered one'))
+  })
+
+  it('the Limited data chip is opaque, readable, and changes nothing else on the row', () => {
+    const html = renderToStaticMarkup(<CampaignView campaigns={[]} others={[other({ limitedData: true })]} />)
+    expect(html).toContain('background-color:#78350f')
+    expect(html).toContain('color:#fde68a')
+    expect(html).toContain('>Active<')
+    expect(html).toMatch(/<a[^>]*href="\/strike\/p1"/)
+  })
+
+  it('shows the Removed objectives section only when something is removed', () => {
+    const without = renderToStaticMarkup(<CampaignView campaigns={[]} others={[other()]} />)
+    expect(without).not.toContain('Removed objectives')
+
+    const withRemoved = renderToStaticMarkup(<CampaignView campaigns={[]} others={[other()]} removed={[{ id: 'r1', title: 'Old trip' }]} />)
+    expect(withRemoved).toContain('Removed objectives (1)')
+    expect(withRemoved).toContain('Old trip')
+    expect(withRemoved.indexOf('Other objectives')).toBeLessThan(withRemoved.indexOf('Removed objectives'))
+  })
+
+  it('a user whose only objectives are removed still sees the start prompt, plus the removed list', () => {
+    const html = renderToStaticMarkup(<CampaignView campaigns={[]} others={[]} removed={[{ id: 'r1', title: 'Old trip' }]} />)
+    expect(html).toContain('Start your first objective')
+    expect(html).toContain('Removed objectives (1)')
   })
 })

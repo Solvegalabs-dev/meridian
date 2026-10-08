@@ -21,6 +21,7 @@ import { runPatternDeviationEngine } from '@/lib/sweep/patternDeviation/patternD
 import { getDomainProfile } from '@/lib/sweep/domainBaseline/domainProfileManager'
 import { bindObjectiveToAgents } from '@/lib/agents/agentContextResolver'
 import { generateStrikeBrief, LocationNotSetError } from '@/lib/strikeBrief/strikeBriefGenerator'
+import { selectStrikeProfilesForSweep } from '@/lib/strike/sweepSelectors'
 import { applyWindowLifecycleForUser } from '@/lib/objectives/objectiveWindow'
 
 export interface SweepObjectiveResult {
@@ -514,13 +515,7 @@ export async function runSweepForUser(
     // rows with wrong user_ids cannot poison the brief authorship.
     // Ended hunts (lifecycle status 'completed', ended_at set) stay in this list so they get
     // their deterministic CLOSED brief. The generator makes no model call for them.
-    const { data: strikeProfiles } = await supabase
-      .from('objective_profiles')
-      .select('objective_id, user_id, domain')
-      .eq('user_id', userId)
-      .eq('org_source', 'strike')
-      .or('status.eq.active,ended_at.not.is.null')
-      .not('objective_id', 'is', null)
+    const { data: strikeProfiles } = await selectStrikeProfilesForSweep(supabase, userId)
 
     console.log('[sweep:strikeBrief] Strike profiles found:', strikeProfiles?.length ?? 0, JSON.stringify(strikeProfiles?.map(sp => sp.objective_id)))
 

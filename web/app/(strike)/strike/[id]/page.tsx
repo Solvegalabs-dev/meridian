@@ -3,6 +3,8 @@ import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { requireObjectiveAccess, ObjectiveAccessError } from '@/lib/auth/ownership'
 import { isUserInvited } from '@/lib/auth/inviteGate'
 import { resolveObjectiveTitle } from '@/lib/objectives/objectiveTitle'
+import { isCampaignUnit } from '@/lib/strike/campaignUnit'
+import RemovedObjectiveNotice from '@/components/strike/RemovedObjectiveNotice'
 import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
 import { getCollarBriefAugmentation } from '@/lib/swarm/agents/outdoor/collarCalibration'
@@ -177,6 +179,22 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   const arcObjectiveId = (objective.objective_id as string | null) ?? params.id
 
+  // FF-096: a removed objective shows a short notice with Restore (owner only), never the brief.
+  if (objective.status === 'archived') {
+    const { data: removedRow } = await supabase.from('objectives').select('title').eq('id', arcObjectiveId).maybeSingle()
+    const removedTitle = resolveObjectiveTitle({
+      storedTitle: removedRow?.title as string | null | undefined,
+      taxonomyKey: objective.taxonomy_key as string | null,
+      state: objective.state as string | null,
+      huntCode: objective.hunt_code as string | null,
+      waterBody: (objective.geo as { water_body?: unknown } | null)?.water_body as string | null | undefined,
+    })
+    return <RemovedObjectiveNotice objectiveId={objective.id} title={removedTitle} />
+  }
+
+  // FF-096: only a standalone objective can be removed here. A campaign unit stays until campaigns can be managed.
+  const canRemove = !(await isCampaignUnit(supabase, objective))
+
   // Query brief: today first, fall back to most recent
   const today = new Date().toISOString().split('T')[0]
   const { data: todayBrief } = await supabase
@@ -206,9 +224,10 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   const { data: objectiveRow } = await supabase
     .from('objectives')
-    .select('title')
+    .select('title, notes')
     .eq('id', arcObjectiveId)
     .maybeSingle()
+  const note = (objectiveRow?.notes as string | null | undefined) ?? null
   const title = resolveObjectiveTitle({
     storedTitle: objectiveRow?.title as string | null | undefined,
     taxonomyKey: objective.taxonomy_key as string | null,
@@ -263,6 +282,8 @@ export default async function StrikePage({ params }: { params: { id: string } })
           brief={closedBrief}
           objective={objective as unknown as Parameters<typeof StrikeBriefClient>[0]['objective']}
           title={title}
+          note={note}
+          canRemove={canRemove}
           hasBrief={briefRow !== null}
           evaluation={evaluation}
         />
@@ -284,6 +305,8 @@ export default async function StrikePage({ params }: { params: { id: string } })
         brief={brief}
         objective={objective as unknown as Parameters<typeof StrikeBriefClient>[0]['objective']}
         title={title}
+        note={note}
+        canRemove={canRemove}
         hasBrief={briefRow !== null}
         evaluation={evaluation}
       />

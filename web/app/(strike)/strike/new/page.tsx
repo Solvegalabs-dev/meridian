@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
 import { normalizeHuntCode } from '@/lib/hunts/huntCode'
+import { coverageDecision, type CoverageMode } from '@/lib/strike/coverage'
 
 const TAXONOMY_OPTIONS = [
   // Hunting
@@ -30,6 +31,8 @@ export default function StrikeNewPage() {
   const router = useRouter()
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // FF-096 Part 3: set when we have no data for the chosen species and state. `confirmed` is the one extra tap.
+  const [coverage, setCoverage] = useState<{ text: string; mode: CoverageMode; confirmed: boolean } | null>(null)
 
   const [form, setForm] = useState({
     taxonomy_key: 'elk.bull.archery',
@@ -47,12 +50,47 @@ export default function StrikeNewPage() {
 
   function set(field: string, value: string) {
     setForm(f => ({ ...f, [field]: value }))
+    // Any change to the selection means the notice (and a confirmation) no longer applies.
+    setCoverage(null)
   }
 
   const isFishing = isFishingTaxonomyKey(form.taxonomy_key)
 
+  // The state the objective will be saved with: a hunt number alone means Utah (see createObjective).
+  const effectiveState = form.state || (!isFishing && normalizeHuntCode(form.hunt_number) ? 'UT' : '')
+
+  // Asks the server whether we have data for this species and state. A failed lookup never blocks creating:
+  // the notice is advice, and in 'block' mode the create route enforces it on the server.
+  async function checkCoverage(): Promise<{ covered: boolean | null; mode: CoverageMode; notice: string | null } | null> {
+    try {
+      const qs = new URLSearchParams({ taxonomy_key: form.taxonomy_key, state: effectiveState })
+      const res = await fetch(`/api/strike/coverage?${qs.toString()}`)
+      if (!res.ok) return null
+      return await res.json() as { covered: boolean | null; mode: CoverageMode; notice: string | null }
+    } catch {
+      return null
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setError(null)
+    if (coverage?.confirmed !== true) {
+      setSubmitting(true)
+      const check = await checkCoverage()
+      setSubmitting(false)
+      if (check) {
+        const decision = coverageDecision(check.mode, check.covered, false)
+        if (decision !== 'proceed') {
+          setCoverage({ text: check.notice ?? '', mode: check.mode, confirmed: false })
+          return
+        }
+      }
+    }
+    await createObjective()
+  }
+
+  async function createObjective() {
     setError(null)
     setSubmitting(true)
 
@@ -275,10 +313,34 @@ export default function StrikeNewPage() {
           </div>
         )}
 
+        {coverage && !coverage.confirmed && (
+          <div role="alert" className="rounded-lg px-4 py-3 text-sm bg-amber-100 border border-amber-500 text-amber-950 space-y-3">
+            <p className="font-medium">{coverage.text}</p>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {coverage.mode === 'warn' && (
+                <button
+                  type="button"
+                  onClick={() => { setCoverage({ ...coverage, confirmed: true }); void createObjective() }}
+                  className="min-h-[44px] px-4 rounded-lg text-sm font-medium bg-amber-900 text-white hover:bg-amber-800 transition-colors"
+                >
+                  Create anyway
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setCoverage(null)}
+                className="min-h-[44px] px-4 rounded-lg text-sm font-medium bg-white border border-amber-700 text-amber-950 hover:bg-amber-50 transition-colors"
+              >
+                Change selection
+              </button>
+            </div>
+          </div>
+        )}
+
         <button
           type="submit"
-          disabled={submitting}
-          className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium py-3 rounded-xl transition-colors text-sm"
+          disabled={submitting || (coverage !== null && !coverage.confirmed)}
+          className="w-full min-h-[44px] bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium py-3 rounded-xl transition-colors text-sm"
         >
           {submitting ? 'Creating objective…' : 'Create Objective'}
         </button>
