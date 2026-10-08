@@ -98,3 +98,90 @@ describe('CampaignView: trip dates', () => {
     })
   }
 })
+
+describe('CampaignView: Other objectives (FF-095 Part 1)', () => {
+  type Other = NonNullable<Parameters<typeof CampaignView>[0]['others']>[number]
+  const other = (over: Partial<Other> = {}): Other => ({
+    id: 'prof-20', title: 'Sockeye salmon, river migration (Alaska)', subtitle: 'salmon · sockeye · river_migration',
+    chip: { label: 'Active', tone: 'live' }, dates: null, verdict: null, group: 'active', createdAt: '2026-10-02T00:00:00Z', ...over,
+  })
+  const renderWith = (campaigns: ReturnType<typeof campaign>[], others: Other[]) =>
+    renderToStaticMarkup(<CampaignView campaigns={campaigns} others={others} />)
+  const classAttrs = (html: string) => Array.from(html.matchAll(/class="([^"]*)"/g)).map(m => m[1])
+
+  it('a user with a campaign and standalone objectives sees both sections', () => {
+    const html = renderWith(
+      [campaign('c1', 'Unit 5A elk', [unit()])],
+      [other(), other({ id: 'prof-18', title: 'Rainbow trout, fly fishing (Utah)' })],
+    )
+    expect(html).toContain('Unit 5A elk')
+    expect(html).toContain('Other objectives')
+    expect(html).toContain('Sockeye salmon, river migration (Alaska)')
+    expect(html).toContain('Rainbow trout, fly fishing (Utah)')
+    expect(html.indexOf('Unit 5A elk')).toBeLessThan(html.indexOf('Other objectives'))
+  })
+
+  it('a user with only standalone objectives sees only Other objectives, no campaign block and no prompt', () => {
+    const html = renderWith([], [other()])
+    expect(html).toContain('Other objectives')
+    expect(html).toContain('Sockeye salmon, river migration (Alaska)')
+    expect(html).not.toContain('Start your first objective')
+    expect(html).not.toContain('No active campaigns')
+  })
+
+  it('hides the Other objectives section when there are none', () => {
+    const html = renderWith([campaign('c1', 'Unit 5A elk', [unit()])], [])
+    expect(html).not.toContain('Other objectives')
+  })
+
+  it('shows the start prompt, linking to /strike/new, when there are no campaigns and no other objectives', () => {
+    const html = renderWith([], [])
+    expect(html).toContain('Start your first objective')
+    expect(html).toMatch(/<a[^>]*href="\/strike\/new"[^>]*>New objective<\/a>/)
+    expect(html).not.toContain('Other objectives')
+  })
+
+  it('each row links to its strike page by profile id and carries the title, subtitle, status chip and verdict', () => {
+    const html = renderWith([], [other({ id: 'prof-xyz', verdict: 'GO' })])
+    expect(html).toMatch(/<a[^>]*href="\/strike\/prof-xyz"/)
+    expect(html).toContain('salmon · sockeye · river_migration')
+    expect(html).toContain('>Active<')
+    expect(html).toContain('>GO<')
+  })
+
+  it('renders rows in the order given, so an ended objective stays last', () => {
+    const html = renderWith([], [
+      other({ id: 'a', title: 'Live trip' }),
+      other({ id: 'u', title: 'Upcoming trip', group: 'upcoming', chip: { label: 'Opens Nov 10', tone: 'pending' } }),
+      other({ id: 'e', title: 'Finished trip', group: 'ended', chip: { label: 'Trip ended on Sep 15', tone: 'ended' } }),
+    ])
+    expect(html.indexOf('Live trip')).toBeLessThan(html.indexOf('Upcoming trip'))
+    expect(html.indexOf('Upcoming trip')).toBeLessThan(html.indexOf('Finished trip'))
+    expect(html).toContain('Trip ended on Sep 15')
+  })
+
+  it('shows trip dates when a row has no chip', () => {
+    const html = renderWith([], [other({ chip: null, dates: 'Oct 10 – Oct 14' })])
+    expect(html).toContain('Oct 10 – Oct 14')
+  })
+
+  it('new markup uses no alpha backgrounds, no opacity, no text under 12 px, and 44 px touch targets', () => {
+    const html = renderWith([], [other({ verdict: 'GO' }), other({ id: 'e', group: 'ended', chip: { label: 'Trip ended', tone: 'ended' } })])
+    // With no campaigns, everything on the page is new markup or the unchanged header and footer.
+    for (const cls of classAttrs(html)) {
+      expect(cls).not.toMatch(/\/\d+/)
+      expect(cls).not.toMatch(/\bopacity-/)
+      expect(cls).not.toMatch(/text-\[(\d|1[01])px\]/)
+    }
+    const rows = (html.match(/<a[^>]*href="\/strike\/[^"]+"[^>]*>/g) ?? []).filter(a => !a.includes('href="/strike/new"'))
+    expect(rows).toHaveLength(2)
+    for (const row of rows) expect(row).toMatch(/min-h-\[(4[4-9]|[5-9]\d)px\]/)
+  })
+
+  it('leaves the existing campaign cards unchanged when others are passed', () => {
+    const without = render([campaign('c1', 'Unit 5A elk', [unit()])])
+    const withOthers = renderWith([campaign('c1', 'Unit 5A elk', [unit()])], [other()])
+    // Take the Other objectives section out and the page is byte-for-byte the old one.
+    expect(withOthers.replace(/<section aria-labelledby="other-objectives-heading">[\s\S]*?<\/section>/, '')).toBe(without)
+  })
+})

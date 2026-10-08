@@ -42,6 +42,9 @@ type Props = {
   windowState?: WindowState | null
   // Trip start date (YYYY-MM-DD) for an upcoming hunt, used in the pending copy.
   tripStart?: string | null
+  // True when the objective has no location (FF-095 Part 3). The pending text then says how to fix that.
+  noLocation?: boolean
+  onGoToPrep?: () => void
 }
 
 // Opaque backgrounds only (no /60 alpha). Label text is slate-300 (passes 4.5:1 on slate-800).
@@ -60,14 +63,31 @@ const PRIORITY_TEXT: Record<string, string> = {
   low:    'text-green-400',
 }
 
-export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowState, tripStart }: Props) {
+export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowState, tripStart, noLocation, onGoToPrep }: Props) {
   // time_windows === null means no brief row found (stub). time_windows === [] means
   // brief exists but movement_windows not yet populated: show content, not full pending.
   if (!brief || brief.time_windows === null) {
     return (
       <div className="px-4 py-6 space-y-2 text-sm">
-        <div className="text-slate-200 font-medium">Intelligence sweep pending</div>
-        <div className="text-slate-300">The scheduled sweep writes this brief. Check back after the next run.</div>
+        {noLocation ? (
+          <>
+            <div className="text-slate-200 font-medium">Add a hunt spot on the Prep tab to start your brief</div>
+            {onGoToPrep && (
+              <button
+                type="button"
+                onClick={onGoToPrep}
+                className="inline-flex items-center justify-center min-h-[44px] px-4 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+              >
+                Go to Prep
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="text-slate-200 font-medium">Intelligence sweep pending</div>
+            <div className="text-slate-300">The scheduled sweep writes this brief. Check back after the next run.</div>
+          </>
+        )}
         {windowState === 'upcoming' && tripStart && (
           <div className="text-slate-300">
             Briefs start when your trip window opens ({formatDateOnly(tripStart)}).

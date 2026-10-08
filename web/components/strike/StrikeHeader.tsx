@@ -3,7 +3,7 @@
 import { isEndedWindowState, type WindowEvaluation } from '@/lib/objectives/windowState'
 import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
 import { verdictStyle, TIER_CHIP } from '@/lib/strike/verdictStyles'
-import { PRESEASON_CAPTION, isPreseasonState, windowStatusChip } from '@/lib/strike/windowStatus'
+import { PRESEASON_CAPTION, WINDOW_CHIP_TONE, isPreseasonState, windowStatusChip } from '@/lib/strike/windowStatus'
 
 type Props = {
   title: string
@@ -16,12 +16,6 @@ type Props = {
   hasBrief: boolean
   brief: Record<string, unknown> | null
   isOnline: boolean
-}
-
-const CHIP_TONE: Record<'live' | 'pending' | 'ended', { bg: string; color: string }> = {
-  live:    { bg: '#14532d', color: '#4ade80' },
-  pending: { bg: '#1e3a8a', color: '#bfdbfe' },
-  ended:   { bg: '#334155', color: '#e2e8f0' },
 }
 
 export default function StrikeHeader({ title, huntCode, taxonomyKey, evaluation, hasBrief, brief, isOnline }: Props) {
@@ -69,7 +63,7 @@ export default function StrikeHeader({ title, huntCode, taxonomyKey, evaluation,
         {chip && (
           <span
             className="text-sm font-medium px-2 py-1 rounded"
-            style={{ backgroundColor: CHIP_TONE[chip.tone].bg, color: CHIP_TONE[chip.tone].color }}
+            style={{ backgroundColor: WINDOW_CHIP_TONE[chip.tone].bg, color: WINDOW_CHIP_TONE[chip.tone].color }}
           >
             {chip.label}
           </span>

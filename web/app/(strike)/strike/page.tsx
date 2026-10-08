@@ -6,6 +6,7 @@ import CampaignView from '@/components/strike/CampaignView'
 import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
 import { isUserInvited } from '@/lib/auth/inviteGate'
 import { evaluateProfilesWindow, PROFILE_WINDOW_COLUMNS, type ObjectiveWindowProfile } from '@/lib/objectives/objectiveWindow'
+import { buildOtherObjectives, evaluationKey, type OtherBrief, type OtherProfileRow } from '@/lib/strike/otherObjectives'
 import { resolveEndedNotice } from '@/lib/strikeBrief/closedBrief'
 
 export const dynamic = 'force-dynamic'
@@ -38,15 +39,25 @@ export default async function StrikePage() {
 
   const userId = user.id
 
-  const { data: campaigns } = await supabase
-    .from('hunt_campaigns')
-    .select(`id, name, status, taxonomy_key, season_year,
+  // Campaigns, and (FF-095) every Strike objective the signed-in user owns. The standalone ones are the
+  // profiles no campaign unit points at. Both reads use the session user id: nobody else's rows are listed.
+  const [{ data: campaigns }, { data: ownedProfiles }] = await Promise.all([
+    supabase
+      .from('hunt_campaigns')
+      .select(`id, name, status, taxonomy_key, season_year,
       campaign_units (id, objective_id, role, rank, status, missed_reason,
         confidence_trajectory, pivot_recommended, pivot_reason)`)
-    .eq('user_id', userId)
-    // FF-089 P0: closed campaigns stay visible (read-only, sorted last) so the last brief can still be read.
-    .in('status', ['active', 'closed'])
-    .order('created_at', { ascending: false })
+      .eq('user_id', userId)
+      // FF-089 P0: closed campaigns stay visible (read-only, sorted last) so the last brief can still be read.
+      .in('status', ['active', 'closed'])
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('objective_profiles')
+      .select(`${PROFILE_WINDOW_COLUMNS}, geo, created_at`)
+      .eq('user_id', userId)
+      .eq('org_source', 'strike')
+      .in('status', ['active', 'completed']),
+  ])
 
   const allObjectiveIds: string[] = (campaigns ?? []).flatMap(c =>
     ((c.campaign_units ?? []) as RawUnit[])
@@ -54,19 +65,31 @@ export default async function StrikePage() {
       .filter(Boolean)
   )
 
-  const [profileResult, briefResult] = await Promise.all([
+  const inCampaign = new Set(allObjectiveIds)
+  const standaloneProfiles = ((ownedProfiles ?? []) as unknown as OtherProfileRow[])
+    .filter(p => !inCampaign.has(p.id) && !(p.objective_id && inCampaign.has(p.objective_id)))
+  const standaloneObjectiveIds = standaloneProfiles.map(p => p.objective_id).filter((id): id is string => !!id)
+
+  const [profileResult, briefResult, titleResult] = await Promise.all([
     allObjectiveIds.length > 0
       ? supabase
           .from('objective_profiles')
           .select(`${PROFILE_WINDOW_COLUMNS}, geo, agent_build_status`)
           .in('objective_id', allObjectiveIds)
       : Promise.resolve({ data: [] as unknown[] }),
-    allObjectiveIds.length > 0
+    allObjectiveIds.length + standaloneObjectiveIds.length > 0
       ? supabase
           .from('strike_briefs')
           .select('objective_id, confidence_tier, go_no_go, created_at')
-          .in('objective_id', allObjectiveIds)
+          .in('objective_id', [...allObjectiveIds, ...standaloneObjectiveIds])
           .order('created_at', { ascending: false })
+      : Promise.resolve({ data: [] as unknown[] }),
+    standaloneObjectiveIds.length > 0
+      ? supabase
+          .from('objectives')
+          .select('id, title')
+          .eq('user_id', userId)
+          .in('id', standaloneObjectiveIds)
       : Promise.resolve({ data: [] as unknown[] }),
   ])
 
@@ -77,12 +100,24 @@ export default async function StrikePage() {
 
   // FF-089 P0: window state is evaluated now, not read from the last sweep. One batched season read.
   const profileRows = (profileResult.data ?? []) as unknown as ObjectiveWindowProfile[]
-  const windowStates = await evaluateProfilesWindow(supabase, profileRows)
+  // The standalone profiles go through the same single season read.
+  const standaloneRows = standaloneProfiles.map(p => ({ ...p, objective_id: evaluationKey(p) }))
+  const windowStates = await evaluateProfilesWindow(supabase, [...profileRows, ...standaloneRows])
 
   const briefMap = new Map<string, { confidence_tier?: string; go_no_go?: string }>()
   for (const b of (briefResult.data ?? []) as Array<{ objective_id: string; confidence_tier?: string; go_no_go?: string }>) {
     if (!briefMap.has(b.objective_id)) briefMap.set(b.objective_id, b)
   }
+
+  const storedTitles = new Map<string, string | null>(
+    ((titleResult.data ?? []) as Array<{ id: string; title: string | null }>).map(o => [o.id, o.title])
+  )
+  const others = buildOtherObjectives({
+    profiles: standaloneProfiles,
+    evaluations: windowStates,
+    briefs: briefMap as Map<string, OtherBrief>,
+    storedTitles,
+  })
 
   const enriched = (campaigns ?? []).map(c => ({
     id: c.id as string,
@@ -105,5 +140,5 @@ export default async function StrikePage() {
       })),
   }))
 
-  return <CampaignView campaigns={enriched} />
+  return <CampaignView campaigns={enriched} others={others} />
 }

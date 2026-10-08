@@ -75,4 +75,36 @@ describe('evaluateProfilesWindow', () => {
     expect(out.size).toBe(0)
     expect(sb.calls).toHaveLength(0)
   })
+
+  // FF-095: fishing has no hunt season. The evaluator must give a sensible state from the trip window alone.
+  describe('fishing objectives (trip window only)', () => {
+    const fishing = (id: string, timing: ObjectiveWindowProfile['timing']) =>
+      profile(id, { taxonomy_key: 'salmon.sockeye.river_migration', state: 'AK', domain: 'fishing', timing })
+
+    it('is active inside the trip window, upcoming before it, and trip_ended after it', async () => {
+      const sb = fakeSupabase(() => ({ data: [] }))
+      const out = await evaluateProfilesWindow(sb as never, [
+        fishing('inside', { trip_start: '2026-10-01', trip_end: '2026-10-31' }),
+        fishing('before', { trip_start: '2026-11-05', trip_end: '2026-11-09' }),
+        fishing('after', { trip_start: '2026-09-05', trip_end: '2026-09-09' }),
+      ], NOW)
+      expect(out.get('inside')?.state).toBe('active')
+      expect(out.get('before')?.state).toBe('upcoming')
+      expect(out.get('before')?.detail.trip_start).toBe('2026-11-05')
+      expect(out.get('after')?.state).toBe('trip_ended')
+    })
+
+    it('never matches a hunting season row, even when the table returns one for the same state', async () => {
+      const sb = fakeSupabase(() => ({ data: [{ ...SEASON_ROW, state: 'AK' }] }))
+      const out = await evaluateProfilesWindow(sb as never, [fishing('inside', { trip_start: '2026-10-01', trip_end: '2026-10-31' })], NOW)
+      expect(out.get('inside')?.state).toBe('active') // the elk season_closed row is not applied to a salmon trip
+      expect(out.get('inside')?.detail.season_end).toBeUndefined()
+    })
+
+    it('with no trip dates the state is no_dates, so the list shows no status chip', async () => {
+      const sb = fakeSupabase(() => ({ data: [] }))
+      const out = await evaluateProfilesWindow(sb as never, [fishing('bare', null)], NOW)
+      expect(out.get('bare')?.state).toBe('no_dates')
+    })
+  })
 })

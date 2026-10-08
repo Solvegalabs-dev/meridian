@@ -2,6 +2,7 @@
 // The sweep, strike_briefs and the crons read objectives. A profile without an objectives row
 // (objective_id NULL) was invisible to all of them. Both rows are created here, or neither is.
 import type { createServiceClient } from '@/lib/supabase/server'
+import { buildObjectiveTitle } from './objectiveTitle'
 
 type Db = ReturnType<typeof createServiceClient>
 
@@ -23,10 +24,16 @@ export type LinkedObjectiveInput = {
 
 export type LinkedObjective = { objectiveId: string; profileId: string; objId: string }
 
-// "elk.bull.archery" -> "elk · bull · archery", with the hunt number appended when there is one.
-export function objectiveTitle(taxonomyKey: string, huntCode: string | null): string {
-  const base = (taxonomyKey || 'Objective').replace(/\./g, ' · ')
-  return huntCode ? `${base} · ${huntCode}` : base
+// Title for a new objective, from what the profile already carries (FF-095 Part 2). No coordinates.
+function titleForProfile(input: LinkedObjectiveInput): string {
+  const geo = (input.profile.geo ?? {}) as { state?: unknown; water_body?: unknown }
+  const state = typeof input.profile.state === 'string' ? input.profile.state : typeof geo.state === 'string' ? geo.state : null
+  return buildObjectiveTitle({
+    taxonomyKey: input.taxonomyKey,
+    state,
+    huntCode: input.huntCode,
+    waterBody: typeof geo.water_body === 'string' ? geo.water_body : null,
+  })
 }
 
 // timing.trip_end, when it is a plain YYYY-MM-DD date. Otherwise null.
@@ -52,7 +59,7 @@ export async function createLinkedObjective(db: Db, input: LinkedObjectiveInput)
   if (listError) throw new LinkedObjectiveError('Could not read existing objectives', listError.message)
 
   const objId = nextObjNumber((existing ?? []).map(o => o.obj_id as string | null))
-  const title = objectiveTitle(input.taxonomyKey, input.huntCode)
+  const title = titleForProfile(input)
 
   const { data: objective, error: objectiveError } = await db
     .from('objectives')
