@@ -5,12 +5,16 @@ import { isFishingTaxonomyKey, FISHING_PREP_PHASES } from '@/lib/strike/config/f
 import { addDaysDateOnly, formatDateOnly } from '@/lib/utils/dateOnly'
 import SpotsPanel from './SpotsPanel'
 import HuntNumberCard from './HuntNumberCard'
+import ObjectiveDetailsCard from './ObjectiveDetailsCard'
 
 type Cadence = 'monthly' | 'biweekly' | 'weekly'
 
 type Props = {
   objective: Record<string, unknown>
   brief: Record<string, unknown> | null
+  // FF-096: the readable title and the note, for the Objective details card.
+  title?: string
+  note?: string | null
 }
 
 type ArcStep = { label: string; icon: string; status: 'done' | 'active' | 'future' }
@@ -518,13 +522,23 @@ function ElkPrepContent({ objective }: { objective: Record<string, unknown> }) {
 
 // ─── Router ───────────────────────────────────────────────────────────────────
 
-export default function StrikePrepPanel({ objective }: Props) {
+export default function StrikePrepPanel({ objective, title, note = null }: Props) {
   const taxonomyKey = (objective.taxonomy_key as string) ?? ''
   const objectiveId = (objective.objective_id as string | null) ?? (objective.id as string)
   const huntCode = (objective.hunt_code as string | null) ?? null
   // FF-091: hunt number and spots sit at the top of Prep, above the phase content.
+  const timing = (objective.timing as { trip_start?: unknown; trip_end?: unknown } | null) ?? {}
+  const profileId = objective.id as string
   return (
     <div className="px-4 pt-4 space-y-4">
+      {/* FF-096: edit title, trip dates and note. */}
+      <ObjectiveDetailsCard
+        objectiveId={profileId}
+        title={title ?? ''}
+        tripStart={typeof timing.trip_start === 'string' ? timing.trip_start : null}
+        tripEnd={typeof timing.trip_end === 'string' ? timing.trip_end : null}
+        note={note}
+      />
       <HuntNumberCard objectiveId={objectiveId} initialCode={huntCode} />
       <SpotsPanel objectiveId={objectiveId} huntCode={huntCode} />
       {isFishingTaxonomyKey(taxonomyKey)

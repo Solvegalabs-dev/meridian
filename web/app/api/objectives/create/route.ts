@@ -15,6 +15,8 @@ import { normalizeHuntCode } from '@/lib/hunts/huntCode'
 import { authenticatePartner, isPartnerRequest } from '@/lib/auth/partnerAuth'
 import { partnerRateLimitResponse } from '@/lib/auth/rateLimit'
 import { isUserInvited, INVITE_ONLY_MESSAGE } from '@/lib/auth/inviteGate'
+import { checkCoverage, coverageNotice, toStateCode, COVERAGE_MODE } from '@/lib/strike/coverage'
+import { loadSeasonIndex } from '@/lib/strike/coverageData'
 import { createLinkedObjective, LinkedObjectiveError } from '@/lib/objectives/linkedObjective'
 
 export const dynamic = 'force-dynamic'
@@ -101,6 +103,15 @@ export async function POST(request: NextRequest) {
 
   const supabase = createServiceClient()
 
+  // FF-096 Part 3: with COVERAGE_MODE 'block', a Strike (session) objective we have no data for is refused.
+  // In the default 'warn' mode nothing happens here: the intake form shows the notice and asks for a second tap.
+  if (COVERAGE_MODE === 'block' && caller.partnerId === null) {
+    const coverage = checkCoverage({ taxonomyKey: taxonomy_key, state: geo.state, seasonIndex: await loadSeasonIndex(supabase) })
+    if (coverage.covered === false) {
+      return NextResponse.json({ error: coverageNotice(coverage, 'block'), code: 'not_covered' }, { status: 422 })
+    }
+  }
+
   // Resolve agent bundle from registry
   const { agents, buildStatus } = await resolveAgentBundle(taxonomy_key, geo)
 
@@ -108,7 +119,10 @@ export async function POST(request: NextRequest) {
 
   // FF-091: the season matcher reads the state and hunt number columns, not the geo json.
   const huntCode = normalizeHuntCode(geo.unit)
-  const stateColumn = typeof geo.state === 'string' && geo.state.trim() ? geo.state.trim().toUpperCase() : null
+  // "Utah", "ut" and "UT" all store as UT, so the season matcher finds the state's rows.
+  const stateColumn = typeof geo.state === 'string' && geo.state.trim()
+    ? (toStateCode(geo.state) ?? geo.state.trim().toUpperCase())
+    : null
 
   let created
   try {

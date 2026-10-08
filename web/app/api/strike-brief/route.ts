@@ -17,6 +17,8 @@ export async function GET(request: Request) {
     .select('id')
     .eq('id', objectiveId)
     .eq('user_id', user.id)
+    // FF-096: a removed objective gets no new brief.
+    .neq('status', 'archived')
     .single();
 
   if (!obj) return NextResponse.json({ error: 'Not found' }, { status: 404 });

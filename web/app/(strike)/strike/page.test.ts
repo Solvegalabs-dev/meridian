@@ -5,6 +5,7 @@ import { FakeDb } from '@/lib/spots/testDb'
 import StrikePage from './page'
 import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
 import type { OtherObjective } from '@/lib/strike/otherObjectives'
+import type { RemovedObjective } from '@/components/strike/RemovedObjectives'
 
 let db: FakeDb
 let sessionUser: { id: string; email?: string } | null = null
@@ -54,7 +55,7 @@ afterEach(() => {
 })
 
 async function render() {
-  const result = await StrikePage() as { type: unknown; props: { campaigns: Array<{ id: string }>; others: OtherObjective[] } }
+  const result = await StrikePage() as { type: unknown; props: { campaigns: Array<{ id: string; units: Array<{ id: string }> }>; others: OtherObjective[]; removed: RemovedObjective[] } }
   return result
 }
 
@@ -210,5 +211,88 @@ describe('/strike Other objectives (FF-095 Part 1)', () => {
       expect.not.arrayContaining(['objective_profiles', 'objectives', 'strike_briefs', 'hunt_campaigns']),
     )
     expect(JSON.stringify(props.others)).not.toMatch(/40\.5123|111\.2456/)
+  })
+})
+
+describe('/strike removed objectives (FF-096 Part 1)', () => {
+  beforeEach(() => {
+    sessionUser = { id: 'u1', email: 'invited@example.com' }
+  })
+
+  it('never lists an archived objective in Other objectives, and lists it under Removed objectives', async () => {
+    db.tables.objective_profiles.push(
+      profile('prof-live'),
+      profile('prof-gone', { status: 'archived' }),
+    )
+    db.tables.objectives = [{ id: 'arc-prof-gone', user_id: 'u1', title: 'trout · rainbow · fly_fishing', archive_date: '2026-10-05' }]
+    const { props } = await render()
+
+    expect(props.others.map(o => o.id)).toEqual(['prof-live'])
+    expect(props.removed).toEqual([{ id: 'prof-gone', title: 'Rainbow trout, fly fishing, Green River (Utah)' }])
+  })
+
+  it('lists the most recently removed first', async () => {
+    db.tables.objective_profiles.push(
+      profile('old', { status: 'archived' }),
+      profile('new', { status: 'archived' }),
+    )
+    db.tables.objectives = [
+      { id: 'arc-old', user_id: 'u1', title: 'Old one', archive_date: '2026-09-01' },
+      { id: 'arc-new', user_id: 'u1', title: 'New one', archive_date: '2026-10-05' },
+    ]
+    const { props } = await render()
+    expect(props.removed.map(r => r.title)).toEqual(['New one', 'Old one'])
+  })
+
+  it("shows another user's removed objectives to nobody but them", async () => {
+    db.tables.objective_profiles.push(profile('theirs', { user_id: 'u2', status: 'archived' }))
+    const { props } = await render()
+    expect(props.removed).toEqual([])
+    expect(props.others).toEqual([])
+  })
+
+  it('has no Removed objectives when nothing is removed', async () => {
+    const { props } = await render()
+    expect(props.removed).toEqual([])
+  })
+
+  it('keeps an archived profile out of the campaign cards too', async () => {
+    db.tables.objective_profiles = [profile('prof-elk', { taxonomy_key: 'elk.bull.archery', domain: 'elk', geo: { unit: '5A' }, status: 'archived' })]
+    const { props } = await render()
+    expect(props.campaigns).toHaveLength(1)
+    expect(props.campaigns[0].units).toEqual([])
+  })
+
+  it('an objective that is removed and also a campaign unit is not listed twice', async () => {
+    db.tables.objective_profiles = [profile('prof-elk', { taxonomy_key: 'elk.bull.archery', domain: 'elk', status: 'archived' })]
+    const { props } = await render()
+    expect(props.others).toEqual([])
+    expect(props.removed.map(r => r.id)).toEqual(['prof-elk'])
+  })
+})
+
+describe('/strike Limited data chip (FF-096 Part 3)', () => {
+  beforeEach(() => {
+    sessionUser = { id: 'u1', email: 'invited@example.com' }
+    db.tables.hunt_seasons = [{ id: 'hs1', state: 'UT', species: 'elk', season_year: 2026 }]
+  })
+
+  it('flags an objective with no data for its species and state, and not one that has data', async () => {
+    db.tables.objective_profiles.push(
+      profile('ut-trout'), // fishing config covers Utah trout
+      profile('ks-turkey', { taxonomy_key: 'turkey.eastern.archery', state: 'KS', domain: 'turkey', geo: null }),
+      profile('ut-elk', { taxonomy_key: 'elk.bull.archery', state: 'UT', domain: 'elk', geo: null }),
+    )
+    const { props } = await render()
+    const flag = (id: string) => props.others.find(o => o.id === id)!.limitedData
+    expect(flag('ks-turkey')).toBe(true)
+    expect(flag('ut-trout')).toBe(false)
+    expect(flag('ut-elk')).toBe(false)
+  })
+
+  it('does not flag an objective with no state (it cannot be judged)', async () => {
+    db.tables.objective_profiles.push(profile('nostate', { taxonomy_key: 'turkey.eastern.archery', state: null, geo: null }))
+    const { props } = await render()
+    expect(props.others[0].limitedData).toBe(false)
   })
 })

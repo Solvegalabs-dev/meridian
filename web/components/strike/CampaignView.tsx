@@ -10,7 +10,8 @@ import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
 import { formatReason } from '@/lib/strike/reasonLabels'
 import { WINDOW_CHIP_TONE } from '@/lib/strike/windowStatus'
 import { verdictStyle } from '@/lib/strike/verdictStyles'
-import { OTHER_OBJECTIVE_CLASSES as OC, type OtherObjective } from '@/lib/strike/otherObjectives'
+import { OTHER_OBJECTIVE_CLASSES as OC, LIMITED_DATA_TONE, type OtherObjective } from '@/lib/strike/otherObjectives'
+import RemovedObjectives, { type RemovedObjective } from './RemovedObjectives'
 
 type UnitProfile = {
   id?: string
@@ -197,6 +198,11 @@ function OtherObjectiveRow({ item }: { item: OtherObjective }) {
             {item.chip.label}
           </span>
         )}
+        {item.limitedData && (
+          <span className={OC.limited} style={{ backgroundColor: LIMITED_DATA_TONE.bg, color: LIMITED_DATA_TONE.color }}>
+            Limited data
+          </span>
+        )}
         {verdict && (
           <span className={OC.verdict} style={{ backgroundColor: verdict.bg, color: verdict.color }}>
             {verdict.label}
@@ -208,7 +214,7 @@ function OtherObjectiveRow({ item }: { item: OtherObjective }) {
   )
 }
 
-export default function CampaignView({ campaigns, others = [] }: { campaigns: Campaign[]; others?: OtherObjective[] }) {
+export default function CampaignView({ campaigns, others = [], removed = [] }: { campaigns: Campaign[]; others?: OtherObjective[]; removed?: RemovedObjective[] }) {
   return (
     <div className="min-h-screen bg-slate-900 text-white flex flex-col">
       {/* Header */}
@@ -279,6 +285,8 @@ export default function CampaignView({ campaigns, others = [] }: { campaigns: Ca
             </div>
           </section>
         )}
+
+        <RemovedObjectives items={removed} />
       </div>
 
       {/* Footer new objective button */}

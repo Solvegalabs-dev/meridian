@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { runAgent } from '@/lib/agents/agentRunner';
 import { createServiceClient } from '@/lib/supabase/server';
 import { resolveAgentParams } from '@/lib/agents/agentContextResolver';
+import { selectAgentSwarmProfiles } from '@/lib/strike/sweepSelectors';
 
 export const maxDuration = 300;
 
@@ -32,12 +33,7 @@ export async function GET(request: Request) {
   // FF-089: map each agent to the objective profiles that assign it, so each run
   // carries that objective's geography. runAgent() loads the profile's geo columns
   // (NWS grid, lat/lon, USGS gauges, SNOTEL stations, hunt unit) by objectiveId.
-  const { data: profiles } = await supabase
-    .from('objective_profiles')
-    .select('objective_id, assigned_agents, state, county')
-    .not('assigned_agents', 'is', null)
-    // FF-089 P0: ended hunts (season closed / trip ended) are status 'completed'; no agent runs for them.
-    .neq('status', 'completed');
+  const { data: profiles } = await selectAgentSwarmProfiles(supabase);
 
   const profilesByAgent = new Map<string, ObjectiveGeoProfile[]>();
   for (const p of (profiles ?? []) as ObjectiveGeoProfile[]) {
