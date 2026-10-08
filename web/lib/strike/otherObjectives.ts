@@ -8,6 +8,7 @@ import { endedNoticeLabel, resolveEndedNotice } from '@/lib/strikeBrief/closedBr
 import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
 import { formatDateOnly } from '@/lib/utils/dateOnly'
 import { checkCoverage, type SeasonIndex } from '@/lib/strike/coverage'
+import { isFishingObjective } from '@/lib/strike/objectiveKind'
 
 export type OtherObjectiveGroup = 'active' | 'upcoming' | 'ended'
 
@@ -96,7 +97,7 @@ export function buildOtherObjectives(input: {
         huntCode: p.hunt_code,
         waterBody: typeof p.geo?.water_body === 'string' ? p.geo.water_body : null,
       }),
-      subtitle: p.hunt_code ? `${p.hunt_code} · ${taxonomy}` : taxonomy,
+      subtitle: p.hunt_code && !isFishingObjective(p) ? `${p.hunt_code} · ${taxonomy}` : taxonomy,
       chip,
       dates: chip ? null : tripDates(p.timing),
       verdict,

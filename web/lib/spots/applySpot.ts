@@ -2,6 +2,7 @@
 // (or reuse a fresh snapshot), then write it onto the objective profile.
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { resolveFullGeography, type FullGeography } from '@/lib/geo/locationResolver'
+import { toProfileColumns } from '@/lib/geo/profileColumns'
 
 export const SNAPSHOT_MAX_AGE_DAYS = 30
 export const NO_GRID_MESSAGE =
@@ -31,8 +32,8 @@ export function isSnapshotFresh(
 export function profileGeoColumns(
   geo: FullGeography,
   currentHuntUnitId: string | null | undefined
-): Omit<FullGeography, 'hunt_unit_id'> & { hunt_unit_id?: string | null } {
-  const { hunt_unit_id, ...rest } = geo
+): Omit<FullGeography, 'hunt_unit_id' | 'usgs_gauge_nearest'> & { hunt_unit_id?: string | null } {
+  const { hunt_unit_id, ...rest } = toProfileColumns(geo)
   if (currentHuntUnitId) return rest
   return { ...rest, hunt_unit_id: hunt_unit_id ?? null }
 }

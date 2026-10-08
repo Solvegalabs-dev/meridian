@@ -16,6 +16,7 @@ import type { WindowEvaluation } from '@/lib/objectives/windowState'
 import { defaultStrikeTab, type StrikeTab } from '@/lib/strike/defaultTab'
 import { checkForNewerBrief, type BriefRefreshResult } from '@/lib/strike/briefRefresh'
 import { hasLocation } from '@/lib/agents/geoLocation'
+import { isFishingObjective } from '@/lib/strike/objectiveKind'
 
 // "Brief" (not "Strike Brief") so five tabs fit at 375 px without truncation.
 const TAB_LABELS: Record<StrikeTab, string> = {
@@ -137,7 +138,7 @@ export default function StrikeBriefClient({
 
       <StrikeHeader
         title={title}
-        huntCode={(objective.hunt_code as string | null | undefined) ?? null}
+        huntCode={isFishingObjective(objective) ? null : (objective.hunt_code as string | null | undefined) ?? null}
         taxonomyKey={objective.taxonomy_key ?? ''}
         evaluation={evaluation}
         hasBrief={briefPresent}

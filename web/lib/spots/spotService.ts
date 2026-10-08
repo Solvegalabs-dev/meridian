@@ -262,6 +262,10 @@ export function spotView(spot: SpotRow) {
     state: (snap.state as string | null | undefined) ?? null,
     hunt_unit_id: spot.hunt_unit_id,
     inside_boundary: spot.inside_boundary ?? null,
+    // FF-096b: the pin's nearest USGS gauge (name and miles), when its snapshot has one.
+    nearest_gauge: snap.usgs_gauge_nearest?.name
+      ? { name: snap.usgs_gauge_nearest.name, distance_mi: Number(snap.usgs_gauge_nearest.distance_mi) }
+      : null,
     activated_at: spot.activated_at,
   }
 }

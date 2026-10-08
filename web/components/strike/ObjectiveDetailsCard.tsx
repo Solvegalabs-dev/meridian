@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { buildDetailsPatch, MAX_TITLE_LENGTH, MAX_NOTE_LENGTH } from '@/lib/strike/objectivePatch'
+import { tripDateBounds } from '@/lib/strike/tripDateRange'
 
 const INPUT = 'w-full min-h-[44px] rounded-lg bg-slate-900 border border-slate-600 text-white text-sm px-3 py-2 placeholder:text-slate-400'
 const DATE_INPUT = `${INPUT} [color-scheme:dark]`
@@ -21,6 +22,7 @@ type Props = {
 
 export default function ObjectiveDetailsCard({ objectiveId, title, tripStart, tripEnd, note }: Props) {
   const router = useRouter()
+  const bounds = tripDateBounds()
   const initial = { title, tripStart: tripStart ?? '', tripEnd: tripEnd ?? '', note: note ?? '' }
   const [draft, setDraft] = useState(initial)
   const [saved, setSaved] = useState(initial)
@@ -72,11 +74,11 @@ export default function ObjectiveDetailsCard({ objectiveId, title, tripStart, tr
       <div className="grid grid-cols-2 gap-2">
         <label className="block text-sm text-slate-200">
           Trip start
-          <input type="date" className={DATE_INPUT} value={draft.tripStart} onChange={e => set('tripStart', e.target.value)} />
+          <input type="date" min={bounds.min} max={bounds.max} className={DATE_INPUT} value={draft.tripStart} onChange={e => set('tripStart', e.target.value)} />
         </label>
         <label className="block text-sm text-slate-200">
           Trip end
-          <input type="date" className={DATE_INPUT} value={draft.tripEnd} onChange={e => set('tripEnd', e.target.value)} />
+          <input type="date" min={bounds.min} max={bounds.max} className={DATE_INPUT} value={draft.tripEnd} onChange={e => set('tripEnd', e.target.value)} />
         </label>
       </div>
 

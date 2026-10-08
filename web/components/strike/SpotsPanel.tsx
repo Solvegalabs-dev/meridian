@@ -17,6 +17,8 @@ export type SpotView = {
   state: string | null
   hunt_unit_id: string | null
   inside_boundary?: boolean | null
+  // FF-096b: the pin's nearest USGS gauge, when known. Shown on fishing spot rows only.
+  nearest_gauge?: { name: string; distance_mi: number } | null
 }
 
 export type SpotsState = {
@@ -29,8 +31,38 @@ export type SpotsState = {
 const BTN = 'min-h-[44px] px-4 rounded-lg text-sm font-medium transition-colors'
 const INPUT = 'w-full min-h-[44px] rounded-lg bg-slate-800 border border-slate-600 text-white text-sm px-3 py-2 placeholder:text-slate-400'
 
-export function headerText(count: number, limit: number | null): string {
-  return limit == null ? `Hunt spots, ${count}` : `Hunt spots, ${count} of ${limit}`
+export function headerText(count: number, limit: number | null, fishing = false): string {
+  const label = fishing ? 'Fishing spots' : 'Hunt spots'
+  return limit == null ? `${label}, ${count}` : `${label}, ${count} of ${limit}`
+}
+
+// Fixed copy (FF-096b). The regulations note is always visible; Strike does not track regulations.
+export const FISHING_SPOTS_HELP = 'Drop a pin on the water you plan to fish. Each pin can use its own nearest gauge and weather.'
+export const FISHING_REGS_NOTE =
+  "Check current regulations for this water before you fish: artificial-only or bait rules, bag and size limits, and closures. Strike doesn't track regulations."
+export const HUNT_RULES_NOTE = 'Confirm your unit boundary and current rules before you hunt.'
+
+export function addButtonLabel(fishing: boolean): string {
+  return fishing ? 'Add a fishing spot' : '+ Add a spot'
+}
+
+export function spotNoun(fishing: boolean): string {
+  return fishing ? 'fishing spots' : 'hunt spots'
+}
+
+// "Nearest gauge: Green River Near Greendale, UT, 12.3 mi". Null when the snapshot has no gauge name.
+export function gaugeLine(spot: Pick<SpotView, 'nearest_gauge'>): string | null {
+  const g = spot.nearest_gauge
+  if (!g?.name || !Number.isFinite(g.distance_mi)) return null
+  return `Nearest gauge: ${g.name}, ${String(Number(g.distance_mi.toFixed(1)))} mi`
+}
+
+// The place line on a spot row. Hunting: county and hunt unit. Fishing: the county, else the water name;
+// a hunt unit is never shown for a pin on the water.
+export function spotPlaceLine(spot: SpotView, fishing: boolean, waterBody?: string | null): string | null {
+  if (fishing) return spot.county || (waterBody && waterBody.trim()) || null
+  const line = [spot.county, spot.hunt_unit_id].filter(Boolean).join(' · ')
+  return line || null
 }
 
 export function atLimit(count: number, limit: number | null): boolean {
@@ -47,21 +79,26 @@ export function boundaryWarning(spot: SpotView, huntCode: string | null | undefi
 export function SpotsView({
   state,
   huntCode,
+  fishing = false,
+  waterBody = null,
   onAdd,
   onMakeActive,
 }: {
   state: SpotsState
   huntCode?: string | null
+  fishing?: boolean
+  waterBody?: string | null
   onAdd?: () => void
   onMakeActive?: (spot: SpotView) => void
 }) {
   const count = state.spots.length
   const full = atLimit(count, state.limit)
   return (
-    <section className="bg-slate-800 rounded-lg px-4 py-4 space-y-3" aria-label="Hunt spots">
+    <section className="bg-slate-800 rounded-lg px-4 py-4 space-y-3" aria-label={fishing ? 'Fishing spots' : 'Hunt spots'}>
       <div className="flex items-baseline justify-between gap-2">
-        <h2 className="text-white font-semibold text-base">{headerText(count, state.limit)}</h2>
+        <h2 className="text-white font-semibold text-base">{headerText(count, state.limit, fishing)}</h2>
       </div>
+      {fishing && <p className="text-sm text-slate-200">{FISHING_SPOTS_HELP}</p>}
 
       <ul className="space-y-2">
         {state.spots.map(spot => (
@@ -69,10 +106,13 @@ export function SpotsView({
             <div className="min-w-0">
               <div className="text-white text-sm font-medium truncate">{spot.name}</div>
               <div className="text-slate-300 text-xs">{spot.lat.toFixed(4)}, {spot.lon.toFixed(4)}</div>
-              {(spot.county || spot.hunt_unit_id) && (
-                <div className="text-slate-300 text-xs">{[spot.county, spot.hunt_unit_id].filter(Boolean).join(' · ')}</div>
+              {spotPlaceLine(spot, fishing, waterBody) && (
+                <div className="text-slate-300 text-xs">{spotPlaceLine(spot, fishing, waterBody)}</div>
               )}
-              {boundaryWarning(spot, huntCode) && (
+              {fishing && gaugeLine(spot) && (
+                <div className="text-slate-300 text-xs">{gaugeLine(spot)}</div>
+              )}
+              {!fishing && boundaryWarning(spot, huntCode) && (
                 <p className="mt-1 text-sm text-amber-200">{boundaryWarning(spot, huntCode)}</p>
               )}
             </div>
@@ -102,11 +142,20 @@ export function SpotsView({
           </div>
         ) : (
           <button onClick={onAdd} className={`${BTN} w-full bg-blue-700 text-white hover:bg-blue-600`}>
-            + Add a spot
+            {addButtonLabel(fishing)}
           </button>
         )
       )}
     </section>
+  )
+}
+
+// Always visible under the spots, whatever state the list is in: loading, failed or loaded.
+export function SpotsNote({ fishing }: { fishing: boolean }) {
+  return (
+    <p className="text-sm text-slate-200 px-1" data-testid="spots-note">
+      {fishing ? FISHING_REGS_NOTE : HUNT_RULES_NOTE}
+    </p>
   )
 }
 
@@ -116,11 +165,13 @@ type FormValues = { name: string; lat: string; lon: string }
 export function SpotForm({
   initial,
   submitLabel,
+  fishing = false,
   onSubmit,
   onCancel,
 }: {
   initial: FormValues
   submitLabel: string
+  fishing?: boolean
   onSubmit: (values: FormValues) => Promise<string | null>
   onCancel: () => void
 }) {
@@ -180,7 +231,9 @@ export function SpotForm({
         Paste coordinates
         <input className={INPUT} placeholder="40.917, -111.397" value={paste} onChange={e => applyPaste(e.target.value)} />
       </label>
-      <p className="text-sm text-slate-300">Tip: long-press a spot on onX or Google Maps to copy its coordinates.</p>
+      <p className="text-sm text-slate-300">
+        {fishing ? 'Tip: long-press the water on Google Maps to copy its coordinates.' : 'Tip: long-press a spot on onX or Google Maps to copy its coordinates.'}
+      </p>
       <div className="grid grid-cols-2 gap-2">
         <label className="block text-sm text-slate-200">
           Latitude
@@ -212,7 +265,12 @@ export function SpotForm({
 }
 
 // Container: loads spots, adds, edits, deletes and switches the active spot.
-export default function SpotsPanel({ objectiveId, huntCode = null }: { objectiveId: string; huntCode?: string | null }) {
+export default function SpotsPanel({ objectiveId, huntCode = null, fishing = false, waterBody = null }: {
+  objectiveId: string
+  huntCode?: string | null
+  fishing?: boolean
+  waterBody?: string | null
+}) {
   const base = `/api/objectives/${objectiveId}/spots`
   const [state, setState] = useState<SpotsState | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -231,7 +289,7 @@ export default function SpotsPanel({ objectiveId, huntCode = null }: { objective
       setState(await res.json() as SpotsState)
       setLoadError(null)
     } catch {
-      setLoadError("Couldn't load hunt spots. Try again in a minute.")
+      setLoadError(`Couldn't load ${spotNoun(fishing)}. Try again in a minute.`)
     }
   }
 
@@ -291,14 +349,16 @@ export default function SpotsPanel({ objectiveId, huntCode = null }: { objective
     await load()
   }
 
-  if (loadError) return <div className="px-4 py-3 text-sm text-red-200">{loadError}</div>
-  if (!state) return <div className="px-4 py-3 text-sm text-slate-200">Loading hunt spots…</div>
+  if (loadError) return <div className="space-y-3"><div className="px-4 py-3 text-sm text-red-200">{loadError}</div><SpotsNote fishing={fishing} /></div>
+  if (!state) return <div className="space-y-3"><div className="px-4 py-3 text-sm text-slate-200">Loading {spotNoun(fishing)}…</div><SpotsNote fishing={fishing} /></div>
 
   return (
     <div className="space-y-3">
       <SpotsView
         state={state}
         huntCode={huntCode}
+        fishing={fishing}
+        waterBody={waterBody}
         onAdd={() => { setAdding(true); setEditing(null) }}
         onMakeActive={spot => { setSheet(spot); setSheetError(null) }}
       />
@@ -309,6 +369,7 @@ export default function SpotsPanel({ objectiveId, huntCode = null }: { objective
         <SpotForm
           initial={{ name: '', lat: '', lon: '' }}
           submitLabel="Save spot"
+          fishing={fishing}
           onSubmit={addSpot}
           onCancel={() => setAdding(false)}
         />
@@ -321,6 +382,7 @@ export default function SpotsPanel({ objectiveId, huntCode = null }: { objective
               <SpotForm
                 initial={{ name: spot.name, lat: String(spot.lat), lon: String(spot.lon) }}
                 submitLabel="Save changes"
+                fishing={fishing}
                 onSubmit={values => editSpot(spot, values)}
                 onCancel={() => setEditing(null)}
               />
@@ -358,6 +420,8 @@ export default function SpotsPanel({ objectiveId, huntCode = null }: { objective
           </div>
         </div>
       )}
+
+      <SpotsNote fishing={fishing} />
     </div>
   )
 }

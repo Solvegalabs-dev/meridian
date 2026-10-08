@@ -6,6 +6,7 @@ import { addDaysDateOnly, formatDateOnly } from '@/lib/utils/dateOnly'
 import SpotsPanel from './SpotsPanel'
 import HuntNumberCard from './HuntNumberCard'
 import ObjectiveDetailsCard from './ObjectiveDetailsCard'
+import { isFishingObjective } from '@/lib/strike/objectiveKind'
 
 type Cadence = 'monthly' | 'biweekly' | 'weekly'
 
@@ -525,7 +526,10 @@ function ElkPrepContent({ objective }: { objective: Record<string, unknown> }) {
 export default function StrikePrepPanel({ objective, title, note = null }: Props) {
   const taxonomyKey = (objective.taxonomy_key as string) ?? ''
   const objectiveId = (objective.objective_id as string | null) ?? (objective.id as string)
-  const huntCode = (objective.hunt_code as string | null) ?? null
+  // FF-096b: a fishing objective has no hunt number card, no hunt number, and fishing spots.
+  const fishing = isFishingObjective(objective)
+  const huntCode = fishing ? null : (objective.hunt_code as string | null) ?? null
+  const waterBody = (objective.geo as { water_body?: unknown } | null)?.water_body
   // FF-091: hunt number and spots sit at the top of Prep, above the phase content.
   const timing = (objective.timing as { trip_start?: unknown; trip_end?: unknown } | null) ?? {}
   const profileId = objective.id as string
@@ -539,8 +543,13 @@ export default function StrikePrepPanel({ objective, title, note = null }: Props
         tripEnd={typeof timing.trip_end === 'string' ? timing.trip_end : null}
         note={note}
       />
-      <HuntNumberCard objectiveId={objectiveId} initialCode={huntCode} />
-      <SpotsPanel objectiveId={objectiveId} huntCode={huntCode} />
+      {!fishing && <HuntNumberCard objectiveId={objectiveId} initialCode={huntCode} />}
+      <SpotsPanel
+        objectiveId={objectiveId}
+        huntCode={huntCode}
+        fishing={fishing}
+        waterBody={typeof waterBody === 'string' ? waterBody : null}
+      />
       {isFishingTaxonomyKey(taxonomyKey)
         ? <FishingPrepContent objective={objective} />
         : <ElkPrepContent objective={objective} />}

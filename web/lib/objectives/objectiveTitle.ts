@@ -1,3 +1,5 @@
+import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
+
 // Readable objective titles (FF-095 Part 2). Pure: no I/O, no coordinates.
 //   "salmon.sockeye.river_migration"            -> "Sockeye salmon, river migration"
 //   "trout.rainbow.fly_fishing" + UT            -> "Rainbow trout, fly fishing (Utah)"
@@ -69,7 +71,8 @@ function describeTaxonomy(taxonomyKey: string): { subject: string; method: strin
 export function buildObjectiveTitle(input: ObjectiveTitleInput): string {
   const key = (input.taxonomyKey ?? '').trim()
   const described = key ? describeTaxonomy(key) : null
-  const huntCode = (input.huntCode ?? '').trim().toUpperCase()
+  // A fishing objective has no hunt number (FF-096b), even if a stale one is on the row.
+  const huntCode = isFishingTaxonomyKey(key.toLowerCase()) ? '' : (input.huntCode ?? '').trim().toUpperCase()
   const water = cleanWaterBody(input.waterBody)
   const state = stateName(input.state)
 
