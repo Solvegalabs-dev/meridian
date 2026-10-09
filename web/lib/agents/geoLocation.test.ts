@@ -55,3 +55,30 @@ describe('skip reason', () => {
     expect(LOCATION_NOT_SET).toBe('location_not_set')
   })
 })
+
+describe('gauge templates (FF-100)', () => {
+  const GAUGE_TEMPLATE = 'https://waterservices.usgs.gov/nwis/iv/?format=json&sites={usgs_gauge_ids}&parameterCd=00010&siteStatus=active'
+
+  it('skip with a clear reason when the spot has no gauge', async () => {
+    const { skipReason, NO_GAUGE_FOR_SPOT } = await import('./geoLocation')
+    expect(shouldSkipForLocation(GAUGE_TEMPLATE, { ...LOCAL, usgs_gauge_ids: [] })).toBe(true)
+    expect(shouldSkipForLocation(GAUGE_TEMPLATE, { ...LOCAL, usgs_gauge_ids: null })).toBe(true)
+    expect(shouldSkipForLocation(GAUGE_TEMPLATE, null)).toBe(true)
+    expect(skipReason(GAUGE_TEMPLATE, { ...LOCAL, usgs_gauge_ids: [] })).toBe(NO_GAUGE_FOR_SPOT)
+    expect(NO_GAUGE_FOR_SPOT).toBe('no_usgs_gauge_for_spot')
+  })
+
+  it('run when the spot has at least one gauge', () => {
+    expect(shouldSkipForLocation(GAUGE_TEMPLATE, { ...LOCAL, usgs_gauge_ids: ['10152000'] })).toBe(false)
+  })
+
+  it('the singular placeholder needs a gauge too', () => {
+    expect(shouldSkipForLocation('https://x.gov/?sites={usgs_gauge_id}', { ...LOCAL, usgs_gauge_ids: [] })).toBe(true)
+  })
+
+  it('a location problem keeps its own reason', async () => {
+    const { skipReason } = await import('./geoLocation')
+    expect(skipReason(ELIZABETH_TEMPLATE, null)).toBe(LOCATION_NOT_SET)
+    expect(skipReason(STATE_ONLY_TEMPLATE, LOCAL)).toBeNull()
+  })
+})

@@ -16,13 +16,14 @@ describe('grouping', () => {
       sig('OUTDOOR_USGS_STREAMFLOW_STATE', 2490, 3),
       sig('OUTDOOR_NOAA_TEMP', 0, 4, 'estimated'),
     ])
-    expect(groups.map(g => g.label)).toEqual(['Hatch window', 'Water temperature', 'Streamflow', 'Air temperature'])
+    expect(groups.map(g => g.label)).toEqual(['Hatch window', 'Water temperature', 'State streamflow', 'Air temperature'])
   })
 })
 
 describe('card header', () => {
   it('the streamflow card carries the state-level label and note, with the cfs help line', () => {
     const m = cardModel(groupSignals([sig('OUTDOOR_USGS_STREAMFLOW_STATE', 2490, 1)])[0])
+    expect(m.label).toBe('State streamflow')
     expect(m.subtitle).toBe('State-level streamflow (not this water)')
     expect(m.note).toBe('A state-wide reading, not the flow at your spot.')
     expect(m.help).toBe('cfs = cubic feet per second')

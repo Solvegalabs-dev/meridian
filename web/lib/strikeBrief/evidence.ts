@@ -26,13 +26,12 @@ function withinWindow(iso: string, now: Date): boolean {
 }
 
 // Data categories a brief should say are missing when they have no reading for THIS spot, by domain. `keys` are
-// the agents that count as a spot-level reading. Water temperature and streamflow have none yet: the water
-// temperature agent reads a fixed reference gauge and the streamflow agent a state-wide list, so neither satisfies
-// it, and a fishing brief says there is no reading for this water until a spot-level agent exists (add its key here).
+// the agents that can supply it, and only a reading from a gauge near the spot counts (FF-100): a distant gauge, the
+// old fixed reference gauge or a state-wide list does not cover the category.
 const EXPECTED: Record<string, Array<{ keys: string[]; name: string }>> = {
   fishing: [
-    { keys: [], name: 'water temperature reading for this water' },
-    { keys: [], name: 'streamflow reading for this water' },
+    { keys: ['OUTDOOR_USGS_WATER_TEMP'], name: 'water temperature reading for this water' },
+    { keys: ['OUTDOOR_USGS_STREAMFLOW_NEAR'], name: 'streamflow reading for this water' },
   ],
 }
 
@@ -69,18 +68,21 @@ export function buildEvidence(input: { readings: Reading[]; signals: TaggedSigna
   const lines: string[] = []
   const withoutUnit: string[] = []
   for (const [agentKey, r] of Array.from(latest.entries())) {
-    const text = formatReading(agentKey, Number(r.observed_value), { source: r.source, recordedAt: r.recorded_at })
+    const text = formatReading(agentKey, Number(r.observed_value), { source: r.source, recordedAt: r.recorded_at, detail: r.source_detail })
     if (text) lines.push(`${text}, recorded ${ageText(new Date(r.recorded_at), now)}`)
-    else withoutUnit.push(readingLabel(agentKey))
+    else withoutUnit.push(readingLabel(agentKey, r.source_detail))
   }
   if (withoutUnit.length > 0) {
     lines.push(`Also recorded, value not shown because its unit is not available: ${withoutUnit.join(', ')}`)
   }
 
   const expected = EXPECTED[input.domain ?? ''] ?? []
-  const missing = expected.filter(e => !e.keys.some(key => latest.has(key))).map(e => e.name)
+  // A category is covered only by the newest reading of an agent in its list, and only when that reading is
+  // spot-level (a nearby gauge): a distant gauge, a reference gauge or a state-wide list does not cover it.
+  const covered = (keys: string[]) => keys.some(key => { const r = latest.get(key); return !!r && isSpotLevel(key, r.source_detail) })
+  const missing = expected.filter(e => !covered(e.keys)).map(e => e.name)
 
-  const spotReadings = usable.filter(r => isSpotLevel(r.agent_key))
+  const spotReadings = usable.filter(r => isSpotLevel(r.agent_key, r.source_detail))
   return { count: spotReadings.length + signals.length, lines, missing }
 }
 
@@ -96,7 +98,7 @@ export async function loadEvidence(
   const [readingsResult, signalsResult] = await Promise.all([
     supabase
       .from('agent_signal_history')
-      .select('agent_key, observed_value, source, recorded_at')
+      .select('agent_key, observed_value, source, recorded_at, source_detail')
       .eq('objective_id', input.objectiveId)
       .gte('recorded_at', since)
       .order('recorded_at', { ascending: false })

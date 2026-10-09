@@ -355,8 +355,10 @@ ${evidence && evidence.missing.length > 0 ? `MISSING DATA: ${evidence.missing.ma
    Do not infer a watershed, drainage or "corridor" from the terrain data. Say "your spot", or use the water body name above.
 3. UNITS: never give a number without its unit. Use the units and conversions exactly as written in the EVIDENCE block.
 4. MISSING DATA: if a data category is missing, say so in one clause (for example "no water temperature reading yet").
-5. A reference-gauge or state-level reading must never be described as the condition at this spot.
-   Readings labeled "(reference gauge, not this water)" or "State-level ... (not this water)" are background only.`;
+5. A reference-gauge, distant-gauge or state-level reading must never be described as the condition at this spot.
+   Readings labeled "(reference gauge, not this water)", "(distant gauge ... may not match this water)" or "State-level ... (not this water)" are background only.
+6. A reading labeled with a USGS gauge name and its distance may be stated as "the nearest USGS gauge, <name>, <n> miles from your spot, reads ...", never as the condition at the spot itself.
+   A reading labeled "NWS forecast ... (not a measurement)" is a forecast and must be worded as one.`;
 
   return `You are Meridian's Strike Brief engine for the outdoor / ${isFishing ? 'fishing' : 'hunting'} domain.
 

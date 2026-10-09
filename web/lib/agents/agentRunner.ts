@@ -8,17 +8,43 @@ import { computeHatchWindow } from '@/lib/swarm/agents/outdoor/fishingPhenology'
 import { computeSalmonRunProgression } from '@/lib/swarm/agents/outdoor/salmonRunProgression';
 import { computeCollarPatterns } from '@/lib/swarm/agents/outdoor/collarPatternExtractor';
 import { loadActiveSpotId } from '@/lib/spots/activeSpot';
-import { LOCATION_NOT_SET, shouldSkipForLocation, type LocationFields } from './geoLocation';
+import { skipReason, type LocationFields } from './geoLocation';
+import { extractSpotReading, isSpotAgent } from './spotExtractors';
+import { fetchStationPressure } from './nwsStationPressure';
+import type { SourceDetail } from '@/lib/strike/signalFormat';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
-// Returns: number = value, null = known calculator but no data (→ miss), undefined = unknown key (→ error)
-async function runCalculated(calculatorKey: string, objectiveId?: string): Promise<number | null | undefined> {
+const NWS_USER_AGENT = 'Meridian/1.0 (ghostnet5x5@gmail.com)';
+
+// A calculator that also says where its number came from (FF-100).
+type CalculatedReading = { value: number; detail: NonNullable<SourceDetail> };
+
+// The latest NWS station pressure near the objective's spot, in inHg.
+async function stationPressure(supabase: SupabaseClient, objectiveId?: string): Promise<CalculatedReading | null> {
+  if (!objectiveId) return null;
+  const { data: p } = await supabase
+    .from('objective_profiles')
+    .select('lat, lon, nws_grid_office, nws_grid_x, nws_grid_y')
+    .eq('objective_id', objectiveId)
+    .maybeSingle();
+  if (!p || p.nws_grid_office == null || p.nws_grid_x == null || p.nws_grid_y == null) return null;
+  return fetchStationPressure({
+    office: p.nws_grid_office as string, x: p.nws_grid_x as number, y: p.nws_grid_y as number,
+    lat: p.lat == null ? null : Number(p.lat), lon: p.lon == null ? null : Number(p.lon),
+  });
+}
+
+// Returns: number or CalculatedReading = value, null = known calculator but no data (→ miss), undefined = unknown key (→ error)
+async function runCalculated(calculatorKey: string, objectiveId: string | undefined, supabase: SupabaseClient): Promise<number | CalculatedReading | null | undefined> {
   switch (calculatorKey) {
     case 'moon_phase_meeus':
       return getMoonPhase(new Date()).illumination;
     case 'terrain_composite':
       return computeTerrainIntelligence(objectiveId);
     case 'hatch_window_meeus':
-      return computeHatchWindow();
+      return computeHatchWindow(objectiveId);
+    case 'nws_station_pressure':
+      return stationPressure(supabase, objectiveId);
     case 'salmon_run_progression':
       return computeSalmonRunProgression();
     case 'movebank_collar_patterns':
@@ -97,7 +123,18 @@ export async function runAgent(
   // 3a. CALCULATED: prefix — run local function, skip fetch entirely
   if ((agent.source_url_template as string).startsWith('CALCULATED:')) {
     const calculatorKey = (agent.source_url_template as string).slice('CALCULATED:'.length);
-    const calculatedBody = await runCalculated(calculatorKey, geoContext.objectiveId);
+    let calculated: Awaited<ReturnType<typeof runCalculated>>;
+    try {
+      calculated = await runCalculated(calculatorKey, geoContext.objectiveId, supabase);
+    } catch (err) {
+      // A failed lookup is an error with no value. Nothing is projected for it (FF-100).
+      const errMsg = err instanceof Error ? err.message : 'Unknown error';
+      await logRun(supabase, agentKey, 'error', Date.now() - start, undefined, undefined, geoContext, errMsg);
+      await updateAgentHealth(supabase, agentKey, 'error', errMsg).catch(e => console.error('[agentHealth] update failed:', e));
+      return { agentKey, result: 'error', durationMs: Date.now() - start, errorMessage: errMsg };
+    }
+    const calculatedBody = typeof calculated === 'object' && calculated !== null ? calculated.value : calculated;
+    const calculatedDetail = typeof calculated === 'object' && calculated !== null ? calculated.detail : undefined;
 
     if (calculatedBody === undefined) {
       const errMsg = `Unknown calculator: ${calculatorKey}`;
@@ -126,7 +163,7 @@ export async function runAgent(
     if (!crossed) {
       await logRun(supabase, agentKey, 'miss', Date.now() - start, undefined, observedValue, geoContext);
       await updateAgentHealth(supabase, agentKey, 'miss').catch(e => console.error('[agentHealth] update failed:', e));
-      await recordAndCheckSignal(supabase, agentKey, geoContext.objectiveId, observedValue).catch(e => console.error('[signalHistory] record failed:', e));
+      await recordAndCheckSignal(supabase, agentKey, geoContext.objectiveId, observedValue, calculatedDetail).catch(e => console.error('[signalHistory] record failed:', e));
       return { agentKey, result: 'miss', durationMs: Date.now() - start, thresholdValueObserved: observedValue };
     }
 
@@ -139,7 +176,7 @@ export async function runAgent(
     );
     await logRun(supabase, agentKey, 'hit', Date.now() - start, eventId, observedValue, geoContext);
     await updateAgentHealth(supabase, agentKey, 'hit').catch(e => console.error('[agentHealth] update failed:', e));
-    void recordAndCheckSignal(supabase, agentKey, geoContext.objectiveId, observedValue).catch(e => console.error('[signalHistory] record failed:', e));
+    void recordAndCheckSignal(supabase, agentKey, geoContext.objectiveId, observedValue, calculatedDetail).catch(e => console.error('[signalHistory] record failed:', e));
     return { agentKey, result: 'hit', eventId, durationMs: Date.now() - start, thresholdValueObserved: observedValue };
   }
 
@@ -161,8 +198,10 @@ export async function runAgent(
   // 3c. FF-091 Part C: no location means no geo-templated run. There are no fallback
   // coordinates, grid or state, so an objective never gets another area's weather.
   const rawTemplate = agent.source_url_template as string;
-  if (shouldSkipForLocation(rawTemplate, geoProfile, geoContext.state)) {
-    await logRun(supabase, agentKey, 'skip', Date.now() - start, undefined, undefined, geoContext, LOCATION_NOT_SET);
+  // FF-100: a gauge-templated agent with no gauge for the spot is a skip with its own reason, not an error.
+  const skip = skipReason(rawTemplate, geoProfile, geoContext.state);
+  if (skip) {
+    await logRun(supabase, agentKey, 'skip', Date.now() - start, undefined, undefined, geoContext, skip);
     return { agentKey, result: 'skip', durationMs: Date.now() - start };
   }
 
@@ -183,10 +222,10 @@ export async function runAgent(
 
   try {
     // 4. Fetch — Accept header excludes application/json so HTML pages respond correctly
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(15000),
-      headers: { Accept: 'text/html, application/xhtml+xml, */*' },
-    });
+    // api.weather.gov requires a User-Agent that says who is asking.
+    const headers: Record<string, string> = { Accept: 'text/html, application/xhtml+xml, */*' };
+    if (url.startsWith('https://api.weather.gov/')) headers['User-Agent'] = NWS_USER_AGENT;
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000), headers });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const contentType = response.headers.get('content-type') ?? '';
@@ -195,21 +234,39 @@ export async function runAgent(
       ? await response.json()
       : await response.text();
 
-    // 5. Threshold evaluation
-    // For OUTDOOR_WINDY_API: forecast windSpeed is a string ("15 mph", "15 to 25 mph").
-    // Parse the first integer and evaluate against it directly so threshold value_above:30 (mph) works.
-    let evalBody: unknown = body;
-    if (agentKey === 'OUTDOOR_WINDY_API' && typeof body === 'object' && body !== null) {
-      const b = body as Record<string, unknown>;
-      const periods = (b.properties as Record<string, unknown> | undefined)?.periods;
-      if (Array.isArray(periods) && periods.length > 0) {
-        const ws = (periods[0] as Record<string, unknown>).windSpeed;
-        if (typeof ws === 'string') {
-          const m = ws.match(/\d+/);
-          if (m) evalBody = parseFloat(m[0]);
-        }
+    // 5a. FF-100: spot-level agents name exactly what they take from the response and record where it came from.
+    // No reading (no nearby gauge has the parameter, the forecast has no figure) is a miss with no value, and nothing
+    // is projected in its place.
+    if (isSpotAgent(agentKey)) {
+      const reading = extractSpotReading(agentKey, body, {
+        gaugeIds: geoProfile?.usgs_gauge_ids ?? [], lat: geoProfile?.lat, lon: geoProfile?.lon,
+      });
+      if (!reading) {
+        await logRun(supabase, agentKey, 'miss', Date.now() - start, undefined, undefined, geoContext);
+        await updateAgentHealth(supabase, agentKey, 'miss').catch(e => console.error('[agentHealth] update failed:', e));
+        return { agentKey, result: 'miss', durationMs: Date.now() - start };
       }
+      const { crossed } = evaluateThreshold(
+        reading.value,
+        agent.threshold_type as string,
+        agent.threshold_value as number | null,
+        agent.threshold_keywords as string[] | null
+      );
+      if (!crossed) {
+        await logRun(supabase, agentKey, 'miss', Date.now() - start, undefined, reading.value, geoContext);
+        await updateAgentHealth(supabase, agentKey, 'miss').catch(e => console.error('[agentHealth] update failed:', e));
+        await recordAndCheckSignal(supabase, agentKey, geoContext.objectiveId, reading.value, reading.detail).catch(e => console.error('[signalHistory] record failed:', e));
+        return { agentKey, result: 'miss', durationMs: Date.now() - start, thresholdValueObserved: reading.value };
+      }
+      const spotEventId = await writeEvent(supabase, agent as Parameters<typeof writeEvent>[1], geoContext, reading.value, url);
+      await logRun(supabase, agentKey, 'hit', Date.now() - start, spotEventId, reading.value, geoContext);
+      await updateAgentHealth(supabase, agentKey, 'hit').catch(e => console.error('[agentHealth] update failed:', e));
+      await recordAndCheckSignal(supabase, agentKey, geoContext.objectiveId, reading.value, reading.detail).catch(e => console.error('[signalHistory] record failed:', e));
+      return { agentKey, result: 'hit', eventId: spotEventId, durationMs: Date.now() - start, thresholdValueObserved: reading.value };
     }
+
+    // 5. Threshold evaluation
+    const evalBody: unknown = body;
     const { crossed, observedValue } = evaluateThreshold(
       evalBody,
       agent.threshold_type as string,
@@ -241,7 +298,10 @@ export async function runAgent(
     const msg = err instanceof Error ? err.message : 'Unknown error';
     await logRun(supabase, agentKey, 'error', Date.now() - start, undefined, undefined, geoContext, msg);
     await updateAgentHealth(supabase, agentKey, 'error', msg).catch(e => console.error('[agentHealth] update failed:', e));
-    await recordEstimatedSignal(supabase, agentKey, geoContext.objectiveId).catch(e => console.error('[signalHistory] estimation failed:', e));
+    // A spot-level agent never projects a value: nothing was read, so nothing is recorded (FF-100).
+    if (!isSpotAgent(agentKey)) {
+      await recordEstimatedSignal(supabase, agentKey, geoContext.objectiveId).catch(e => console.error('[signalHistory] estimation failed:', e));
+    }
     return { agentKey, result: 'error', durationMs: Date.now() - start, errorMessage: msg };
   }
 }
