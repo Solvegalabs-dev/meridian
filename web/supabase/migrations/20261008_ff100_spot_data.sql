@@ -58,15 +58,17 @@ SET source_url_template = 'CALCULATED:nws_station_pressure',
 WHERE agent_key = 'OUTDOOR_NOAA_BAROMETRIC';
 
 -- 6. Registry: new fishing objectives get the nearby-gauge streamflow agent and wind, not the state-level agent.
+--    The registry stores FULL taxonomy keys and objectiveRouter matches the most specific key first, so short keys
+--    like 'trout.rainbow' would never match. These are the keys in lib/strike/config/fishing-taxonomy.ts.
 INSERT INTO agent_registry (agent_code, taxonomy_keys, geo_scope, data_source_url, requires_key, status)
 VALUES (
   'OUTDOOR_USGS_STREAMFLOW_NEAR',
-  ARRAY['salmon.king', 'salmon.sockeye', 'trout.rainbow', 'trout.brown'],
+  ARRAY['salmon.king.river_migration', 'salmon.sockeye.river_migration', 'trout.rainbow.fly_fishing', 'trout.brown.fly_fishing'],
   'national',
   'https://waterservices.usgs.gov/nwis/iv/?format=json&sites={usgs_gauge_ids}&parameterCd=00060&siteStatus=active',
   false, 'live'
 )
-ON CONFLICT (agent_code) DO NOTHING;
+ON CONFLICT (agent_code) DO UPDATE SET taxonomy_keys = EXCLUDED.taxonomy_keys;
 
 UPDATE agent_registry
 SET taxonomy_keys = ARRAY(
@@ -77,7 +79,7 @@ WHERE agent_code = 'OUTDOOR_USGS_STREAMFLOW_STATE';
 
 UPDATE agent_registry
 SET taxonomy_keys = ARRAY(
-  SELECT DISTINCT k FROM unnest(taxonomy_keys || ARRAY['salmon.king', 'salmon.sockeye', 'trout.rainbow', 'trout.brown']) AS k
+  SELECT DISTINCT k FROM unnest(taxonomy_keys || ARRAY['salmon.king.river_migration', 'salmon.sockeye.river_migration', 'trout.rainbow.fly_fishing', 'trout.brown.fly_fishing']) AS k
 )
 WHERE agent_code = 'OUTDOOR_WINDY_API';
 

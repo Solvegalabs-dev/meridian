@@ -99,3 +99,33 @@ describe('the loaders ask for source_detail', () => {
     expect(read('lib/strike/signalChips.ts')).toContain("recorded_at, source_detail'")
   })
 })
+
+describe('registry taxonomy keys written by the migration', () => {
+  // The router matches the most specific key first and stops at the first level with candidates, so only the full
+  // keys in the fishing taxonomy can match. A short key like 'trout.rainbow' would silently never match.
+  const written = Array.from(code.matchAll(/'((?:salmon|trout)\.[a-z_.]+)'/g)).map(m => m[1])
+
+  it('writes the four full fishing keys, and every key it writes is a fishing taxonomy key', () => {
+    expect(written.length).toBeGreaterThan(0)
+    for (const k of written) expect(Object.keys(FISHING_TAXONOMY), k).toContain(k)
+    expect(Array.from(new Set(written)).sort()).toEqual(Object.keys(FISHING_TAXONOMY).sort())
+  })
+
+  it('writes them for both the nearby-gauge streamflow agent and wind', () => {
+    const insert = code.slice(code.indexOf('INSERT INTO agent_registry'), code.indexOf('UPDATE agent_registry'))
+    const wind = code.slice(code.indexOf("WHERE agent_code = 'OUTDOOR_USGS_STREAMFLOW_STATE'"))
+    for (const k of Object.keys(FISHING_TAXONOMY)) {
+      expect(insert, k).toContain(`'${k}'`)
+      expect(wind, k).toContain(`'${k}'`)
+    }
+  })
+
+  it('re-running cannot duplicate keys: the insert upserts and the append is a DISTINCT union', () => {
+    expect(code).toMatch(/INSERT INTO agent_registry[\s\S]*ON CONFLICT \(agent_code\) DO UPDATE SET taxonomy_keys = EXCLUDED\.taxonomy_keys/)
+    expect(code).toMatch(/SELECT DISTINCT k FROM unnest\(taxonomy_keys \|\| ARRAY\[/)
+  })
+
+  it('still removes the fishing keys from the state-level agent', () => {
+    expect(code).toMatch(/NOT LIKE 'salmon%' AND k NOT LIKE 'trout%'[\s\S]*OUTDOOR_USGS_STREAMFLOW_STATE/)
+  })
+})
