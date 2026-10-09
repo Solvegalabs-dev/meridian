@@ -107,12 +107,19 @@ describe('labeled values with units', () => {
   })
 
   it('the evidence block never contains a bare number for an unknown-unit agent', () => {
-    const e = buildEvidence({ readings: [reading({ agent_key: 'OUTDOOR_NOAA_BAROMETRIC', observed_value: 1013 })], signals: [], now: NOW })
+    const e = buildEvidence({ readings: [reading({ agent_key: 'OUTDOOR_NOAA_DROUGHT_STATE', observed_value: 1013 })], signals: [], now: NOW })
     expect(e.count).toBe(1) // it is evidence that something was recorded
     const text = e.lines.join('\n')
     expect(text).not.toContain('1013')
     expect(text).toContain('value not shown because its unit is not available')
-    expect(text.toLowerCase()).toContain('barometric pressure')
+    expect(text.toLowerCase()).toContain('drought')
+  })
+
+  it('an old barometric row (a percent change from the retired endpoint) has no unit and is not counted', () => {
+    const e = buildEvidence({ readings: [reading({ agent_key: 'OUTDOOR_NOAA_BAROMETRIC', observed_value: 3.2 })], signals: [], now: NOW })
+    expect(e.count).toBe(0)
+    expect(e.lines.join(' ')).not.toContain('3.2')
+    expect(e.lines.join(' ')).toContain('value not shown because its unit is not available')
   })
 
   it('every listed reading line has a unit and an age', () => {

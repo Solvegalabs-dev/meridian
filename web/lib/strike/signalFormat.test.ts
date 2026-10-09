@@ -11,7 +11,8 @@ describe('groups are keyed on the full agent key', () => {
   it('the hatch score is not Wind, and water temperature is not streamflow', () => {
     expect(agentGroup('OUTDOOR_HATCH_WINDOW').label).toBe('Hatch window')
     expect(agentGroup('OUTDOOR_USGS_WATER_TEMP').label).toBe('Water temperature')
-    expect(agentGroup('OUTDOOR_USGS_STREAMFLOW_STATE').label).toBe('Streamflow')
+    expect(agentGroup('OUTDOOR_USGS_STREAMFLOW_STATE').label).toBe('State streamflow')
+    expect(agentGroup('OUTDOOR_USGS_STREAMFLOW_NEAR').label).toBe('Streamflow')
     expect(agentGroup('OUTDOOR_NOAA_TEMP').label).toBe('Air temperature')
     expect(agentGroup('OUTDOOR_WINDY_API').label).toBe('Wind')
     expect(agentGroup('OUTDOOR_MOON_PHASE').label).toBe('Moon Phase')
@@ -22,7 +23,8 @@ describe('groups are keyed on the full agent key', () => {
     for (const key of Object.keys(AGENTS)) {
       const label = agentGroup(key).label
       if (label === 'Wind') expect(key).toBe('OUTDOOR_WINDY_API')
-      if (label === 'Streamflow') expect(key).toBe('OUTDOOR_USGS_STREAMFLOW_STATE')
+      if (label === 'Streamflow') expect(key).toBe('OUTDOOR_USGS_STREAMFLOW_NEAR')
+      if (label === 'State streamflow') expect(key).toBe('OUTDOOR_USGS_STREAMFLOW_STATE')
       if (label === 'Water temperature') expect(key).toBe('OUTDOOR_USGS_WATER_TEMP')
       if (label === 'Air temperature') expect(key).toBe('OUTDOOR_NOAA_TEMP')
     }

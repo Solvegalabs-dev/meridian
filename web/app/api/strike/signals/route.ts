@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
   // Columns: id, agent_key, objective_id, observed_value (numeric), source, recorded_at
   const { data, error } = await supabase
     .from('agent_signal_history')
-    .select('id, agent_key, objective_id, observed_value, source, recorded_at')
+    .select('id, agent_key, objective_id, observed_value, source, recorded_at, source_detail')
     .eq('objective_id', objectiveId)
     .order('recorded_at', { ascending: false })
     .limit(50)

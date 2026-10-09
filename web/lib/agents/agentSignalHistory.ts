@@ -1,4 +1,5 @@
 import { SupabaseClient } from '@supabase/supabase-js'
+import type { SourceDetail } from '@/lib/strike/signalFormat'
 
 // Applied in sweep synthesis whenever a signal value is estimated, not observed.
 // See Intelligence Integrity Standard: estimated values are never presented as confirmed.
@@ -41,13 +42,16 @@ export async function recordObservedSignal(
   supabase: SupabaseClient,
   agentKey: string,
   objectiveId: string | undefined,
-  value: number
+  value: number,
+  // Where the reading came from (gauge name and distance, forecast, station). Left out when the agent has none.
+  detail?: SourceDetail
 ): Promise<void> {
   await supabase.from('agent_signal_history').insert({
     agent_key: agentKey,
     objective_id: objectiveId ?? null,
     observed_value: value,
     source: 'observed',
+    ...(detail ? { source_detail: detail } : {}),
   })
 }
 
@@ -140,9 +144,10 @@ export async function recordAndCheckSignal(
   supabase: SupabaseClient,
   agentKey: string,
   objectiveId: string | undefined,
-  value: number
+  value: number,
+  detail?: SourceDetail
 ): Promise<void> {
-  await recordObservedSignal(supabase, agentKey, objectiveId, value)
+  await recordObservedSignal(supabase, agentKey, objectiveId, value, detail)
   if (objectiveId) {
     await checkCrossAgentCorrelation(supabase, objectiveId)
   }

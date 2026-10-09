@@ -29,7 +29,7 @@ describe('Signals tab (Strawberry-style data)', () => {
     expect(html).toContain('Water temperature')
     expect(html).toContain('45.5 F')
     expect(html).toContain('(7.5 C)')
-    expect(html).toContain('Streamflow')
+    expect(html).toContain('State streamflow')
     expect(html).toContain('2,490 cfs')
   })
 

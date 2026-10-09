@@ -3,7 +3,7 @@
 // and the brief prompt use.
 import {
   agentGroup, agentKind, agentLabel, agentNote, displayValue, isPlaceholderReading, moonDisplay, trendArrow,
-  type MoonDisplay,
+  provenance, type MoonDisplay, type SourceDetail,
 } from './signalFormat'
 
 export type Signal = {
@@ -13,6 +13,8 @@ export type Signal = {
   observed_value: number | null
   source: string
   recorded_at: string
+  // Where the reading came from (gauge name and distance, forecast, station). Null on old rows.
+  source_detail?: SourceDetail
 }
 
 export type SignalGroup = { label: string; icon: string; signals: Signal[] }
@@ -62,10 +64,14 @@ export function cardModel(group: SignalGroup): CardModel {
   const latestKey = latest?.agent_key ?? ''
   const kind = agentKind(latestKey)
 
-  // Trend and sparkline use the same agent as the headline value, usable readings only, so a placeholder zero or
-  // another agent's number never draws a line.
+  // Trend and sparkline use the same series as the headline value, usable readings only, so a placeholder zero,
+  // another agent's number, or an old reading from a different gauge never draws a line.
+  const sameSeries = (s: Signal) =>
+    s.agent_key === latestKey
+    && provenance(s.agent_key, s.source_detail) === provenance(latestKey, latest?.source_detail)
+    && (s.source_detail?.site_no ?? null) === (latest?.source_detail?.site_no ?? null)
   const sameAgent = signals
-    .filter(s => s.agent_key === latestKey && !isPlaceholderReading(s))
+    .filter(s => sameSeries(s) && !isPlaceholderReading(s))
     .slice(0, SHOWN)
   const newestFirst = sameAgent.map(s => Number(s.observed_value))
 
@@ -78,7 +84,7 @@ export function cardModel(group: SignalGroup): CardModel {
       const m = moonDisplay(v, new Date(s.recorded_at), previous ? Number(previous.observed_value) : null)
       return { ...base, text: m.headline, noData: false }
     }
-    const d = displayValue(s.agent_key, v)
+    const d = displayValue(s.agent_key, v, s.source_detail)
     return { ...base, text: d.primary, secondary: d.secondary, noData: false }
   })
 
@@ -90,21 +96,21 @@ export function cardModel(group: SignalGroup): CardModel {
       const previous = signals.slice(1).find(p => p.agent_key === latestKey && !isPlaceholderReading(p))
       header = { kind: 'moon', moon: moonDisplay(v, new Date(latest.recorded_at), previous ? Number(previous.observed_value) : null), estimated }
     } else {
-      const d = displayValue(latestKey, v)
+      const d = displayValue(latestKey, v, latest.source_detail)
       header = { kind: 'value', primary: d.primary, secondary: d.secondary, estimated }
     }
   }
 
   const label = group.label
-  const full = latestKey ? agentLabel(latestKey) : ''
+  const full = latestKey ? agentLabel(latestKey, latest?.source_detail) : ''
   const subtitle = full && full.toLowerCase() !== label.toLowerCase() && agentGroup(latestKey).label === label ? full : null
 
   return {
     label,
     icon: group.icon,
     subtitle,
-    note: latestKey ? agentNote(latestKey) : null,
-    help: latestKey === 'OUTDOOR_USGS_STREAMFLOW_STATE' ? CFS_HELP : null,
+    note: latestKey ? agentNote(latestKey, latest?.source_detail) : null,
+    help: latestKey === 'OUTDOOR_USGS_STREAMFLOW_STATE' || latestKey === 'OUTDOOR_USGS_STREAMFLOW_NEAR' ? CFS_HELP : null,
     scale: latestKey === 'OUTDOOR_HATCH_WINDOW' ? HATCH_SCALE : null,
     header,
     trend: trendArrow(newestFirst),

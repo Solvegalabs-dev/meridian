@@ -175,7 +175,8 @@ describe('a brief with evidence', () => {
     const prompt = promptSent()
     expect(prompt).toContain('State-level streamflow (not this water): 2,490 cfs, USGS observed')
     expect(prompt).not.toMatch(/- Streamflow: /)
-    expect(prompt).toContain('5. A reference-gauge or state-level reading must never be described as the condition at this spot.')
+    expect(prompt).toContain('5. A reference-gauge, distant-gauge or state-level reading must never be described as the condition at this spot.')
+    expect(prompt).toContain('may be stated as "the nearest USGS gauge, <name>, <n> miles from your spot, reads ..."')
   })
 
   it('with a state-level streamflow reading and a water temperature, it still says there is no streamflow reading for this water', async () => {

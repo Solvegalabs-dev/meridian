@@ -34,10 +34,11 @@ export function buildSignalChips(readings: Reading[], now: Date = new Date()): S
 
   const chips: SignalChip[] = []
   for (const [agentKey, list] of Array.from(byAgent.entries())) {
-    const def = agentChip(agentKey)
-    if (!def) continue
     const sorted = list.slice().sort((a, b) => Date.parse(b.recorded_at) - Date.parse(a.recorded_at))
     const latest = sorted[0]
+    // Water temperature and flow get a chip only when the gauge is near the spot (see signalFormat).
+    const def = agentChip(agentKey, latest.source_detail)
+    if (!def) continue
     const value = Number(latest.observed_value)
     if (agentKind(agentKey) === 'moon') {
       const previous = sorted[1] ? Number(sorted[1].observed_value) : null
@@ -49,7 +50,7 @@ export function buildSignalChips(readings: Reading[], now: Date = new Date()): S
       continue
     }
     chips.push({
-      label: def.label, value: def.text ? def.text(value) : displayValue(agentKey, value).primary, status: 'ok',
+      label: def.label, value: def.text ? def.text(value) : displayValue(agentKey, value, latest.source_detail).primary, status: 'ok',
       recorded_at: latest.recorded_at,
     })
   }
@@ -61,7 +62,7 @@ export function buildSignalChips(readings: Reading[], now: Date = new Date()): S
 export async function loadSignalChips(supabase: SupabaseClient, objectiveId: string, now: Date = new Date()): Promise<SignalChip[]> {
   const { data } = await supabase
     .from('agent_signal_history')
-    .select('agent_key, observed_value, source, recorded_at')
+    .select('agent_key, observed_value, source, recorded_at, source_detail')
     .eq('objective_id', objectiveId)
     .order('recorded_at', { ascending: false })
     .limit(80)
