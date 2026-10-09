@@ -21,6 +21,9 @@ const PROFILE = {
 }
 
 const FLOW = { agent_key: 'OUTDOOR_USGS_STREAMFLOW_STATE', observed_value: 2490, source: 'observed', recorded_at: '2026-10-07T12:00:00Z' }
+// Spot-level evidence. The state-level flow and the reference-gauge temperature are labeled for the model but are not
+// counted as evidence (FF-099), so tests that need the evidence path include this.
+const MOON = { agent_key: 'OUTDOOR_MOON_PHASE', observed_value: 9, source: 'observed', recorded_at: '2026-10-08T06:00:00Z' }
 const TEMP = { agent_key: 'OUTDOOR_USGS_WATER_TEMP', observed_value: 7.5, source: 'observed', recorded_at: '2026-10-08T06:00:00Z' }
 
 function reply(fields: Record<string, unknown> = {}) {
@@ -132,7 +135,7 @@ describe('a brief with no evidence', () => {
 
 describe('a brief with evidence', () => {
   it('uses the stronger model and keeps the verdict, tier and chips the model gave', async () => {
-    const db = setup({ readings: [FLOW, TEMP] })
+    const db = setup({ readings: [FLOW, TEMP, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     expect(modelSent()).toBe('claude-sonnet-4-6')
     expect(write(db)).toMatchObject({ go_no_go: 'GO', confidence_tier: 'T1', lead_signal: 'Flow is steady' })
@@ -141,15 +144,15 @@ describe('a brief with evidence', () => {
   })
 
   it('the prompt carries labeled values with units', async () => {
-    setup({ readings: [FLOW, TEMP] })
+    setup({ readings: [FLOW, TEMP, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     const prompt = promptSent()
     expect(prompt).toContain('State-level streamflow (not this water): 2,490 cfs, USGS observed')
-    expect(prompt).toContain('Water temperature: 45.5 F (7.5 C), USGS observed')
+    expect(prompt).toContain('Water temperature (reference gauge, not this water): 45.5 F (7.5 C), USGS observed')
   })
 
   it('the prompt carries the typical-versus-confirmed rule', async () => {
-    setup({ readings: [FLOW] })
+    setup({ readings: [FLOW, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     const prompt = promptSent()
     expect(prompt).toContain('CONFIRMED: only what the EVIDENCE block shows')
@@ -158,33 +161,53 @@ describe('a brief with evidence', () => {
   })
 
   it('the prompt carries the units rule and says a missing category is named in one clause', async () => {
-    setup({ readings: [FLOW] })
+    setup({ readings: [FLOW, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     const prompt = promptSent()
     expect(prompt).toContain('never give a number without its unit')
-    expect(prompt).toContain('MISSING DATA: no water temperature reading yet; no streamflow reading for this water yet.')
+    expect(prompt).toContain('MISSING DATA: no water temperature reading for this water yet; no streamflow reading for this water yet.')
     expect(prompt).toContain('say so in one clause')
   })
 
   it('a state-level streamflow reading is labeled as not this water, and the rule forbids calling it the flow of this spot', async () => {
-    setup({ readings: [FLOW, TEMP] })
+    setup({ readings: [FLOW, TEMP, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     const prompt = promptSent()
     expect(prompt).toContain('State-level streamflow (not this water): 2,490 cfs, USGS observed')
     expect(prompt).not.toMatch(/- Streamflow: /)
-    expect(prompt).toContain('5. A state-level reading must never be described as the flow of this spot.')
+    expect(prompt).toContain('5. A reference-gauge or state-level reading must never be described as the condition at this spot.')
   })
 
   it('with a state-level streamflow reading and a water temperature, it still says there is no streamflow reading for this water', async () => {
-    setup({ readings: [FLOW, TEMP] })
+    setup({ readings: [FLOW, TEMP, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     // The evidence block's own line (rule 4 below it also has an example sentence, so match from the line start).
     const line = promptSent().match(/^MISSING DATA: .*$/m)?.[0]
-    expect(line).toBe('MISSING DATA: no streamflow reading for this water yet.')
+    // The reference-gauge temperature does not satisfy the water temperature clause either.
+    expect(line).toBe('MISSING DATA: no water temperature reading for this water yet; no streamflow reading for this water yet.')
+  })
+
+  it('a reference-gauge water temperature is labeled as such and cannot be described as this water', async () => {
+    setup({ readings: [TEMP, MOON] })
+    await generateStrikeBrief('obj-1', 'u1')
+    const prompt = promptSent()
+    expect(prompt).toContain('Water temperature (reference gauge, not this water): 45.5 F (7.5 C)')
+    expect(prompt).toContain('must never be described as the condition at this spot')
+    expect(prompt).toContain('no water temperature reading for this water')
+  })
+
+  it('only reference-gauge and state-level readings: no evidence, so the banner path and the cheap model', async () => {
+    const hatch = { agent_key: 'OUTDOOR_HATCH_WINDOW', observed_value: 0.33, source: 'observed', recorded_at: '2026-10-08T06:00:00Z' }
+    const db = setup({ readings: [FLOW, TEMP, hatch] })
+    await generateStrikeBrief('obj-1', 'u1')
+    expect(write(db)?.go_no_go).toBe('MONITOR')
+    expect((write(db)?.synthesis as string).startsWith(ZERO_EVIDENCE_BANNER)).toBe(true)
+    expect(modelSent()).toBe('claude-haiku-4-5-20251001')
+    expect(promptSent()).toContain('EVIDENCE (last 14 days): NONE')
   })
 
   it('the prompt lists only the objective\'s own names as usable place names', async () => {
-    setup({ readings: [FLOW], spotName: 'Lower pool' })
+    setup({ readings: [FLOW, MOON], spotName: 'Lower pool' })
     await generateStrikeBrief('obj-1', 'u1')
     const prompt = promptSent()
     expect(prompt).toContain('Strawberry trout')
@@ -195,7 +218,7 @@ describe('a brief with evidence', () => {
   })
 
   it('no longer asks the model to place water "by drainage position relative to these coordinates", and sends no coordinates', async () => {
-    setup({ readings: [FLOW] })
+    setup({ readings: [FLOW, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     const prompt = promptSent()
     expect(prompt).not.toContain('drainage position')
@@ -206,7 +229,7 @@ describe('a brief with evidence', () => {
   })
 
   it('background material is labeled as not evidence', async () => {
-    setup({ readings: [FLOW] })
+    setup({ readings: [FLOW, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     expect(promptSent()).toContain('BACKGROUND, NOT EVIDENCE')
   })
@@ -238,7 +261,7 @@ describe('a no-evidence brief is replaced once evidence exists', () => {
   const staleZero = { id: 'old', synthesis: `${ZERO_EVIDENCE_BANNER}\n\nTypical for this time of year.`, go_no_go: 'MONITOR', confidence_tier: 'T4' }
 
   it('regenerates when the stored brief carries the banner and a sweep has since produced readings', async () => {
-    const db = setup({ existingBrief: staleZero, readings: [FLOW] })
+    const db = setup({ existingBrief: staleZero, readings: [FLOW, MOON] })
     await generateStrikeBrief('obj-1', 'u1')
     expect(h.create).toHaveBeenCalledTimes(1)
     expect(write(db)?.synthesis as string).not.toContain(ZERO_EVIDENCE_BANNER)
@@ -252,7 +275,7 @@ describe('a no-evidence brief is replaced once evidence exists', () => {
   })
 
   it('keeps an ordinary stored brief as before, without even looking for evidence', async () => {
-    setup({ existingBrief: { id: 'normal', synthesis: 'A normal brief.', go_no_go: 'GO' }, readings: [FLOW] })
+    setup({ existingBrief: { id: 'normal', synthesis: 'A normal brief.', go_no_go: 'GO' }, readings: [FLOW, MOON] })
     const brief = await generateStrikeBrief('obj-1', 'u1')
     expect(h.create).not.toHaveBeenCalled()
     expect((brief as unknown as { id: string }).id).toBe('normal')

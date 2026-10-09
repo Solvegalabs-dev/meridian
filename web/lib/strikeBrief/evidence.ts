@@ -2,9 +2,10 @@
 // only here: agent readings (agent_signal_history) and signals tagged to the objective in the last 14 days.
 // Readings are handed over as labeled values with units, never as bare numbers.
 //
-// formatReading is the small shared helper for that. (FF-099 had not merged when this was written. If it adds its
-// own helpers, point them here or fold the two together: the unit table below is the single place to edit.)
+// The unit table and formatReading live in lib/strike/signalFormat.ts (FF-099) so the Signals tab, the chips and
+// this prompt show the same text. They are re-exported here so existing imports keep working.
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { isUsableReading, isSpotLevel, formatReading, readingLabel, type Reading } from '@/lib/strike/signalFormat'
 
 export const EVIDENCE_WINDOW_DAYS = 14
 
@@ -13,24 +14,10 @@ export const ZERO_EVIDENCE_BANNER = 'No data collected yet. This is typical for 
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-export type Reading = {
-  agent_key: string
-  observed_value: number | string | null
-  source: string | null
-  recorded_at: string
-}
+export type { Reading } from '@/lib/strike/signalFormat'
+export { isUsableReading, describeMoon, formatReading, readingLabel } from '@/lib/strike/signalFormat'
 
 export type TaggedSignal = { id?: string; created_at: string }
-
-// An estimated reading of exactly 0 is the temperature agent's placeholder, not a measurement (FF-099).
-// It is not evidence, and it is not counted.
-export function isUsableReading(r: Reading): boolean {
-  if (r.observed_value === null || r.observed_value === '') return false
-  const value = Number(r.observed_value)
-  if (!Number.isFinite(value)) return false
-  if (r.source === 'estimated' && value === 0) return false
-  return true
-}
 
 function withinWindow(iso: string, now: Date): boolean {
   const t = Date.parse(iso)
@@ -38,87 +25,20 @@ function withinWindow(iso: string, now: Date): boolean {
   return now.getTime() - t <= EVIDENCE_WINDOW_DAYS * DAY_MS && t <= now.getTime() + DAY_MS
 }
 
-// ─── Moon ────────────────────────────────────────────────────────────────────
-
-const SYNODIC_DAYS = 29.530588853
-// A known new moon: 2000-01-06 18:14 UTC.
-const NEW_MOON_EPOCH_MS = Date.UTC(2000, 0, 6, 18, 14)
-
-function moonAgeDays(at: Date): number {
-  const age = ((at.getTime() - NEW_MOON_EPOCH_MS) / DAY_MS) % SYNODIC_DAYS
-  return age < 0 ? age + SYNODIC_DAYS : age
-}
-
-// The agent stores percent illuminated only, which cannot say waxing or waning. The direction and the days to the
-// next new or full moon come from the calendar date, so the model is never left to guess them from a bare number.
-export function describeMoon(percentIlluminated: number, at: Date): string {
-  const age = moonAgeDays(at)
-  const waxing = age < SYNODIC_DAYS / 2
-  const pct = `${Math.round(percentIlluminated)}% illuminated`
-  if (waxing) {
-    const days = Math.max(0, Math.round(SYNODIC_DAYS / 2 - age))
-    return `${pct}, waxing (full moon in about ${days} ${days === 1 ? 'day' : 'days'})`
-  }
-  const days = Math.max(0, Math.round(SYNODIC_DAYS - age))
-  return `${pct}, waning (new moon in about ${days} ${days === 1 ? 'day' : 'days'})`
-}
-
-// ─── Readings with units ─────────────────────────────────────────────────────
-
-const fmt = (n: number, digits = 1) => String(Number(n.toFixed(digits)))
-const grouped = (n: number) => Math.round(n).toLocaleString('en-US')
-
-type Formatter = (value: number, ctx: { observed: boolean; recordedAt: Date }) => string
-
-// The one place that says what each agent's stored number means. An agent that is not listed has no known unit,
-// so its number is never shown (see formatReading). USGS reports water temperature in degrees Celsius.
-const FORMATTERS: Record<string, { label: string; format: Formatter }> = {
-  OUTDOOR_MOON_PHASE: { label: 'Moon', format: (v, c) => describeMoon(v, c.recordedAt) },
-  OUTDOOR_USGS_WATER_TEMP: {
-    label: 'Water temperature',
-    format: v => `${fmt(v * 9 / 5 + 32)} F (${fmt(v)} C)`,
-  },
-  // A state-level figure: it is the same kind of number for every objective in the state, so it says nothing
-  // about this water. The label says so, and the prompt forbids describing it as this spot's flow.
-  OUTDOOR_USGS_STREAMFLOW_STATE: { label: 'State-level streamflow (not this water)', format: v => `${grouped(v)} cfs` },
-  OUTDOOR_USGS_DISSOLVED_O2: { label: 'Dissolved oxygen', format: v => `${fmt(v)} mg/L` },
-  OUTDOOR_SALMON_PROGRESSION: { label: 'Salmon run progress', format: v => `${fmt(v, 0)}% of the annual run` },
-  OUTDOOR_USACE_BONNEVILLE: { label: 'Bonneville fish count', format: v => `${grouped(v)} fish per day` },
-  OUTDOOR_ADFG_SONAR: { label: 'ADF&G sonar count', format: v => `${grouped(v)} fish per day` },
-}
-
-function sourceLabel(agentKey: string, observed: boolean): string {
-  const who = agentKey.startsWith('OUTDOOR_USGS') ? 'USGS ' : ''
-  return observed ? `${who}observed` : `${who}estimated (a projection, not a measurement)`
-}
-
-export function readingLabel(agentKey: string): string {
-  return FORMATTERS[agentKey]?.label ?? agentKey.replace(/^OUTDOOR_/, '').replace(/_/g, ' ').toLowerCase()
-}
-
-// "Water temperature: 45.5 F (7.5 C), USGS observed". Null when the agent has no known unit: a number the model
-// cannot give a unit to is not handed over at all.
-export function formatReading(agentKey: string, value: number, opts: { source?: string | null; recordedAt?: string | Date } = {}): string | null {
-  const entry = FORMATTERS[agentKey]
-  if (!entry || !Number.isFinite(value)) return null
-  const observed = opts.source !== 'estimated'
-  const recordedAt = opts.recordedAt instanceof Date ? opts.recordedAt : new Date(opts.recordedAt ?? Date.now())
-  return `${entry.label}: ${entry.format(value, { observed, recordedAt })}, ${sourceLabel(agentKey, observed)}`
-}
-
 // Data categories a brief should say are missing when they have no reading for THIS spot, by domain. `keys` are
-// the agents that count as a spot-level reading. Streamflow has none yet: OUTDOOR_USGS_STREAMFLOW_STATE is a
-// state-level figure and does not satisfy it, so a fishing brief says there is no streamflow reading for this
-// water until a spot-level agent exists (add its key here).
+// the agents that count as a spot-level reading. Water temperature and streamflow have none yet: the water
+// temperature agent reads a fixed reference gauge and the streamflow agent a state-wide list, so neither satisfies
+// it, and a fishing brief says there is no reading for this water until a spot-level agent exists (add its key here).
 const EXPECTED: Record<string, Array<{ keys: string[]; name: string }>> = {
   fishing: [
-    { keys: ['OUTDOOR_USGS_WATER_TEMP'], name: 'water temperature reading' },
+    { keys: [], name: 'water temperature reading for this water' },
     { keys: [], name: 'streamflow reading for this water' },
   ],
 }
 
 export type Evidence = {
-  // Usable readings plus tagged signals in the window. Zero means the brief has nothing to confirm.
+  // Spot-level readings plus tagged signals in the window. Reference-gauge and state-level readings are handed to
+  // the model as labeled lines but are not counted. Zero means the brief has nothing to confirm.
   count: number
   // One labeled line per agent, newest reading, with its unit and age.
   lines: string[]
@@ -160,7 +80,8 @@ export function buildEvidence(input: { readings: Reading[]; signals: TaggedSigna
   const expected = EXPECTED[input.domain ?? ''] ?? []
   const missing = expected.filter(e => !e.keys.some(key => latest.has(key))).map(e => e.name)
 
-  return { count: usable.length + signals.length, lines, missing }
+  const spotReadings = usable.filter(r => isSpotLevel(r.agent_key))
+  return { count: spotReadings.length + signals.length, lines, missing }
 }
 
 // Loads the objective's own readings and tagged signals for the window. Both are scoped to this objective (and the

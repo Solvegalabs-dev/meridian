@@ -2,48 +2,8 @@
 
 import { useState, useEffect, type ReactNode } from 'react'
 import { NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
-
-type Signal = {
-  id: string
-  agent_key: string
-  objective_id: string
-  observed_value: number | null
-  source: string
-  recorded_at: string
-}
-
-type SignalGroup = {
-  label: string
-  icon: string
-  signals: Signal[]
-}
-
-function getGroup(agentKey: string): { label: string; icon: string } {
-  const k = agentKey.toUpperCase()
-  if (k.includes('MOON'))    return { label: 'Moon Phase',   icon: '🌙' }
-  if (k.includes('NOAA_TEMP')) return { label: 'Temperature', icon: '🌡' }
-  if (k.includes('DROUGHT')) return { label: 'Drought',      icon: '🏜' }
-  if (k.includes('FIRE'))    return { label: 'Fire Risk',    icon: '🔥' }
-  if (k.includes('WINDY') || k.includes('WIND')) return { label: 'Wind', icon: '💨' }
-  if (k.includes('USGS'))    return { label: 'Streamflow',   icon: '💧' }
-  if (k.includes('DWR'))     return { label: 'Herd / Permits', icon: '🦌' }
-  if (k.includes('INAT'))    return { label: 'Sightings',    icon: '👁' }
-  if (k.includes('NOAA_PRECIP')) return { label: 'Precipitation', icon: '🌧' }
-  if (k.includes('TERRAIN')) return { label: 'Terrain Intel', icon: '⛰' }
-  if (k.includes('HATCH') || k.includes('FISH')) return { label: 'Fishing', icon: '🎣' }
-  if (k.includes('SALMON') || k.includes('USACE')) return { label: 'Salmon Run', icon: '🐟' }
-  return { label: agentKey.replace(/^OUTDOOR_/, '').replace(/_/g, ' '), icon: '📡' }
-}
-
-function groupSignals(signals: Signal[]): SignalGroup[] {
-  const map = new Map<string, SignalGroup>()
-  for (const s of signals) {
-    const { label, icon } = getGroup(s.agent_key)
-    if (!map.has(label)) map.set(label, { label, icon, signals: [] })
-    map.get(label)!.signals.push(s)
-  }
-  return Array.from(map.values())
-}
+import { cardModel, groupSignals, type CardModel, type SignalGroup } from '@/lib/strike/signalCards'
+import MoonIcon from './MoonIcon'
 
 function sparklinePath(values: number[], w = 80, h = 24): string {
   if (values.length < 2) return ''
@@ -58,51 +18,75 @@ function sparklinePath(values: number[], w = 80, h = 24): string {
   return `M${pts.join(' L')}`
 }
 
+const EST_TAG = 'text-xs text-amber-300 border border-amber-400 rounded px-1 ml-2 align-middle'
+
 function SignalCard({ group }: { group: SignalGroup }) {
   const [expanded, setExpanded] = useState(false)
-  const latest = group.signals[0]
-  const values = group.signals
-    .slice(0, 5)
-    .map(s => Number(s.observed_value))
-    .filter(v => !isNaN(v))
-    .reverse()
-
-  const latestVal = latest?.observed_value != null ? Number(latest.observed_value).toFixed(2) : '—'
-  const trend = values.length >= 2
-    ? values[values.length - 1] > values[0] ? '↑' : values[values.length - 1] < values[0] ? '↓' : '→'
-    : ''
+  const m: CardModel = cardModel(group)
+  const h = m.header
 
   return (
     <div className="bg-slate-800 rounded-xl mb-2 overflow-hidden">
       <button
         onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
+        aria-expanded={expanded}
+        className="w-full flex items-center gap-3 px-4 py-3 min-h-[44px] text-left"
       >
-        <span className="text-lg">{group.icon}</span>
+        {h.kind === 'moon'
+          ? <MoonIcon percent={h.moon.percent} waxing={h.moon.waxing} size={40} />
+          : <span className="text-lg">{m.icon}</span>}
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-white">{group.label}</div>
-          <div className="text-xs text-slate-400">
-            {group.signals.length} reading{group.signals.length !== 1 ? 's' : ''}
+          <div className="text-sm font-medium text-white">{m.label}</div>
+          {m.subtitle && <div className="text-xs text-slate-300">{m.subtitle}</div>}
+          <div className="text-xs text-slate-300">
+            {m.readingCount} reading{m.readingCount !== 1 ? 's' : ''}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-mono text-slate-200">{latestVal}</span>
-          {trend && (
-            <span className={`text-xs ${
-              trend === '↑' ? 'text-emerald-400' : trend === '↓' ? 'text-amber-400' : 'text-slate-400'
-            }`}>{trend}</span>
+        <div className="text-right">
+          {h.kind === 'nodata' && <span className="text-sm text-slate-200">No data</span>}
+          {h.kind === 'value' && (
+            <span className="text-sm font-mono text-slate-100">
+              {h.primary}
+              {h.secondary && <span className="text-xs text-slate-300 ml-1">{h.secondary}</span>}
+              {h.estimated && <span className={EST_TAG}>estimated</span>}
+            </span>
           )}
-          <span className="text-slate-500 text-xs ml-1">{expanded ? '▲' : '▼'}</span>
+          {h.kind === 'moon' && (
+            <span className="text-sm text-slate-100">
+              {h.moon.headline}
+              {h.estimated && <span className={EST_TAG}>estimated</span>}
+            </span>
+          )}
+          {m.trend && (
+            <span className={`text-sm ml-2 ${
+              m.trend === '↑' ? 'text-emerald-400' : m.trend === '↓' ? 'text-amber-400' : 'text-slate-300'
+            }`}>{m.trend}</span>
+          )}
+          <span className="text-slate-300 text-xs ml-2">{expanded ? '▲' : '▼'}</span>
         </div>
       </button>
 
+      {(m.note || m.help) && (
+        <div className="px-4 pb-3 -mt-1 text-xs text-slate-300">
+          {m.note && <div>{m.note}</div>}
+          {m.help && <div>{m.help}</div>}
+        </div>
+      )}
+
       {expanded && (
         <div className="px-4 pb-4">
-          {values.length >= 2 && (
+          {h.kind === 'moon' && (
+            <div className="mb-3 text-sm text-slate-100">
+              {h.moon.detail && <div>{h.moon.detail}</div>}
+              {h.moon.note && <div>{h.moon.note}</div>}
+            </div>
+          )}
+          {m.scale && <div className="mb-3 text-xs text-slate-300">{m.scale}</div>}
+          {m.spark.length >= 2 && (
             <div className="mb-3">
               <svg viewBox="0 0 80 24" className="w-full h-8" preserveAspectRatio="none">
                 <path
-                  d={sparklinePath(values)}
+                  d={sparklinePath(m.spark)}
                   fill="none"
                   stroke="#3b82f6"
                   strokeWidth="1.5"
@@ -113,15 +97,17 @@ function SignalCard({ group }: { group: SignalGroup }) {
             </div>
           )}
           <div className="space-y-1">
-            {group.signals.slice(0, 5).map(s => (
-              <div key={s.id} className="flex items-center justify-between text-xs">
-                <span className="text-slate-400 font-mono">
-                  {new Date(s.recorded_at).toLocaleDateString('en-US', {
+            {m.rows.map(r => (
+              <div key={r.id} className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-slate-300 font-mono text-xs">
+                  {new Date(r.at).toLocaleDateString('en-US', {
                     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
                   })}
                 </span>
-                <span className="text-slate-200 font-mono">
-                  {s.observed_value != null ? Number(s.observed_value).toFixed(2) : '—'}
+                <span className="text-slate-100 font-mono text-right">
+                  {r.text}
+                  {r.secondary && <span className="text-xs text-slate-300 ml-1">{r.secondary}</span>}
+                  {r.estimated && !r.noData && <span className={EST_TAG}>estimated</span>}
                 </span>
               </div>
             ))}

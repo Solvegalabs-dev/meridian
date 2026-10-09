@@ -5,6 +5,7 @@ import { isUserInvited } from '@/lib/auth/inviteGate'
 import { resolveObjectiveTitle } from '@/lib/objectives/objectiveTitle'
 import { isCampaignUnit } from '@/lib/strike/campaignUnit'
 import { computeSweepInfo } from '@/lib/strike/sweepStatus'
+import { loadSignalChips, type SignalChip } from '@/lib/strike/signalChips'
 import RemovedObjectiveNotice from '@/components/strike/RemovedObjectiveNotice'
 import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
 import StrikeBriefClient from '@/components/strike/StrikeBriefClient'
@@ -26,21 +27,6 @@ export const dynamic = 'force-dynamic'
 
 const TIER_PCT: Record<string, number> = { T1: 90, T2: 74, T3: 55, T4: 35 }
 
-type ChipEntry = { label: string; value: string; status: 'ok' | 'warn' | 'critical' }
-const CHIP_MAP: Record<string, ChipEntry> = {
-  OUTDOOR_MOON_PHASE:            { label: 'Moon Phase (Meeus)',   value: 'Waning 34%',  status: 'ok'   },
-  OUTDOOR_NOAA_FIRE_RISK:        { label: 'NOAA Fire Risk',       value: 'Moderate',    status: 'warn' },
-  OUTDOOR_DROUGHT_MONITOR:       { label: 'NOAA Drought Monitor', value: 'D2–D3',       status: 'warn' },
-  OUTDOOR_NOAA_DROUGHT_STATE:    { label: 'NOAA Drought Monitor', value: 'D2–D3',       status: 'warn' },
-  OUTDOOR_USGS_STREAMFLOW_STATE: { label: 'USGS Streamflow',      value: 'Below avg',   status: 'warn' },
-  OUTDOOR_WINDY_API:             { label: 'Windy.com',            value: 'NW 8mph',     status: 'ok'   },
-  OUTDOOR_DWR_HARVEST_UT:        { label: 'UDWR Herd Survey',     value: '53% target',  status: 'warn' },
-  OUTDOOR_DWR_PERMITS_UT:        { label: 'UDWR Permits',         value: 'Open',        status: 'ok'   },
-  OUTDOOR_USFS_CLOSURE:          { label: 'USFS Closure',         value: 'Active',      status: 'warn' },
-  OUTDOOR_INAT_OBSERVATIONS:     { label: 'iNaturalist',          value: 'Active',      status: 'ok'   },
-  OUTDOOR_SNOTEL_STATE:          { label: 'SNOTEL',               value: 'Monitoring',  status: 'ok'   },
-}
-
 // Priority buckets used elsewhere on this page (see the movement_windows
 // mapping below) reversed, so a collar-calibrated window (which only has a
 // priority, not a stored probability) can be slotted into the same list.
@@ -54,6 +40,7 @@ async function mapBriefRow(
   row: Record<string, unknown> | null,
   arcObjectiveId: string,
   objective: Record<string, unknown>,
+  signalChips: SignalChip[],
 ): Promise<Record<string, unknown>> {
   const today = new Date().toISOString().split('T')[0]
 
@@ -87,7 +74,7 @@ async function mapBriefRow(
             probability: PRIORITY_TO_PROBABILITY[w.priority], confidence_tier: 'T4',
           }))
         : null,
-      signal_chips: [],
+      signal_chips: signalChips,
       sources: collarAugmentation.credit ? [collarAugmentation.credit] : [],
       attribution: 'Powered by Meridian Arc',
     }
@@ -97,11 +84,6 @@ async function mapBriefRow(
   const confidencePct = TIER_PCT[tierStr] ?? 35
 
   const agentHits = (row.agent_hits as string[] | null) ?? []
-  const signalChips = agentHits
-    .filter(h => h.startsWith('OUTDOOR_') && CHIP_MAP[h])
-    .map(h => ({ label: CHIP_MAP[h].label, value: CHIP_MAP[h].value, status: CHIP_MAP[h].status }))
-    .filter((c, i, arr) => arr.findIndex(x => x.label === c.label) === i)
-
   type MvtWindow = { time?: string; reason?: string; probability?: number; confidence_tier?: string }
   const mvt = (row.movement_windows as MvtWindow[] | null) ?? []
   const timeWindows = mvt.map((w, idx, all) => {
@@ -221,7 +203,9 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   console.log('[strike/[id]] arcObjectiveId:', arcObjectiveId, 'brief found:', !!briefRow, 'time_windows:', (briefRow?.movement_windows as unknown[] | null)?.length ?? 'null')
 
-  const brief = await mapBriefRow(briefRow, arcObjectiveId, objective as Record<string, unknown>)
+  // FF-099: chips are the latest real readings, not the agents that fired on the brief day.
+  const signalChips = await loadSignalChips(supabase, arcObjectiveId)
+  const brief = await mapBriefRow(briefRow, arcObjectiveId, objective as Record<string, unknown>, signalChips)
 
   const { data: objectiveRow } = await supabase
     .from('objectives')
