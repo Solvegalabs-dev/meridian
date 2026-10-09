@@ -11,15 +11,14 @@ const r = (agent_key: string, observed_value: number | null, hoursAgo: number, s
 })
 
 describe('buildSignalChips', () => {
-  it('worded by the shared table: water, state flow, moon', () => {
+  it('worded by the shared table: state flow, moon', () => {
     const chips = buildSignalChips([
-      r('OUTDOOR_USGS_WATER_TEMP', 7.5, 1),
       r('OUTDOOR_USGS_STREAMFLOW_STATE', 2490, 2),
       r('OUTDOOR_MOON_PHASE', 9, 3),
       r('OUTDOOR_MOON_PHASE', 16, 27),
     ], NOW)
-    expect(chips.map(c => `${c.label} ${c.value}`)).toEqual(['Water 46 F', 'State flow 2,490 cfs', 'Moon 9% waning'])
-    expect(chips[2].moon).toEqual({ percent: 9, waxing: false })
+    expect(chips.map(c => `${c.label} ${c.value}`)).toEqual(['State flow 2,490 cfs', 'Moon 9% waning'])
+    expect(chips[1].moon).toEqual({ percent: 9, waxing: false })
     expect(chips.every(c => c.recorded_at)).toBe(true)
   })
 
@@ -42,23 +41,30 @@ describe('buildSignalChips', () => {
     expect(buildSignalChips([], NOW)).toEqual([])
   })
 
+  it('reference-gauge readings get no chip: water temperature, dissolved oxygen, turbidity, hatch score', () => {
+    // The agents read a fixed Alaska gauge until they use the pin's own gauge, so they are not readings of this spot.
+    const chips = buildSignalChips([
+      r('OUTDOOR_USGS_WATER_TEMP', 7.5, 1), r('OUTDOOR_USGS_DISSOLVED_O2', 9, 1),
+      r('OUTDOOR_USGS_TURBIDITY', 3, 1), r('OUTDOOR_HATCH_WINDOW', 0.33, 1),
+    ], NOW)
+    expect(chips).toEqual([])
+  })
+
   it('uses the newest real reading of an agent, skipping a newer placeholder', () => {
-    const [chip] = buildSignalChips([r('OUTDOOR_USGS_WATER_TEMP', 0, 1, 'estimated'), r('OUTDOOR_USGS_WATER_TEMP', 10, 5)], NOW)
-    expect(chip.value).toBe('50 F')
+    const [chip] = buildSignalChips([r('OUTDOOR_WINDY_API', 0, 1, 'estimated'), r('OUTDOOR_WINDY_API', 8, 5)], NOW)
+    expect(chip.value).toBe('8 mph')
   })
 
   it('readings older than the window are not "latest"', () => {
-    expect(buildSignalChips([r('OUTDOOR_USGS_WATER_TEMP', 10, 24 * 20)], NOW)).toEqual([])
+    expect(buildSignalChips([r('OUTDOOR_WINDY_API', 10, 24 * 20)], NOW)).toEqual([])
   })
 
-  it('at most five, newest data first', () => {
+  it('newest data first, never more than the maximum', () => {
     const chips = buildSignalChips([
-      r('OUTDOOR_USGS_WATER_TEMP', 7, 6), r('OUTDOOR_USGS_STREAMFLOW_STATE', 100, 5), r('OUTDOOR_MOON_PHASE', 9, 4),
-      r('OUTDOOR_HATCH_WINDOW', 0.5, 3), r('OUTDOOR_WINDY_API', 8, 2), r('OUTDOOR_USGS_DISSOLVED_O2', 8, 1),
+      r('OUTDOOR_USGS_STREAMFLOW_STATE', 100, 5), r('OUTDOOR_MOON_PHASE', 9, 4), r('OUTDOOR_WINDY_API', 8, 2),
     ], NOW)
-    expect(chips).toHaveLength(MAX_CHIPS)
-    expect(chips[0].label).toBe('Oxygen')
-    expect(chips.map(c => c.label)).not.toContain('Water')
+    expect(chips.map(c => c.label)).toEqual(['Wind', 'Moon', 'State flow'])
+    expect(chips.length).toBeLessThanOrEqual(MAX_CHIPS)
   })
 })
 

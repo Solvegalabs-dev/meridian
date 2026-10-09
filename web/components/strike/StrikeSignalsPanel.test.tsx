@@ -33,6 +33,12 @@ describe('Signals tab (Strawberry-style data)', () => {
     expect(html).toContain('2,490 cfs')
   })
 
+  it('water temperature and the hatch score say they come from a reference gauge', () => {
+    expect(html).toContain('Water temperature (reference gauge, not this water)')
+    expect(html).toContain('Hatch window score (based on a reference gauge, not this water)')
+    expect(html.split('A reference gauge, not the water at your spot.').length - 1).toBe(2)
+  })
+
   it('the streamflow card says it is state-level and defines cfs', () => {
     expect(html).toContain('State-level streamflow (not this water)')
     expect(html).toContain('A state-wide reading, not the flow at your spot.')

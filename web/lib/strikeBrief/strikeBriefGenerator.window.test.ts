@@ -75,8 +75,8 @@ const SEASON_NOT_OPEN = {
 
 // One reading a day old: enough evidence that the brief is written the normal way.
 const RECENT_READING = {
-  agent_key: 'OUTDOOR_USGS_STREAMFLOW_STATE',
-  observed_value: 2490,
+  agent_key: 'OUTDOOR_MOON_PHASE',
+  observed_value: 9,
   source: 'observed',
   recorded_at: '2026-10-02T12:00:00Z',
 }

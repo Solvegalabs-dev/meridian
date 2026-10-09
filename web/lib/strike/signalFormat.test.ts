@@ -1,7 +1,7 @@
 // FF-099: the shared table for group names, units, the moon and placeholder readings.
 import { describe, it, expect } from 'vitest'
 import {
-  AGENTS, agentGroup, displayValue, formatReading, hatchBand, isPlaceholderReading, moonDisplay, moonInfo,
+  AGENTS, agentChip, agentGroup, agentLabel, agentNote, displayValue, isSpotLevel, formatReading, hatchBand, isPlaceholderReading, moonDisplay, moonInfo,
   moonNightNote, moonPhaseName, trendArrow,
 } from './signalFormat'
 
@@ -32,7 +32,37 @@ describe('groups are keyed on the full agent key', () => {
 
   it('an unlisted key falls back to its cleaned name, never to a guessed group', () => {
     expect(agentGroup('OUTDOOR_WINDOW_SOMETHING').label).toBe('Window something')
-    expect(agentGroup('OUTDOOR_USGS_TURBIDITY').label).toBe('Usgs turbidity')
+    expect(agentGroup('OUTDOOR_SOMETHING_NEW').label).toBe('Something new')
+  })
+})
+
+describe('reference-gauge labels (until the agents use the own gauge of the pin)', () => {
+  const REFERENCE_NOTE = 'A reference gauge, not the water at your spot.'
+
+  it('water temperature, dissolved oxygen, turbidity and the hatch score say they are not this water', () => {
+    expect(agentLabel('OUTDOOR_USGS_WATER_TEMP')).toBe('Water temperature (reference gauge, not this water)')
+    expect(agentLabel('OUTDOOR_USGS_DISSOLVED_O2')).toBe('Dissolved oxygen (reference gauge, not this water)')
+    expect(agentLabel('OUTDOOR_USGS_TURBIDITY')).toBe('Turbidity (reference gauge, not this water)')
+    expect(agentLabel('OUTDOOR_HATCH_WINDOW')).toBe('Hatch window score (based on a reference gauge, not this water)')
+  })
+
+  it('each has the card note, and the state-level flow keeps its own', () => {
+    for (const key of ['OUTDOOR_USGS_WATER_TEMP', 'OUTDOOR_USGS_DISSOLVED_O2', 'OUTDOOR_USGS_TURBIDITY', 'OUTDOOR_HATCH_WINDOW']) {
+      expect(agentNote(key), key).toBe(REFERENCE_NOTE)
+      expect(isSpotLevel(key), key).toBe(false)
+      expect(agentChip(key), key).toBeNull()
+    }
+    expect(agentNote('OUTDOOR_USGS_STREAMFLOW_STATE')).toBe('A state-wide reading, not the flow at your spot.')
+    expect(isSpotLevel('OUTDOOR_USGS_STREAMFLOW_STATE')).toBe(false)
+  })
+
+  it('the moon and wind belong to the spot', () => {
+    expect(isSpotLevel('OUTDOOR_MOON_PHASE')).toBe(true)
+    expect(isSpotLevel('OUTDOOR_WINDY_API')).toBe(true)
+  })
+
+  it('turbidity is in FNU', () => {
+    expect(displayValue('OUTDOOR_USGS_TURBIDITY', 3.25).primary).toBe('3.3 FNU')
   })
 })
 
@@ -66,7 +96,7 @@ describe('units', () => {
   })
 
   it('the brief prompt uses the same table (one source of truth)', () => {
-    expect(formatReading('OUTDOOR_USGS_WATER_TEMP', 7.5, { source: 'observed' })).toBe('Water temperature: 45.5 F (7.5 C), USGS observed')
+    expect(formatReading('OUTDOOR_USGS_WATER_TEMP', 7.5, { source: 'observed' })).toBe('Water temperature (reference gauge, not this water): 45.5 F (7.5 C), USGS observed')
   })
 })
 

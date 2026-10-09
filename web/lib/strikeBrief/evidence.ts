@@ -5,7 +5,7 @@
 // The unit table and formatReading live in lib/strike/signalFormat.ts (FF-099) so the Signals tab, the chips and
 // this prompt show the same text. They are re-exported here so existing imports keep working.
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { isUsableReading, formatReading, readingLabel, type Reading } from '@/lib/strike/signalFormat'
+import { isUsableReading, isSpotLevel, formatReading, readingLabel, type Reading } from '@/lib/strike/signalFormat'
 
 export const EVIDENCE_WINDOW_DAYS = 14
 
@@ -26,18 +26,19 @@ function withinWindow(iso: string, now: Date): boolean {
 }
 
 // Data categories a brief should say are missing when they have no reading for THIS spot, by domain. `keys` are
-// the agents that count as a spot-level reading. Streamflow has none yet: OUTDOOR_USGS_STREAMFLOW_STATE is a
-// state-level figure and does not satisfy it, so a fishing brief says there is no streamflow reading for this
-// water until a spot-level agent exists (add its key here).
+// the agents that count as a spot-level reading. Water temperature and streamflow have none yet: the water
+// temperature agent reads a fixed reference gauge and the streamflow agent a state-wide list, so neither satisfies
+// it, and a fishing brief says there is no reading for this water until a spot-level agent exists (add its key here).
 const EXPECTED: Record<string, Array<{ keys: string[]; name: string }>> = {
   fishing: [
-    { keys: ['OUTDOOR_USGS_WATER_TEMP'], name: 'water temperature reading' },
+    { keys: [], name: 'water temperature reading for this water' },
     { keys: [], name: 'streamflow reading for this water' },
   ],
 }
 
 export type Evidence = {
-  // Usable readings plus tagged signals in the window. Zero means the brief has nothing to confirm.
+  // Spot-level readings plus tagged signals in the window. Reference-gauge and state-level readings are handed to
+  // the model as labeled lines but are not counted. Zero means the brief has nothing to confirm.
   count: number
   // One labeled line per agent, newest reading, with its unit and age.
   lines: string[]
@@ -79,7 +80,8 @@ export function buildEvidence(input: { readings: Reading[]; signals: TaggedSigna
   const expected = EXPECTED[input.domain ?? ''] ?? []
   const missing = expected.filter(e => !e.keys.some(key => latest.has(key))).map(e => e.name)
 
-  return { count: usable.length + signals.length, lines, missing }
+  const spotReadings = usable.filter(r => isSpotLevel(r.agent_key))
+  return { count: spotReadings.length + signals.length, lines, missing }
 }
 
 // Loads the objective's own readings and tagged signals for the window. Both are scoped to this objective (and the

@@ -107,6 +107,9 @@ type AgentFormat = {
   format?: (value: number) => Value
   // A line under the card heading, for readings that mean something other than what the heading suggests.
   note?: string
+  // Whose water or place the number describes. 'spot' (the default) belongs to the objective's own spot. 'reference'
+  // comes from a fixed reference gauge, 'state' from a state-wide list; neither is a reading of this spot.
+  scope?: 'spot' | 'reference' | 'state'
   // Short chip text, for agents that get a chip. No chip for an index (a number with no unit).
   chip?: { label: string; text?: (value: number) => string }
 }
@@ -122,6 +125,11 @@ export function hatchBand(score: number): string {
   return 'High'
 }
 
+const REFERENCE = '(reference gauge, not this water)'
+// These agents read a fixed USGS gauge (15266300) until they use the pin's own gauge, so they say nothing about
+// the user's water. Shown as labeled reference data, never as a chip, and never counted as evidence for the spot.
+export const REFERENCE_NOTE = 'A reference gauge, not the water at your spot.'
+
 // Every agent that writes a signal reading, keyed on the FULL agent key. (Matching on pieces of the key put the
 // hatch score under Wind because OUTDOOR_HATCH_WINDOW contains "WIND".) Units were checked against each agent's
 // source URL and calculator: USGS reports water temperature in degrees Celsius; the NOAA anomaly agents use
@@ -129,22 +137,26 @@ export function hatchBand(score: number): string {
 export const AGENTS: Record<string, AgentFormat> = {
   OUTDOOR_MOON_PHASE: { group: 'Moon Phase', icon: '🌙', label: 'Moon', kind: 'moon', chip: { label: 'Moon' } },
   OUTDOOR_USGS_WATER_TEMP: {
-    group: 'Water temperature', icon: '🌡', label: 'Water temperature', kind: 'unit',
+    group: 'Water temperature', icon: '🌡', label: `Water temperature ${REFERENCE}`, kind: 'unit',
     format: v => ({ primary: `${fmt(v * 9 / 5 + 32)} F`, secondary: `(${fmt(v)} C)` }),
-    chip: { label: 'Water', text: v => `${Math.round(v * 9 / 5 + 32)} F` },
+    scope: 'reference', note: REFERENCE_NOTE,
   },
   OUTDOOR_NOAA_TEMP: { group: 'Air temperature', icon: '🌡', label: 'Air temperature', kind: 'index', indexName: 'change index' },
   OUTDOOR_USGS_STREAMFLOW_STATE: {
     group: 'Streamflow', icon: '💧', label: 'State-level streamflow (not this water)', kind: 'unit',
     format: v => ({ primary: `${grouped(v)} cfs` }),
     note: 'A state-wide reading, not the flow at your spot.',
+    scope: 'state',
     chip: { label: 'State flow' },
   },
-  OUTDOOR_USGS_DISSOLVED_O2: { group: 'Dissolved oxygen', icon: '💧', label: 'Dissolved oxygen', kind: 'unit', format: v => ({ primary: `${fmt(v)} mg/L` }), chip: { label: 'Oxygen' } },
+  OUTDOOR_USGS_DISSOLVED_O2: { group: 'Dissolved oxygen', icon: '💧', label: `Dissolved oxygen ${REFERENCE}`, kind: 'unit', format: v => ({ primary: `${fmt(v)} mg/L` }), scope: 'reference', note: REFERENCE_NOTE },
+  // USGS parameter 63680, formazin nephelometric units.
+  OUTDOOR_USGS_TURBIDITY: { group: 'Turbidity', icon: '💧', label: `Turbidity ${REFERENCE}`, kind: 'unit', format: v => ({ primary: `${fmt(v)} FNU` }), scope: 'reference', note: REFERENCE_NOTE },
   OUTDOOR_HATCH_WINDOW: {
-    group: 'Hatch window', icon: '🎣', label: 'Hatch window', kind: 'score',
+    group: 'Hatch window', icon: '🎣', label: 'Hatch window score (based on a reference gauge, not this water)', kind: 'score',
     format: v => ({ primary: `${hatchBand(v)}, ${v.toFixed(2)}` }),
-    chip: { label: 'Hatch', text: v => hatchBand(v) },
+    // Computed from OUTDOOR_USGS_WATER_TEMP, so it is only as local as that gauge.
+    scope: 'reference', note: REFERENCE_NOTE,
   },
   OUTDOOR_WINDY_API: { group: 'Wind', icon: '💨', label: 'Wind', kind: 'unit', format: v => ({ primary: `${fmt(v, 0)} mph` }), chip: { label: 'Wind' } },
   OUTDOOR_NOAA_PRECIP: { group: 'Precipitation', icon: '🌧', label: 'Precipitation', kind: 'index', indexName: 'change index' },
@@ -187,6 +199,12 @@ export function agentNote(agentKey: string): string | null {
 
 export function agentChip(agentKey: string): AgentFormat['chip'] | null {
   return AGENTS[agentKey]?.chip ?? null
+}
+
+// True for a reading that describes the objective's own spot. Reference-gauge and state-level readings do not.
+export function isSpotLevel(agentKey: string): boolean {
+  const scope = AGENTS[agentKey]?.scope ?? 'spot'
+  return scope === 'spot'
 }
 
 export function agentKind(agentKey: string): AgentFormat['kind'] | 'unknown' {
