@@ -23,7 +23,7 @@ interface EpisodeRow {
 
 interface PredictionRow {
   id: string
-  title: string
+  statement: string
   objective_id: string | null
   horizon_date: string | null
 }
@@ -34,7 +34,7 @@ interface ActionRow {
 
 interface FacRow {
   objective_id: string | null
-  forward_signal: string | null
+  forward_signal_type: string | null
 }
 
 export async function generateVoiceBrief(
@@ -64,38 +64,44 @@ export async function generateVoiceBrief(
   // 3. Try to fetch fac_reports for this sweep
   const facByObjId = new Map<string, string>()
   try {
-    const { data: facRaw } = await supabase
+    const { data: facRaw, error: facError } = await supabase
       .from('fac_reports')
-      .select('objective_id, forward_signal')
-      .eq('sweep_id', sweepId)
+      .select('objective_id, forward_signal_type')
+      .eq('sweep_run_id', sweepId)
+
+    if (facError) console.error('[voice-brief] fac_reports query failed:', facError)
 
     for (const row of (facRaw ?? []) as FacRow[]) {
-      if (row.objective_id && row.forward_signal) {
-        facByObjId.set(row.objective_id, row.forward_signal)
+      if (row.objective_id && row.forward_signal_type) {
+        facByObjId.set(row.objective_id, row.forward_signal_type)
       }
     }
-  } catch {
-    // fac_reports may not exist yet — skip silently
+  } catch (error) {
+    console.error('[voice-brief] fac_reports query threw:', error)
   }
 
-  // 4. Fetch open predictions within 30 days
+  // 4. Fetch active predictions within 30 days
   const horizon30 = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-  const { data: predictionsRaw } = await supabase
+  const { data: predictionsRaw, error: predictionsError } = await supabase
     .from('predictions')
-    .select('id, title, objective_id, horizon_date')
+    .select('id, statement, objective_id, horizon_date')
     .eq('user_id', userId)
-    .eq('status', 'open')
+    .eq('status', 'active')
     .lte('horizon_date', horizon30)
     .not('horizon_date', 'is', null)
 
+  if (predictionsError) console.error('[voice-brief] predictions query failed:', predictionsError)
+
   const predictions = (predictionsRaw ?? []) as PredictionRow[]
 
-  // 5. Fetch open user_actions
-  const { data: actionsRaw } = await supabase
-    .from('user_actions')
+  // 5. Fetch open objective_actions
+  const { data: actionsRaw, error: actionsError } = await supabase
+    .from('objective_actions')
     .select('objective_id')
     .eq('user_id', userId)
     .eq('status', 'open')
+
+  if (actionsError) console.error('[voice-brief] objective_actions query failed:', actionsError)
 
   const openActionObjIds = new Set(
     ((actionsRaw ?? []) as ActionRow[]).map(a => a.objective_id).filter(Boolean) as string[]
@@ -178,7 +184,7 @@ export async function generateVoiceBrief(
       tasker_type: 'score_prediction',
       objective_id: obj.id,
       objective_title: obj.title,
-      context: `Score your prediction: ${pred.title}. Hit or miss?`,
+      context: `Score your prediction: ${pred.statement}. Hit or miss?`,
       prediction_id: pred.id,
     })
   }
