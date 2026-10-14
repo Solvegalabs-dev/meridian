@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { evaluatePivot, isClosedUnit } from './pivot-logic'
+import { countConsecutiveNoGo, evaluatePivot, isClosedUnit } from './pivot-logic'
 
 const daysAgo = (n: number) => {
   const d = new Date()
@@ -60,5 +60,34 @@ describe('evaluatePivot skips closed units', () => {
   it('a closed primary never pivots', () => {
     const r = evaluatePivot(primary('expired') as never, [fallback('open', 'active', 60) as never])
     expect(r).toBeNull()
+  })
+})
+
+describe('countConsecutiveNoGo', () => {
+  const snapshot = (goNoGo: string, offsetDays: number) => ({
+    date: daysAgo(offsetDays),
+    confidence_pct: 40,
+    tier: 'T3',
+    go_no_go: goNoGo,
+  })
+
+  it('counts the normalized NO_GO value', () => {
+    expect(countConsecutiveNoGo([snapshot('NO_GO', 1), snapshot('NO_GO', 0)])).toBe(2)
+  })
+
+  it('counts the legacy hyphenated NO-GO value', () => {
+    expect(countConsecutiveNoGo([snapshot('NO-GO', 1), snapshot('NO-GO', 0)])).toBe(2)
+  })
+
+  it('counts a lowercase, space-separated "no go" value', () => {
+    expect(countConsecutiveNoGo([snapshot('no go', 1), snapshot('no go', 0)])).toBe(2)
+  })
+
+  it('stops counting once a non-NO_GO day breaks the streak', () => {
+    expect(countConsecutiveNoGo([snapshot('GO', 2), snapshot('NO_GO', 1), snapshot('NO_GO', 0)])).toBe(2)
+  })
+
+  it('returns 0 for an empty trajectory', () => {
+    expect(countConsecutiveNoGo([])).toBe(0)
   })
 })

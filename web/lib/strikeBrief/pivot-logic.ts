@@ -1,3 +1,5 @@
+import { goNoGoKind } from './goNoGo'
+
 interface ConfidenceSnapshot {
   date: string
   confidence_pct: number
@@ -50,7 +52,7 @@ export function countConsecutiveNoGo(trajectory: ConfidenceSnapshot[]): number {
   if (!trajectory?.length) return 0
   let count = 0
   for (let i = trajectory.length - 1; i >= 0; i--) {
-    if (trajectory[i].go_no_go === 'NO-GO') count++
+    if (goNoGoKind(trajectory[i].go_no_go) === 'no_go') count++
     else break
   }
   return count

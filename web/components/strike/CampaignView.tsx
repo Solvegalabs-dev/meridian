@@ -98,10 +98,11 @@ function gnoBadge(gno?: string) {
   if (goNoGoKind(gno) === 'closed') {
     return <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-slate-700 text-slate-300">Closed</span>
   }
+  const kind = goNoGoKind(gno)
   const g = gno.toUpperCase()
-  const cls = g === 'GO'
+  const cls = kind === 'go'
     ? 'bg-emerald-600 text-white'
-    : g === 'NO-GO' || g === 'NO GO'
+    : kind === 'no_go'
     ? 'bg-red-600 text-white'
     : g === 'CAUTION'
     ? 'bg-amber-600 text-white'

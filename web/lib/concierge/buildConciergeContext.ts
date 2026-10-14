@@ -10,8 +10,8 @@ export interface ConciergeContext {
     action_date: string; created_at: string
   }[]
   predictions: {
-    id: string; title: string; confidence: number | null
-    horizon_date: string | null; accuracy_score: number | null; rationale: string | null
+    id: string; statement: string; confidence_pct: number | null
+    horizon_date: string | null; accuracy_score: number | null; notes: string | null
   }[]
   latest_inference: object | null
   fac_signals: object[] | null
@@ -37,7 +37,7 @@ export async function buildConciergeContext(
       .eq('user_id', userId)
       .in('status', ['active', 'paused']),
     supabase
-      .from('user_actions')
+      .from('objective_actions')
       .select('id, objective_id, description, action_date, created_at')
       .eq('user_id', userId)
       .gte('created_at', thirtyDaysAgo)
@@ -45,9 +45,9 @@ export async function buildConciergeContext(
       .limit(50),
     supabase
       .from('predictions')
-      .select('id, title, confidence, horizon_date, accuracy_score, rationale')
+      .select('id, statement, confidence_pct, horizon_date, accuracy_score, notes')
       .eq('user_id', userId)
-      .eq('status', 'open'),
+      .eq('status', 'active'),
     supabase
       .from('sweeps')
       .select('inference_block')
@@ -63,20 +63,23 @@ export async function buildConciergeContext(
       .eq('is_active', true),
   ])
 
-  // fac_reports may not exist yet
+  // fac_reports has no user_id column — it's linked via objective_id, so scope
+  // by this user's own objective ids instead.
+  const objectiveIds = (objectives ?? []).map((o: { id: string }) => o.id)
   let facSignals: object[] | null = null
-  if (latestSweep) {
+  if (latestSweep && objectiveIds.length > 0) {
     try {
-      const { data: fac } = await supabase
+      const { data: fac, error: facError } = await supabase
         .from('fac_reports')
-        .select('signals')
-        .eq('user_id', userId)
+        .select('signal_category, signal_summary, forward_signal_type, confidence_implication, source_url')
+        .in('objective_id', objectiveIds)
         .order('created_at', { ascending: false })
         .limit(1)
         .single()
-      if (fac) facSignals = [fac.signals]
-    } catch {
-      // table may not exist
+      if (facError) console.error('[concierge-context] fac_reports query failed:', facError)
+      if (fac) facSignals = [fac]
+    } catch (error) {
+      console.error('[concierge-context] fac_reports query threw:', error)
     }
   }
 
