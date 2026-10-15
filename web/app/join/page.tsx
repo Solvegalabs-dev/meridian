@@ -16,7 +16,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   invalid_password: 'Password must be between 8 and 72 characters.',
   account_exists: 'That email already has an account. Sign in instead.',
   create_failed: 'Something went wrong creating your account — please try again.',
-  access_pending: 'Your account was created, but access setup needs a moment — the founder has been notified.',
+  access_pending: 'Your account was created, but access setup did not finish. Please tell Jason so he can finish it.',
 }
 
 export default function JoinPage() {

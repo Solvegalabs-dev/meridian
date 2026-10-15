@@ -67,24 +67,28 @@ describe('closed synthesis text', () => {
 })
 
 describe('window opens banner', () => {
-  it('season not open', () => {
-    expect(windowOpensBanner({
+  it('season not open: always "Season opens", hunting or fishing', () => {
+    const ev: WindowEvaluation = {
       state: 'season_not_open',
       detail: { code: 'season_not_started', season_start: '2026-10-15', season_end: '2026-11-30' },
-    })).toBe('Season opens Oct 15')
+    }
+    expect(windowOpensBanner(ev, false)).toBe('Season opens Oct 15')
+    expect(windowOpensBanner(ev, true)).toBe('Season opens Oct 15')
   })
 
-  it('trip upcoming', () => {
-    expect(windowOpensBanner({
+  it('trip upcoming: "Hunt trip starts" for hunting, "Fishing trip starts" for fishing', () => {
+    const ev: WindowEvaluation = {
       state: 'upcoming',
       detail: { code: 'trip_not_started', trip_start: '2026-09-12', trip_end: '2026-09-30' },
-    })).toBe('Trip opens Sep 12')
+    }
+    expect(windowOpensBanner(ev, false)).toBe('Hunt trip starts Sep 12')
+    expect(windowOpensBanner(ev, true)).toBe('Fishing trip starts Sep 12')
   })
 
   it('no banner for active, closed, or no-date objectives', () => {
-    expect(windowOpensBanner({ state: 'active', detail: { code: 'in_window_season_unknown' } })).toBeNull()
-    expect(windowOpensBanner(SEASON_CLOSED)).toBeNull()
-    expect(windowOpensBanner({ state: 'no_dates', detail: { code: 'no_timing' } })).toBeNull()
-    expect(windowOpensBanner(null)).toBeNull()
+    expect(windowOpensBanner({ state: 'active', detail: { code: 'in_window_season_unknown' } }, false)).toBeNull()
+    expect(windowOpensBanner(SEASON_CLOSED, false)).toBeNull()
+    expect(windowOpensBanner({ state: 'no_dates', detail: { code: 'no_timing' } }, false)).toBeNull()
+    expect(windowOpensBanner(null, false)).toBeNull()
   })
 })

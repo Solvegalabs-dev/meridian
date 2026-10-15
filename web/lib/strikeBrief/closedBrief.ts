@@ -32,13 +32,15 @@ export function closedSynthesis(evaluation: WindowEvaluation): string {
 }
 
 // Banner for an objective that has not opened yet. Null for every other state.
-export function windowOpensBanner(evaluation: WindowEvaluation | null): string | null {
+// isFishing picks the wording for the user's own trip start (same rule as windowStatusChip,
+// FF-105B Fix 4): it is the user's trip, not a season opening, so "Opens" is wrong there.
+export function windowOpensBanner(evaluation: WindowEvaluation | null, isFishing: boolean): string | null {
   if (!evaluation) return null
   if (evaluation.state === 'season_not_open' && evaluation.detail.season_start) {
     return `Season opens ${formatBriefDate(evaluation.detail.season_start)}`
   }
   if (evaluation.state === 'upcoming' && evaluation.detail.trip_start) {
-    return `Trip opens ${formatBriefDate(evaluation.detail.trip_start)}`
+    return `${isFishing ? 'Fishing' : 'Hunt'} trip starts ${formatBriefDate(evaluation.detail.trip_start)}`
   }
   return null
 }

@@ -85,4 +85,14 @@ describe('StrikeHeader', () => {
     expect(html).not.toContain('>GO<')
     expect(html).not.toContain('Pre-season outlook')
   })
+
+  it('shows the objective switcher when currentId is given (FF-106 Stage 2 Part C)', () => {
+    const html = render({ currentId: 'prof-1' })
+    expect(html).toContain('Switch objective')
+  })
+
+  it('shows no switcher when currentId is omitted', () => {
+    const html = render({})
+    expect(html).not.toContain('Switch objective')
+  })
 })

@@ -51,6 +51,8 @@ type Props = {
   sweep?: SweepInfo
   // False for a campaign unit: it cannot be removed from here yet (FF-096).
   canRemove?: boolean
+  // True only for a finished, non-campaign-unit objective (FF-106 Stage 2 Part B).
+  canPlanAgain?: boolean
   // False when no strike_briefs row exists; the brief object then holds placeholder fields.
   hasBrief: boolean
   evaluation: WindowEvaluation | null
@@ -62,6 +64,7 @@ export default function StrikeBriefClient({
   title,
   note = null,
   canRemove = false,
+  canPlanAgain = false,
   sweep = { lastSweepAt: null, nextSweepAt: null, latestDataAt: null },
   hasBrief,
   evaluation,
@@ -146,7 +149,7 @@ export default function StrikeBriefClient({
           >
             Mission Control
           </Link>
-          <ObjectiveMenu objectiveId={objective.id} title={title} canRemove={canRemove} />
+          <ObjectiveMenu objectiveId={objective.id} title={title} canRemove={canRemove} canPlanAgain={canPlanAgain} />
         </div>
       </div>
 
@@ -163,6 +166,7 @@ export default function StrikeBriefClient({
         hasBrief={briefPresent}
         brief={displayBrief}
         isOnline={isOnline}
+        currentId={objective.id}
       />
 
       {/* Tab bar: sticky so a long brief can switch tabs without scrolling back up */}

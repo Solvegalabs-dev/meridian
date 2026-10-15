@@ -96,7 +96,7 @@ export default function StrikeBriefPanel({ brief, isOnline, onRefresh, windowSta
         )}
         {windowState === 'upcoming' && tripStart && (
           <div className="text-slate-300">
-            Briefs start when your trip window opens ({formatDateOnly(tripStart)}).
+            Briefs start when your trip starts ({formatDateOnly(tripStart)}).
           </div>
         )}
       </div>

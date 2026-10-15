@@ -83,7 +83,7 @@ describe('StrikeBriefPanel', () => {
   it('pending state, upcoming hunt: says when briefs start', () => {
     const html = render({ brief: brief({ time_windows: null }), windowState: 'upcoming', tripStart: '2026-10-15' })
     expect(html).toContain(NO_DATA_PROMPT)
-    expect(html).toContain('Briefs start when your trip window opens (Oct 15).')
+    expect(html).toContain('Briefs start when your trip starts (Oct 15).')
   })
 
   it('pending state without an upcoming hunt has no start line', () => {

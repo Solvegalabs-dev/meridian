@@ -36,7 +36,7 @@ describe('ObjectiveMenu', () => {
   })
 
   it('the menu offers Remove objective', () => {
-    const html = renderToStaticMarkup(<MenuPanel onRemove={() => {}} />)
+    const html = renderToStaticMarkup(<MenuPanel objectiveId="p1" onRemove={() => {}} />)
     expect(html).toContain('Remove objective')
     expectStyleRules(html)
   })

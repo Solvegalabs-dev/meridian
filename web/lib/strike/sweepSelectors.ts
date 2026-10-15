@@ -2,14 +2,17 @@
 // objective has objective_profiles.status 'archived' (and objectives.status 'archived'); neither
 // path may pick it up. Kept as named helpers so the exclusion is tested once, not re-derived per caller.
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { PROFILE_WINDOW_COLUMNS } from '@/lib/objectives/objectiveWindow'
 
 export const ARCHIVED_STATUS = 'archived'
 
 // Profiles whose assigned agents the swarm cron runs. Ended hunts ('completed') and removed ones ('archived') are skipped.
+// FF-106 Stage 2 Part A: also carries org_source, status and the window columns (PROFILE_WINDOW_COLUMNS), so the
+// cron can evaluate a Strike objective's focus and gate its collection cadence without a second query.
 export function selectAgentSwarmProfiles(db: SupabaseClient) {
   return db
     .from('objective_profiles')
-    .select('objective_id, assigned_agents, state, county')
+    .select(`${PROFILE_WINDOW_COLUMNS}, assigned_agents, county, org_source`)
     .not('assigned_agents', 'is', null)
     // FF-089 P0: ended hunts (season closed / trip ended) are status 'completed'; no agent runs for them.
     .neq('status', 'completed')

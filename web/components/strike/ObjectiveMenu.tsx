@@ -1,25 +1,33 @@
 'use client'
 
-// "..." menu in the strike objective header (FF-096 Part 1). One action today: Remove objective, with a
-// confirm step. Hidden entirely when nothing can be done, so a campaign unit shows no menu.
+// "..." menu in the strike objective header (FF-096 Part 1; FF-106 Stage 2 Part B adds Plan again).
+// Hidden entirely when nothing can be done, so a campaign unit with no finished window shows no menu.
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import PlanAgainButton from './PlanAgainButton'
 
 export const REMOVE_CONFIRM_TEXT = (title: string) =>
   `Remove ${title}? It disappears from your list. You can restore it from Removed objectives.`
 
+const MENU_ITEM = 'w-full min-h-[44px] px-4 text-left text-sm text-slate-100 hover:bg-slate-700 rounded-lg transition-colors'
+
 // Presentational pieces, exported so their markup can be tested without a browser.
-export function MenuPanel({ onRemove }: { onRemove: () => void }) {
+export function MenuPanel({ objectiveId, onRemove, showPlanAgain }: {
+  objectiveId: string; onRemove?: () => void; showPlanAgain?: boolean
+}) {
   return (
     <div role="menu" className="absolute right-0 top-full z-20 w-56 rounded-lg bg-slate-800 border border-slate-600 shadow-lg">
-      <button
-        type="button"
-        role="menuitem"
-        onClick={onRemove}
-        className="w-full min-h-[44px] px-4 text-left text-sm text-red-300 hover:bg-slate-700 rounded-lg transition-colors"
-      >
-        Remove objective
-      </button>
+      {showPlanAgain && <PlanAgainButton objectiveId={objectiveId} className={MENU_ITEM} />}
+      {onRemove && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onRemove}
+          className="w-full min-h-[44px] px-4 text-left text-sm text-red-300 hover:bg-slate-700 rounded-lg transition-colors"
+        >
+          Remove objective
+        </button>
+      )}
     </div>
   )
 }
@@ -53,14 +61,16 @@ export function RemoveConfirm({ title, busy, message, onCancel, onRemove }: {
   )
 }
 
-export default function ObjectiveMenu({ objectiveId, title, canRemove }: { objectiveId: string; title: string; canRemove: boolean }) {
+export default function ObjectiveMenu({ objectiveId, title, canRemove, canPlanAgain = false }: {
+  objectiveId: string; title: string; canRemove: boolean; canPlanAgain?: boolean
+}) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
-  if (!canRemove) return null
+  if (!canRemove && !canPlanAgain) return null
 
   async function remove() {
     setBusy(true)
@@ -94,7 +104,13 @@ export default function ObjectiveMenu({ objectiveId, title, canRemove }: { objec
         >
           <span aria-hidden="true">···</span>
         </button>
-        {open && !confirming && <MenuPanel onRemove={() => setConfirming(true)} />}
+        {open && !confirming && (
+          <MenuPanel
+            objectiveId={objectiveId}
+            showPlanAgain={canPlanAgain}
+            onRemove={canRemove ? () => setConfirming(true) : undefined}
+          />
+        )}
       </div>
 
       {open && confirming && (

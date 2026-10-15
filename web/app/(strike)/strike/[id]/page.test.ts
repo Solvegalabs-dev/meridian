@@ -4,6 +4,7 @@ import { FakeDb } from '@/lib/spots/testDb'
 import StrikePage from './page'
 import InviteOnlyScreen from '@/components/strike/InviteOnlyScreen'
 import RemovedObjectiveNotice from '@/components/strike/RemovedObjectiveNotice'
+import PlanAgainButton from '@/components/strike/PlanAgainButton'
 
 let db: FakeDb
 let sessionUser: { id: string; email?: string } | null = null
@@ -109,6 +110,15 @@ function clientProps(tree: unknown): Record<string, unknown> | null {
   return clientProps(el.props?.children)
 }
 
+// Whether the given component type appears anywhere in what the page returns.
+function containsType(tree: unknown, type: unknown): boolean {
+  if (!tree || typeof tree !== 'object') return false
+  if (Array.isArray(tree)) return tree.some(child => containsType(child, type))
+  const el = tree as { type?: unknown; props?: { children?: unknown } }
+  if (el.type === type) return true
+  return containsType(el.props?.children, type)
+}
+
 describe('Strike page: removed objectives (FF-096)', () => {
   const owner = () => { sessionUser = { id: 'user-1', email: 'owner@example.com' } }
 
@@ -179,6 +189,36 @@ describe('Strike page: remove action and note (FF-096)', () => {
     db.tables.objectives[0].title = 'elk · bull · archery'
     const props = clientProps(await StrikePage({ params: { id: 'prof-1' } }))
     expect(props?.title).toBe('Bull elk, archery')
+  })
+})
+
+describe('Strike page: Plan again for next year (FF-106 Stage 2 Part B)', () => {
+  const owner = () => { sessionUser = { id: 'user-1', email: 'owner@example.com' } }
+
+  it('offers Plan again for a finished, standalone objective', async () => {
+    owner()
+    db.tables.objective_profiles[0].status = 'completed'
+    const tree = await StrikePage({ params: { id: 'prof-1' } })
+    const props = clientProps(tree)
+    expect(props?.canPlanAgain).toBe(true)
+    expect(containsType(tree, PlanAgainButton)).toBe(true)
+  })
+
+  it('does not offer Plan again for a campaign unit, even when finished', async () => {
+    owner()
+    db.tables.objective_profiles[0].status = 'completed'
+    db.tables.campaign_units = [{ id: 'cu1', objective_id: 'arc-1' }]
+    const tree = await StrikePage({ params: { id: 'prof-1' } })
+    const props = clientProps(tree)
+    expect(props?.canPlanAgain).toBe(false)
+    expect(containsType(tree, PlanAgainButton)).toBe(false)
+  })
+
+  it('does not offer Plan again for an objective that is not finished', async () => {
+    owner()
+    const tree = await StrikePage({ params: { id: 'prof-1' } })
+    expect(clientProps(tree)?.canPlanAgain).toBe(false)
+    expect(containsType(tree, PlanAgainButton)).toBe(false)
   })
 })
 

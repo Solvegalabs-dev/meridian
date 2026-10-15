@@ -4,6 +4,7 @@ import { requireObjectiveAccess, ObjectiveAccessError } from '@/lib/auth/ownersh
 import { isUserInvited } from '@/lib/auth/inviteGate'
 import { resolveObjectiveTitle } from '@/lib/objectives/objectiveTitle'
 import { isCampaignUnit } from '@/lib/strike/campaignUnit'
+import { isFishingObjective } from '@/lib/strike/objectiveKind'
 import { computeSweepInfo } from '@/lib/strike/sweepStatus'
 import { loadSignalChips, type SignalChip } from '@/lib/strike/signalChips'
 import RemovedObjectiveNotice from '@/components/strike/RemovedObjectiveNotice'
@@ -16,6 +17,7 @@ import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
 import { hasLocation } from '@/lib/agents/geoLocation'
 import { cleanSynthesis, lastHuntHeading, selectLastHuntBrief } from '@/lib/strike/lastHuntBrief'
 import LastHuntBrief from '@/components/strike/LastHuntBrief'
+import PlanAgainButton from '@/components/strike/PlanAgainButton'
 import {
   closedSynthesis,
   endedNoticeLabel,
@@ -276,10 +278,17 @@ export default async function StrikePage({ params }: { params: { id: string } })
     }
 
     // Notices sit inside the dark page container, so they never land on the white strip above it.
+    // FF-106 Stage 2 Part B: "Plan again" is offered for any finished, non-campaign-unit objective.
     return (
       <div className="bg-slate-900 text-white">
         <div className={NOTICE_CLASSES.closed}>
-          {closedText}
+          <p>{closedText}</p>
+          {canRemove && (
+            <PlanAgainButton
+              objectiveId={objective.id}
+              className="mt-3 min-h-[44px] px-4 rounded-lg text-sm font-medium bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:bg-slate-600 disabled:text-slate-300"
+            />
+          )}
         </div>
         {lastHunt && (
           <LastHuntBrief heading={lastHuntHeading(lastHunt)} synthesis={cleanSynthesis(lastHunt.synthesis)} />
@@ -291,6 +300,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
           note={note}
           sweep={sweep}
           canRemove={canRemove}
+          canPlanAgain={canRemove}
           hasBrief={briefRow !== null}
           evaluation={evaluation}
         />
@@ -300,7 +310,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
 
   // FF-089 P0: "Season opens {date}" / "Trip opens {date}" banner, rendered server-side
   // so the partner API keeps its single additive field (objective_state).
-  const banner = windowOpensBanner(evaluation)
+  const banner = windowOpensBanner(evaluation, isFishingObjective(objective as Parameters<typeof isFishingObjective>[0]))
   // FF-091 Part C: an objective with no location says so, instead of showing another area's data.
   const noLocation = !hasLocation(objective as Parameters<typeof hasLocation>[0]);
 
@@ -315,6 +325,7 @@ export default async function StrikePage({ params }: { params: { id: string } })
         note={note}
         sweep={sweep}
         canRemove={canRemove}
+        canPlanAgain={false}
         hasBrief={briefRow !== null}
         evaluation={evaluation}
       />
