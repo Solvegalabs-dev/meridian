@@ -1,12 +1,15 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
 import { normalizeHuntCode } from '@/lib/hunts/huntCode'
 import { coverageDecision, type CoverageMode } from '@/lib/strike/coverage'
 import { checkTripDate, tripDateBounds } from '@/lib/strike/tripDateRange'
+import type { StrikeSlots } from '@/lib/strike/limits'
+import { slotsSummaryLine, totalLimitMessage, limitReachedMessage, type LimitCategory } from '@/lib/strike/limitMessages'
 
 const TAXONOMY_OPTIONS = [
   // Hunting
@@ -34,6 +37,21 @@ export default function StrikeNewPage() {
   const [error, setError] = useState<string | null>(null)
   // FF-096 Part 3: set when we have no data for the chosen species and state. `confirmed` is the one extra tap.
   const [coverage, setCoverage] = useState<{ text: string; mode: CoverageMode; confirmed: boolean } | null>(null)
+  // FF-106 Stage 1: a strike_friend's hunting/fishing/total slot counts. Null until loaded, and stays
+  // null (never limited) for a user whose plan has no cap — the summary and the full-limit screen
+  // below both only render once this is a real StrikeSlots object.
+  const [slots, setSlots] = useState<StrikeSlots | null>(null)
+
+  useEffect(() => {
+    fetch('/api/strike/slots')
+      .then(res => (res.ok ? res.json() : null))
+      .then((body: (StrikeSlots & { unlimited?: never }) | { unlimited: true } | null) => {
+        if (body && !('unlimited' in body)) setSlots(body)
+      })
+      .catch(() => {})
+  }, [])
+
+  const atTotalLimit = slots !== null && slots.total.used >= slots.total.max
 
   const [form, setForm] = useState({
     taxonomy_key: 'elk.bull.archery',
@@ -141,8 +159,11 @@ export default function StrikeNewPage() {
       })
 
       if (!res.ok) {
-        const json = await res.json().catch(() => ({}))
-        throw new Error((json as { error?: string }).error ?? `HTTP ${res.status}`)
+        const json = await res.json().catch(() => ({})) as { error?: string; category?: LimitCategory; max?: number }
+        if (json.error === 'objective_limit_reached' && json.category && typeof json.max === 'number') {
+          throw new Error(limitReachedMessage(json.category, json.max))
+        }
+        throw new Error(json.error ?? `HTTP ${res.status}`)
       }
 
       const { objective_id } = await res.json() as { objective_id: string }
@@ -168,7 +189,21 @@ export default function StrikeNewPage() {
         </div>
       </div>
 
+      {atTotalLimit ? (
+        <div className="px-4 py-6 max-w-lg">
+          <p className="text-sm text-slate-200">{totalLimitMessage(slots!.total.max)}</p>
+          <Link
+            href="/strike"
+            className="inline-flex items-center justify-center min-h-[44px] mt-4 px-4 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+          >
+            Back to Strike
+          </Link>
+        </div>
+      ) : (
       <form onSubmit={handleSubmit} className="px-4 py-6 space-y-5 max-w-lg">
+        {slots && (
+          <p className="text-xs text-slate-400 uppercase tracking-wider">{slotsSummaryLine(slots.hunt, slots.fish)}</p>
+        )}
         {/* Species / Method */}
         <div>
           <label className="block text-xs text-slate-400 uppercase tracking-wider mb-1">
@@ -355,6 +390,7 @@ export default function StrikeNewPage() {
           {submitting ? 'Creating objective…' : 'Create Objective'}
         </button>
       </form>
+      )}
     </div>
   )
 }

@@ -241,40 +241,82 @@ describe('POST /api/objectives/create: partner door', () => {
   })
 })
 
-describe('POST /api/objectives/create: Strike-friend objective limit (FF-105)', () => {
+describe('POST /api/objectives/create: Strike-friend objective limits by category (FF-106 Stage 1)', () => {
   const STRIKE_FRIEND = { id: 'user-friend', email: 'invited@example.com', app_metadata: { signup_source: 'strike' } }
+  const FISH_BODY = {
+    ...BODY,
+    domain: 'fishing',
+    taxonomy_key: 'trout.rainbow.fly_fishing',
+    geo: { state: 'ut', lat: 40.5, lon: -111.2 },
+  }
 
-  it('a Strike friend can create a 1st and 2nd objective', async () => {
+  it('a Strike friend can create up to 3 hunting objectives', async () => {
     sessionUser = STRIKE_FRIEND
-    expect((await POST(req(BODY))).status).toBe(201)
-    expect((await POST(req(BODY))).status).toBe(201)
-    expect(db.tables.objectives).toHaveLength(2)
+    for (let i = 0; i < 3; i++) expect((await POST(req(BODY))).status).toBe(201)
+    expect(db.tables.objective_profiles).toHaveLength(3)
   })
 
-  it('a Strike friend is refused a 3rd objective', async () => {
+  it('a Strike friend is refused a 4th hunting objective', async () => {
     sessionUser = STRIKE_FRIEND
-    await POST(req(BODY))
-    await POST(req(BODY))
+    for (let i = 0; i < 3; i++) await POST(req(BODY))
     const res = await POST(req(BODY))
     expect(res.status).toBe(403)
-    expect((await res.json()).error).toBe('objective_limit_reached')
-    expect(db.tables.objectives).toHaveLength(2)
+    expect(await res.json()).toEqual({ error: 'objective_limit_reached', category: 'hunt', max: 3 })
+    expect(db.tables.objective_profiles).toHaveLength(3)
   })
 
-  it('a closed objective does not count against the limit', async () => {
+  it('a Strike friend is refused a 4th fishing objective, by the fishing cap, independent of hunting', async () => {
     sessionUser = STRIKE_FRIEND
+    for (let i = 0; i < 3; i++) expect((await POST(req(FISH_BODY))).status).toBe(201)
+    const res = await POST(req(FISH_BODY))
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'objective_limit_reached', category: 'fish', max: 3 })
+  })
+
+  it('hunting and fishing have separate category caps, but still share the 5-objective total', async () => {
+    sessionUser = STRIKE_FRIEND
+    expect((await POST(req(BODY))).status).toBe(201) // 1 hunting
+    expect((await POST(req(FISH_BODY))).status).toBe(201) // 1 fishing — neither category is anywhere near full
+    expect(db.tables.objective_profiles).toHaveLength(2)
+  })
+
+  it('refuses at the 5-objective total even when neither category is individually full', async () => {
+    sessionUser = STRIKE_FRIEND
+    for (let i = 0; i < 3; i++) await POST(req(BODY)) // 3 hunting
+    for (let i = 0; i < 2; i++) await POST(req(FISH_BODY)) // 2 fishing, total now 5
+    const res = await POST(req(FISH_BODY)) // fish category (2 used) still has room, but total does not
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'objective_limit_reached', category: 'total', max: 5 })
+    expect(db.tables.objective_profiles).toHaveLength(5)
+  })
+
+  it('a hunt whose trip window has already ended frees its slot, even though objectives.status is still active', async () => {
+    sessionUser = STRIKE_FRIEND
+    // FF-106 Stage 1 audit: objectives.status is never updated by the window-lifecycle sweep
+    // (only objective_profiles.status is) and is also untouched by an ended trip window, so it
+    // stays 'active' here. The new cap counts the live window, not objectives.status.
+    await POST(req({ ...BODY, timing: { trip_start: '2025-06-01', trip_end: '2025-06-15' } }))
     await POST(req(BODY))
     await POST(req(BODY))
-    db.tables.objectives[0].status = 'closed'
+    expect(db.tables.objectives.every(o => o.status === 'active')).toBe(true)
+
     const res = await POST(req(BODY))
     expect(res.status).toBe(201)
-    expect(db.tables.objectives).toHaveLength(3)
+    expect(db.tables.objective_profiles).toHaveLength(4)
   })
 
-  it('an invited user without the strike signup_source marker is not limited to 2', async () => {
+  it('a removed (archived) objective_profiles row does not count', async () => {
+    sessionUser = STRIKE_FRIEND
+    for (let i = 0; i < 3; i++) await POST(req(BODY))
+    db.tables.objective_profiles[0].status = 'archived'
+
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(201)
+  })
+
+  it('an invited user without the strike signup_source marker is not limited', async () => {
     sessionUser = INVITED // no app_metadata.signup_source
-    await POST(req(BODY))
-    await POST(req(BODY))
+    for (let i = 0; i < 4; i++) await POST(req(BODY))
     const res = await POST(req(BODY))
     expect(res.status).toBe(201)
   })

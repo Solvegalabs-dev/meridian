@@ -40,6 +40,23 @@ afterEach(() => {
   process.env.TZ = originalTz
 })
 
+// Removes a <div data-testid="id">...</div> block, matching nested divs by depth
+// rather than the first "</div>" (a naive regex would stop too early).
+function stripBalancedDiv(html: string, testid: string): string {
+  const open = new RegExp(`<div data-testid="${testid}"[^>]*>`).exec(html)
+  if (!open) return html
+  const start = open.index
+  const tagPattern = /<div\b[^>]*>|<\/div>/g
+  tagPattern.lastIndex = start + open[0].length
+  let depth = 1
+  let match: RegExpExecArray | null
+  while ((match = tagPattern.exec(html))) {
+    depth += match[0] === '</div>' ? -1 : 1
+    if (depth === 0) return html.slice(0, start) + html.slice(match.index + match[0].length)
+  }
+  return html
+}
+
 describe('CampaignView: ended units', () => {
   it('shows "Trip ended" and no GO badge for a unit whose window ended yesterday with a stored GO brief', () => {
     const html = render([campaign('c1', 'Unit 5A elk', [unit({ ended: { reason: 'trip_ended', date: '2026-10-02' } })])])
@@ -99,11 +116,11 @@ describe('CampaignView: trip dates', () => {
   }
 })
 
-describe('CampaignView: Other objectives (FF-095 Part 1)', () => {
+describe('CampaignView: standalone objectives, grouped by focus (FF-095 Part 1, FF-106 Stage 1)', () => {
   type Other = NonNullable<Parameters<typeof CampaignView>[0]['others']>[number]
   const other = (over: Partial<Other> = {}): Other => ({
     id: 'prof-20', title: 'Sockeye salmon, river migration (Alaska)', subtitle: 'salmon · sockeye · river_migration',
-    chip: { label: 'Active', tone: 'live' }, dates: null, verdict: null, group: 'active', createdAt: '2026-10-02T00:00:00Z', limitedData: false, ...over,
+    chip: { label: 'Active', tone: 'live' }, dates: null, tripStart: null, verdict: null, group: 'now', createdAt: '2026-10-02T00:00:00Z', limitedData: false, ...over,
   })
   const renderWith = (campaigns: ReturnType<typeof campaign>[], others: Other[]) =>
     renderToStaticMarkup(<CampaignView campaigns={campaigns} others={others} />)
@@ -115,33 +132,34 @@ describe('CampaignView: Other objectives (FF-095 Part 1)', () => {
       [other(), other({ id: 'prof-18', title: 'Rainbow trout, fly fishing (Utah)' })],
     )
     expect(html).toContain('Unit 5A elk')
-    expect(html).toContain('Other objectives')
+    expect(html).toContain('Focus now')
     expect(html).toContain('Sockeye salmon, river migration (Alaska)')
     expect(html).toContain('Rainbow trout, fly fishing (Utah)')
-    expect(html.indexOf('Unit 5A elk')).toBeLessThan(html.indexOf('Other objectives'))
+    expect(html.indexOf('Unit 5A elk')).toBeLessThan(html.indexOf('Focus now'))
   })
 
-  it('a user with only standalone objectives sees only Other objectives, no campaign block and no prompt', () => {
+  it('a user with only standalone objectives sees only the focus sections, no campaign block and no prompt', () => {
     const html = renderWith([], [other()])
-    expect(html).toContain('Other objectives')
+    expect(html).toContain('Focus now')
     expect(html).toContain('Sockeye salmon, river migration (Alaska)')
     expect(html).not.toContain('Start your first objective')
     expect(html).not.toContain('No active campaigns')
   })
 
-  it('hides the Other objectives section when there are none', () => {
+  it('hides the focus sections when there are no standalone objectives', () => {
     const html = renderWith([campaign('c1', 'Unit 5A elk', [unit()])], [])
-    expect(html).not.toContain('Other objectives')
+    expect(html).not.toContain('Focus now')
+    expect(html).not.toContain('data-testid="standalone-objectives"')
   })
 
   it('shows the start prompt, linking to /strike/new, when there are no campaigns and no other objectives', () => {
     const html = renderWith([], [])
     expect(html).toContain('Start your first objective')
     expect(html).toMatch(/<a[^>]*href="\/strike\/new"[^>]*>New objective<\/a>/)
-    expect(html).not.toContain('Other objectives')
+    expect(html).not.toContain('Focus now')
   })
 
-  it('each row links to its strike page by profile id and carries the title, subtitle, status chip and verdict', () => {
+  it('each spotlight card links to its strike page by profile id and carries the title, subtitle, status chip and verdict', () => {
     const html = renderWith([], [other({ id: 'prof-xyz', verdict: 'GO' })])
     expect(html).toMatch(/<a[^>]*href="\/strike\/prof-xyz"/)
     expect(html).toContain('salmon · sockeye · river_migration')
@@ -149,14 +167,16 @@ describe('CampaignView: Other objectives (FF-095 Part 1)', () => {
     expect(html).toContain('>GO<')
   })
 
-  it('renders rows in the order given, so an ended objective stays last', () => {
+  it('renders "now" first (as the spotlight), then "prep", then "ended" last', () => {
     const html = renderWith([], [
       other({ id: 'a', title: 'Live trip' }),
-      other({ id: 'u', title: 'Upcoming trip', group: 'upcoming', chip: { label: 'Opens Nov 10', tone: 'pending' } }),
+      other({ id: 'u', title: 'Upcoming trip', group: 'prep', chip: { label: 'Opens Nov 10', tone: 'pending' } }),
       other({ id: 'e', title: 'Finished trip', group: 'ended', chip: { label: 'Trip ended on Sep 15', tone: 'ended' } }),
     ])
     expect(html.indexOf('Live trip')).toBeLessThan(html.indexOf('Upcoming trip'))
     expect(html.indexOf('Upcoming trip')).toBeLessThan(html.indexOf('Finished trip'))
+    expect(html).toContain('Getting ready')
+    expect(html).toContain('Finished (1)')
     expect(html).toContain('Trip ended on Sep 15')
   })
 
@@ -181,8 +201,75 @@ describe('CampaignView: Other objectives (FF-095 Part 1)', () => {
   it('leaves the existing campaign cards unchanged when others are passed', () => {
     const without = render([campaign('c1', 'Unit 5A elk', [unit()])])
     const withOthers = renderWith([campaign('c1', 'Unit 5A elk', [unit()])], [other()])
-    // Take the Other objectives section out and the page is byte-for-byte the old one.
-    expect(withOthers.replace(/<section aria-labelledby="other-objectives-heading">[\s\S]*?<\/section>/, '')).toBe(without)
+    // Take the (nested) standalone-objectives block out and the page is byte-for-byte the old one.
+    expect(stripBalancedDiv(withOthers, 'standalone-objectives')).toBe(without)
+  })
+
+  describe('spotlight: "Focus now" vs "Next up"', () => {
+    it('spotlights the first "now" item as "Focus now", with the rest of "now" listed below it', () => {
+      const html = renderWith([], [
+        other({ id: 'n1', title: 'First now' }),
+        other({ id: 'n2', title: 'Second now' }),
+      ])
+      expect(html).toContain('Focus now')
+      expect(html).not.toContain('Next up')
+      expect(html.indexOf('First now')).toBeLessThan(html.indexOf('Second now'))
+    })
+
+    it('spotlights the first "prep" item as "Next up" when there is nothing in "now"', () => {
+      const html = renderWith([], [
+        other({ id: 'p1', title: 'Soonest prep', group: 'prep' }),
+        other({ id: 'p2', title: 'Later prep', group: 'prep' }),
+      ])
+      expect(html).toContain('Next up')
+      expect(html).not.toContain('Focus now')
+      expect(html).toContain('Getting ready')
+      // The spotlighted prep item is not duplicated under "Getting ready".
+      expect(html.match(/Soonest prep/g)).toHaveLength(1)
+      expect(html).toContain('Later prep')
+    })
+
+    it('shows no spotlight when both "now" and "prep" are empty', () => {
+      const html = renderWith([], [other({ id: 'r1', title: 'On the radar item', group: 'radar' })])
+      expect(html).not.toContain('Focus now')
+      expect(html).not.toContain('Next up')
+      expect(html).toContain('On the radar item')
+    })
+  })
+
+  describe('collapsing (FF-106 Stage 1)', () => {
+    const radarItem = (n: number) => other({ id: `r${n}`, title: `Radar ${n}`, group: 'radar' })
+    const nextYearItem = (n: number) => other({ id: `y${n}`, title: `Next year ${n}`, group: 'next_year' })
+
+    it('does not collapse "On the radar" at 3 items', () => {
+      const html = renderWith([], [radarItem(1), radarItem(2), radarItem(3)])
+      expect(html).toContain('On the radar')
+      expect(html).not.toContain('On the radar (3)')
+      expect(html).not.toMatch(/<details>[\s\S]*Radar 1/)
+    })
+
+    it('collapses "On the radar" behind a count once there are 4 or more', () => {
+      const html = renderWith([], [radarItem(1), radarItem(2), radarItem(3), radarItem(4)])
+      expect(html).toContain('On the radar (4)')
+      expect(html).toMatch(/<details>[\s\S]*On the radar \(4\)[\s\S]*Radar 1[\s\S]*<\/details>/)
+    })
+
+    it('collapses "Next year" the same way, after 3', () => {
+      const html = renderWith([], [nextYearItem(1), nextYearItem(2), nextYearItem(3), nextYearItem(4)])
+      expect(html).toContain('Next year (4)')
+    })
+
+    it('always collapses "Finished", even with a single item', () => {
+      const html = renderWith([], [other({ id: 'e1', title: 'One finished hunt', group: 'ended' })])
+      expect(html).toContain('Finished (1)')
+      expect(html).toMatch(/<details>[\s\S]*Finished \(1\)[\s\S]*One finished hunt[\s\S]*<\/details>/)
+    })
+
+    it('never collapses "Getting ready"', () => {
+      const items = [1, 2, 3, 4, 5].map(n => other({ id: `g${n}`, title: `Getting ready ${n}`, group: 'prep' }))
+      const html = renderWith([], items)
+      expect(html).not.toContain('Getting ready (')
+    })
   })
 })
 
@@ -190,17 +277,20 @@ describe('CampaignView: Limited data and Removed objectives (FF-096)', () => {
   type Other = NonNullable<Parameters<typeof CampaignView>[0]['others']>[number]
   const other = (over: Partial<Other> = {}): Other => ({
     id: 'p1', title: 'Wild turkey, archery (Kansas)', subtitle: 'turkey · eastern · archery',
-    chip: { label: 'Active', tone: 'live' }, dates: null, verdict: null, group: 'active', createdAt: null, limitedData: false, ...over,
+    chip: { label: 'Active', tone: 'live' }, dates: null, tripStart: null, verdict: null, group: 'now', createdAt: null, limitedData: false, ...over,
   })
+  // The spotlight card does not show the limited-data chip (it is not in the spotlight's
+  // title/window-chip/verdict-chip list), so these tests use "radar" rows instead.
+  const radarOther = (over: Partial<Other> = {}) => other({ group: 'radar', ...over })
 
   it('shows a "Limited data" chip only on a row flagged limitedData', () => {
-    const html = renderToStaticMarkup(<CampaignView campaigns={[]} others={[other({ limitedData: true }), other({ id: 'p2', title: 'Covered one' })]} />)
+    const html = renderToStaticMarkup(<CampaignView campaigns={[]} others={[radarOther({ limitedData: true }), radarOther({ id: 'p2', title: 'Covered one' })]} />)
     expect((html.match(/Limited data/g) ?? []).length).toBe(1)
     expect(html.indexOf('Limited data')).toBeLessThan(html.indexOf('Covered one'))
   })
 
   it('the Limited data chip is opaque, readable, and changes nothing else on the row', () => {
-    const html = renderToStaticMarkup(<CampaignView campaigns={[]} others={[other({ limitedData: true })]} />)
+    const html = renderToStaticMarkup(<CampaignView campaigns={[]} others={[radarOther({ limitedData: true })]} />)
     expect(html).toContain('background-color:#78350f')
     expect(html).toContain('color:#fde68a')
     expect(html).toContain('>Active<')
@@ -214,7 +304,7 @@ describe('CampaignView: Limited data and Removed objectives (FF-096)', () => {
     const withRemoved = renderToStaticMarkup(<CampaignView campaigns={[]} others={[other()]} removed={[{ id: 'r1', title: 'Old trip' }]} />)
     expect(withRemoved).toContain('Removed objectives (1)')
     expect(withRemoved).toContain('Old trip')
-    expect(withRemoved.indexOf('Other objectives')).toBeLessThan(withRemoved.indexOf('Removed objectives'))
+    expect(withRemoved.indexOf('Focus now')).toBeLessThan(withRemoved.indexOf('Removed objectives'))
   })
 
   it('a user whose only objectives are removed still sees the start prompt, plus the removed list', () => {

@@ -10,7 +10,13 @@ import { NOTICE_CLASSES } from '@/lib/strike/noticeStyles'
 import { formatReason } from '@/lib/strike/reasonLabels'
 import { WINDOW_CHIP_TONE } from '@/lib/strike/windowStatus'
 import { verdictStyle } from '@/lib/strike/verdictStyles'
-import { OTHER_OBJECTIVE_CLASSES as OC, LIMITED_DATA_TONE, type OtherObjective } from '@/lib/strike/otherObjectives'
+import {
+  OTHER_OBJECTIVE_CLASSES as OC,
+  LIMITED_DATA_TONE,
+  FOCUS_GROUP_HEADINGS,
+  type OtherObjective,
+  type OtherObjectiveGroup,
+} from '@/lib/strike/otherObjectives'
 import RemovedObjectives, { type RemovedObjective } from './RemovedObjectives'
 
 type UnitProfile = {
@@ -180,7 +186,7 @@ function PivotCard({ unit }: { unit: EnrichedUnit }) {
   )
 }
 
-// A Strike objective that is not part of a campaign (FF-095 Part 1). Links to its strike page.
+// A standalone Strike objective that is not part of a campaign (FF-095 Part 1). Links to its strike page.
 function OtherObjectiveRow({ item }: { item: OtherObjective }) {
   const verdict = item.verdict ? verdictStyle(item.verdict) : null
   return (
@@ -212,6 +218,74 @@ function OtherObjectiveRow({ item }: { item: OtherObjective }) {
         <span aria-hidden="true" className={OC.chevron}>›</span>
       </div>
     </Link>
+  )
+}
+
+// The larger first card in "Focus now" (or "Next up" when there is nothing focus-now yet).
+// Same tap target and chip/verdict content as a normal row, just bigger (FF-106 Stage 1).
+function SpotlightCard({ item }: { item: OtherObjective }) {
+  const verdict = item.verdict ? verdictStyle(item.verdict) : null
+  return (
+    <Link href={`/strike/${item.id}`} className={OC.spotlightCard}>
+      <div className="flex-1 min-w-0">
+        <div className={`${OC.spotlightTitle} break-words`}>{item.title}</div>
+        <div className={`${OC.subtitle} truncate`}>{item.subtitle}</div>
+        {item.dates && <div className={OC.dates}>{item.dates}</div>}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {item.chip && (
+          <span
+            className={OC.chip}
+            style={{ backgroundColor: WINDOW_CHIP_TONE[item.chip.tone].bg, color: WINDOW_CHIP_TONE[item.chip.tone].color }}
+          >
+            {item.chip.label}
+          </span>
+        )}
+        {verdict && (
+          <span className={OC.verdict} style={{ backgroundColor: verdict.bg, color: verdict.color }}>
+            {verdict.label}
+          </span>
+        )}
+        <span aria-hidden="true" className={OC.chevron}>›</span>
+      </div>
+    </Link>
+  )
+}
+
+// A group of standalone objectives under one heading. Plain when short, collapsed behind a
+// <summary> with a count when it is over the threshold (or always, for "Finished").
+function ObjectiveGroupSection({
+  group,
+  items,
+  collapseAfter,
+}: {
+  group: OtherObjectiveGroup
+  items: OtherObjective[]
+  // Collapse once the group has more than this many items. 0 collapses it always
+  // ("Finished"); Infinity never collapses it ("Getting ready").
+  collapseAfter: number
+}) {
+  if (items.length === 0) return null
+  const heading = FOCUS_GROUP_HEADINGS[group]
+  const collapsed = items.length > collapseAfter
+
+  if (!collapsed) {
+    return (
+      <section>
+        <h2 className={OC.heading}>{heading}</h2>
+        <div className={OC.card}>
+          {items.map(item => <OtherObjectiveRow key={item.id} item={item} />)}
+        </div>
+      </section>
+    )
+  }
+  return (
+    <details>
+      <summary className={OC.sectionSummary}>{heading} ({items.length})</summary>
+      <div className={OC.card}>
+        {items.map(item => <OtherObjectiveRow key={item.id} item={item} />)}
+      </div>
+    </details>
   )
 }
 
@@ -278,14 +352,42 @@ export default function CampaignView({ campaigns, others = [], removed = [] }: {
           })
         )}
 
-        {others.length > 0 && (
-          <section aria-labelledby="other-objectives-heading">
-            <h2 id="other-objectives-heading" className={OC.heading}>Other objectives</h2>
-            <div className={OC.card}>
-              {others.map(item => <OtherObjectiveRow key={item.id} item={item} />)}
+        {others.length > 0 && (() => {
+          const now = others.filter(o => o.group === 'now')
+          const prep = others.filter(o => o.group === 'prep')
+          const radar = others.filter(o => o.group === 'radar')
+          const nextYear = others.filter(o => o.group === 'next_year')
+          const finished = others.filter(o => o.group === 'ended')
+
+          // The first "Focus now" item gets the big card. With none focus-now yet, the
+          // first "Getting ready" item takes its place, labelled "Next up" instead.
+          const spotlight = now[0] ?? prep[0] ?? null
+          const spotlightIsNow = now.length > 0
+          const nowRest = spotlightIsNow ? now.slice(1) : now
+          const prepRest = spotlightIsNow ? prep : prep.slice(1)
+
+          return (
+            <div data-testid="standalone-objectives" className="space-y-4">
+              {spotlight && (
+                <section aria-labelledby="focus-spotlight-heading">
+                  <h2 id="focus-spotlight-heading" className={OC.spotlightLabel}>
+                    {spotlightIsNow ? 'Focus now' : 'Next up'}
+                  </h2>
+                  <SpotlightCard item={spotlight} />
+                  {nowRest.length > 0 && (
+                    <div className={`${OC.card} mt-2`}>
+                      {nowRest.map(item => <OtherObjectiveRow key={item.id} item={item} />)}
+                    </div>
+                  )}
+                </section>
+              )}
+              <ObjectiveGroupSection group="prep" items={prepRest} collapseAfter={Infinity} />
+              <ObjectiveGroupSection group="radar" items={radar} collapseAfter={3} />
+              <ObjectiveGroupSection group="next_year" items={nextYear} collapseAfter={3} />
+              <ObjectiveGroupSection group="ended" items={finished} collapseAfter={0} />
             </div>
-          </section>
-        )}
+          )
+        })()}
 
         <RemovedObjectives items={removed} />
       </div>

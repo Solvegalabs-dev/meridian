@@ -36,3 +36,21 @@ describe('/strike/new trip dates', () => {
     for (const input of dateInputs) expect(input).toContain('[color-scheme:dark]')
   })
 })
+
+// FF-106 Stage 1: the slot count and the at-limit screen both depend on a client fetch
+// (/api/strike/slots) that only resolves after mount, so on the server-rendered first paint
+// (slots still null) the form shows plainly, with neither element yet.
+describe('/strike/new slots (FF-106 Stage 1, first paint)', () => {
+  const html = renderToStaticMarkup(createElement(StrikeNewPage))
+
+  it('shows the form, not the at-limit screen, before the slot count has loaded', () => {
+    expect(html).toContain('<form')
+    expect(html).toContain('Create Objective')
+    expect(html).not.toContain("your limit of")
+    expect(html).not.toContain('Back to Strike')
+  })
+
+  it('shows no slot summary line before the slot count has loaded', () => {
+    expect(html).not.toMatch(/Hunting \d+ of \d+/)
+  })
+})
