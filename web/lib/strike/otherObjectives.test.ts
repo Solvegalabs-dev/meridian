@@ -9,12 +9,15 @@ import {
   evaluationKey,
   sortOtherObjectives,
   LIMITED_DATA_TONE,
+  FOCUS_GROUP_HEADINGS,
   OTHER_OBJECTIVE_CLASSES,
   type OtherObjective,
   type OtherProfileRow,
 } from './otherObjectives'
 
 const TODAY = '2026-10-03'
+// Noon UTC keeps every US zone on 2026-10-03 (same convention as lib/utils/dateOnly.ts).
+const NOW = new Date('2026-10-03T12:00:00Z')
 
 function profile(id: string, over: Partial<OtherProfileRow> = {}): OtherProfileRow {
   return {
@@ -49,20 +52,30 @@ function build(profiles: OtherProfileRow[], extra: { briefs?: Record<string, { g
     evaluations: new Map(profiles.map(p => [evaluationKey(p), evalFor(p)])),
     briefs: new Map(Object.entries(extra.briefs ?? {})),
     storedTitles: new Map(Object.entries(extra.titles ?? {})),
+    now: NOW,
   })
 }
 
 describe('buildOtherObjectives', () => {
-  it('groups and labels active, upcoming and ended objectives', () => {
+  it('groups and labels a live, a far-out upcoming, and an ended objective', () => {
     const active = profile('a')
+    // 2026-10-03 -> 2026-11-10 is 38 days out: inside the "prep" window (15-90 days).
     const upcoming = profile('u', { timing: { trip_start: '2026-11-10', trip_end: '2026-11-20' } })
     const ended = profile('e', { timing: { trip_start: '2026-09-01', trip_end: '2026-09-15' } })
     const out = build([active, upcoming, ended])
     const by = (id: string) => out.find(o => o.id === id)!
 
-    expect(by('a')).toMatchObject({ group: 'active', chip: { label: 'Active', tone: 'live' } })
-    expect(by('u')).toMatchObject({ group: 'upcoming', chip: { label: 'Fishing trip starts Nov 10', tone: 'pending' } })
+    expect(by('a')).toMatchObject({ group: 'now', chip: { label: 'Active', tone: 'live' } })
+    expect(by('u')).toMatchObject({ group: 'prep', chip: { label: 'Fishing trip starts Nov 10', tone: 'pending' } })
     expect(by('e')).toMatchObject({ group: 'ended', chip: { label: 'Trip ended on Sep 15', tone: 'ended' } })
+  })
+
+  it('an upcoming trip inside 14 days is "now"; one over 180 days out is "next_year"', () => {
+    const soon = profile('soon', { timing: { trip_start: '2026-10-10', trip_end: '2026-10-12' } }) // 7 days out
+    const farOut = profile('far', { timing: { trip_start: '2027-05-01', trip_end: '2027-05-05' } }) // > 180 days out
+    const out = build([soon, farOut])
+    expect(out.find(o => o.id === 'soon')!.group).toBe('now')
+    expect(out.find(o => o.id === 'far')!.group).toBe('next_year')
   })
 
   it('says "Hunt trip starts" for an upcoming hunting objective, not "Fishing"', () => {
@@ -73,15 +86,20 @@ describe('buildOtherObjectives', () => {
     expect(out[0]).toMatchObject({ chip: { label: 'Hunt trip starts Nov 10', tone: 'pending' } })
   })
 
-  it('sorts active first, then upcoming, then ended last, newest first inside each group', () => {
+  it('sorts now first, then prep/radar/next_year by soonest trip date, then ended last (newest first)', () => {
     const profiles = [
       profile('ended-new', { timing: { trip_start: '2026-08-01', trip_end: '2026-08-10' }, created_at: '2026-09-30T00:00:00Z' }),
-      profile('active-old', { created_at: '2026-09-01T00:00:00Z' }),
-      profile('upcoming', { timing: { trip_start: '2026-12-01', trip_end: '2026-12-09' }, created_at: '2026-09-15T00:00:00Z' }),
-      profile('active-new', { created_at: '2026-10-02T00:00:00Z' }),
+      profile('now-old', { created_at: '2026-09-01T00:00:00Z' }),
+      profile('prep-later', { timing: { trip_start: '2026-12-01', trip_end: '2026-12-09' }, created_at: '2026-09-15T00:00:00Z' }),
+      profile('now-new', { created_at: '2026-10-02T00:00:00Z' }),
       profile('ended-old', { timing: { trip_start: '2026-07-01', trip_end: '2026-07-09' }, created_at: '2026-08-01T00:00:00Z' }),
+      profile('prep-sooner', { timing: { trip_start: '2026-11-01', trip_end: '2026-11-09' }, created_at: '2026-09-10T00:00:00Z' }),
     ]
-    expect(build(profiles).map(o => o.id)).toEqual(['active-new', 'active-old', 'upcoming', 'ended-new', 'ended-old'])
+    // now-old/now-new: both active today, so trip_start ties and createdAt (newest first) breaks it.
+    // prep-sooner (29 days out) sorts before prep-later (59 days out): soonest trip_start first.
+    expect(build(profiles).map(o => o.id)).toEqual([
+      'now-new', 'now-old', 'prep-sooner', 'prep-later', 'ended-new', 'ended-old',
+    ])
   })
 
   it('a hand-completed profile (status completed, no ended window) sorts as ended and shows Trip ended', () => {
@@ -111,16 +129,17 @@ describe('buildOtherObjectives', () => {
 
   it('shows the trip dates instead of a chip when the window gives no status', () => {
     const p = profile('odd', { timing: { trip_start: '2026-10-10' } })
-    const out = buildOtherObjectives({ profiles: [p], evaluations: new Map(), briefs: new Map(), storedTitles: new Map() })
+    const out = buildOtherObjectives({ profiles: [p], evaluations: new Map(), briefs: new Map(), storedTitles: new Map(), now: NOW })
     expect(out[0].chip).toBeNull()
     expect(out[0].dates).toBe('Oct 10')
   })
 
   it('shows neither chip nor dates for an objective with no timing at all', () => {
     const p = profile('bare', { timing: null })
-    const out = buildOtherObjectives({ profiles: [p], evaluations: new Map([[evaluationKey(p), evalFor(p)]]), briefs: new Map(), storedTitles: new Map() })
+    const out = buildOtherObjectives({ profiles: [p], evaluations: new Map([[evaluationKey(p), evalFor(p)]]), briefs: new Map(), storedTitles: new Map(), now: NOW })
     expect(out[0].chip).toBeNull()
     expect(out[0].dates).toBeNull()
+    expect(out[0].tripStart).toBeNull()
   })
 
   it('uses a readable title: stored when real, computed when the stored one is the raw key', () => {
@@ -149,15 +168,47 @@ describe('buildOtherObjectives', () => {
   })
 })
 
+describe('FOCUS_GROUP_HEADINGS (FF-106 Stage 1)', () => {
+  it('uses the exact specified wording for each group', () => {
+    expect(FOCUS_GROUP_HEADINGS).toEqual({
+      now: 'Focus now',
+      prep: 'Getting ready',
+      radar: 'On the radar',
+      next_year: 'Next year',
+      ended: 'Finished',
+    })
+  })
+})
+
 describe('sortOtherObjectives', () => {
-  const item = (id: string, group: OtherObjective['group'], createdAt: string | null): OtherObjective => ({
-    id, title: id, subtitle: '', chip: null, dates: null, verdict: null, group, createdAt, limitedData: false,
+  const item = (id: string, group: OtherObjective['group'], createdAt: string | null, tripStart: string | null = null): OtherObjective => ({
+    id, title: id, subtitle: '', chip: null, dates: null, tripStart, verdict: null, group, createdAt, limitedData: false,
   })
 
   it('does not mutate its input and puts a missing created date last in its group', () => {
-    const input = [item('b', 'active', null), item('a', 'active', '2026-10-01T00:00:00Z')]
+    const input = [item('b', 'now', null), item('a', 'now', '2026-10-01T00:00:00Z')]
     expect(sortOtherObjectives(input).map(i => i.id)).toEqual(['a', 'b'])
     expect(input.map(i => i.id)).toEqual(['b', 'a'])
+  })
+
+  it('orders groups now, prep, radar, next_year, ended', () => {
+    const input = [
+      item('finished', 'ended', '2026-01-01T00:00:00Z'),
+      item('next-year', 'next_year', '2026-01-01T00:00:00Z'),
+      item('radar', 'radar', '2026-01-01T00:00:00Z'),
+      item('prep', 'prep', '2026-01-01T00:00:00Z'),
+      item('now', 'now', '2026-01-01T00:00:00Z'),
+    ]
+    expect(sortOtherObjectives(input).map(i => i.id)).toEqual(['now', 'prep', 'radar', 'next-year', 'finished'])
+  })
+
+  it('sorts by soonest trip_start within a non-ended group, items with no trip_start last', () => {
+    const input = [
+      item('no-date', 'prep', '2026-09-01T00:00:00Z'),
+      item('later', 'prep', '2026-09-01T00:00:00Z', '2026-12-01'),
+      item('sooner', 'prep', '2026-09-01T00:00:00Z', '2026-11-01'),
+    ]
+    expect(sortOtherObjectives(input).map(i => i.id)).toEqual(['sooner', 'later', 'no-date'])
   })
 })
 
@@ -177,16 +228,18 @@ describe('Other objectives styles', () => {
       expect(cls).not.toMatch(/\btext-(xxs|2xs)\b/)
     }
     // Title and prompt body are body text: text-sm or larger. Subtitle, dates, chips, heading are labels: text-xs or larger.
-    for (const key of ['title', 'titleEnded', 'promptTitle', 'promptBody', 'promptButton'] as const) {
+    for (const key of ['title', 'titleEnded', 'promptTitle', 'promptBody', 'promptButton', 'spotlightTitle'] as const) {
       expect(OTHER_OBJECTIVE_CLASSES[key]).toMatch(/\btext-(sm|base|lg)\b/)
     }
-    for (const key of ['heading', 'subtitle', 'chip', 'verdict', 'dates'] as const) {
+    for (const key of ['heading', 'subtitle', 'chip', 'verdict', 'dates', 'spotlightLabel', 'sectionSummary'] as const) {
       expect(OTHER_OBJECTIVE_CLASSES[key]).toMatch(/\btext-(xs|sm|base)\b/)
     }
   })
 
-  it('makes the row and the prompt button at least 44 px tall', () => {
+  it('makes the row, the spotlight card, the section summary, and the prompt button at least 44 px tall', () => {
     expect(OTHER_OBJECTIVE_CLASSES.row).toMatch(/min-h-\[(4[4-9]|[5-9]\d)px\]/)
+    expect(OTHER_OBJECTIVE_CLASSES.spotlightCard).toMatch(/min-h-\[(4[4-9]|[5-9]\d)px\]/)
+    expect(OTHER_OBJECTIVE_CLASSES.sectionSummary).toMatch(/min-h-\[44px\]/)
     expect(OTHER_OBJECTIVE_CLASSES.promptButton).toMatch(/min-h-\[(4[4-9]|[5-9]\d)px\]/)
   })
 
@@ -209,7 +262,7 @@ describe('Other objectives styles', () => {
 describe('Limited data (FF-096 Part 3)', () => {
   const index = buildSeasonIndex([{ state: 'UT', species: 'elk' }])
   const run = (p: OtherProfileRow, seasonIndex?: ReturnType<typeof buildSeasonIndex> | null) =>
-    buildOtherObjectives({ profiles: [p], evaluations: new Map([[evaluationKey(p), evalFor(p)]]), briefs: new Map(), storedTitles: new Map(), seasonIndex })[0]
+    buildOtherObjectives({ profiles: [p], evaluations: new Map([[evaluationKey(p), evalFor(p)]]), briefs: new Map(), storedTitles: new Map(), seasonIndex, now: NOW })[0]
 
   it('flags a species and state with no data, and not one with data', () => {
     expect(run(profile('ks', { taxonomy_key: 'turkey.eastern.archery', state: 'KS', geo: null }), index).limitedData).toBe(true)
@@ -248,7 +301,7 @@ describe('Removed objectives styles (FF-096 Part 1)', () => {
     expect(OTHER_OBJECTIVE_CLASSES.restoreButton).toMatch(/min-h-\[44px\]/)
     for (const key of ['removedSummary', 'removedRow', 'removedTitle', 'restoreButton', 'removedMessage'] as const) {
       expect(OTHER_OBJECTIVE_CLASSES[key]).not.toMatch(/\/\d+/)
-      expect(OTHER_OBJECTIVE_CLASSES[key]).not.toMatch(/opacity-/)
+      expect(OTHER_OBJECTIVE_CLASSES[key]).not.toMatch(/opacity-/)
     }
   })
 })
