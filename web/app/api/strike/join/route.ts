@@ -134,7 +134,7 @@ export async function POST(request: NextRequest) {
     // already spent — leaving it claimed would mean a silently broken invite.
     console.error('[strike/join] allowed_emails insert failed after user create:', allowedEmailError.message, { userId })
     return NextResponse.json(
-      { error: 'access_pending', message: 'Your account was created, but access setup needs a moment — the founder has been notified.' },
+      { error: 'access_pending', message: 'Your account was created, but access setup did not finish. Please tell Jason so he can finish it.' },
       { status: 500 },
     )
   }
