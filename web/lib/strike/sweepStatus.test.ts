@@ -17,9 +17,11 @@ describe('sweepPromptFor', () => {
     expect(SWEEP_STALE_DAYS).toBe(3)
   })
 
-  it('no sweep data at all says there is no intel yet', () => {
-    expect(sweepPromptFor(null, NOW)).toEqual({ kind: 'no_data', text: 'No intel yet. Tap Run Sweep to get intel for this objective.' })
-    expect(NO_DATA_PROMPT).toBe('No intel yet. Tap Run Sweep to get intel for this objective.')
+  it('no sweep data at all says readings are still being collected', () => {
+    expect(sweepPromptFor(null, NOW)).toEqual({ kind: 'no_data', text: NO_DATA_PROMPT })
+    expect(NO_DATA_PROMPT).toBe(
+      'Readings for this objective are still being collected. This usually takes a few minutes for a new objective, or up to six hours. Check back soon, then tap Run Sweep to build your brief.'
+    )
     expect(sweepPromptFor('not a date', NOW).kind).toBe('no_data')
   })
 

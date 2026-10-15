@@ -9,7 +9,7 @@ import StrikeBriefPanel from './StrikeBriefPanel'
 import StrikeIntelPanel from './StrikeIntelPanel'
 import { SignalsBody } from './StrikeSignalsPanel'
 import SweepButton from '@/components/dashboard/SweepButton'
-import { emptyTabPrompt, sweepPromptFor, SWEEP_STALE_DAYS } from '@/lib/strike/sweepStatus'
+import { emptyTabPrompt, sweepPromptFor, SWEEP_STALE_DAYS, NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
 import { ZERO_EVIDENCE_BANNER } from '@/lib/strikeBrief/evidence'
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }))
@@ -106,7 +106,7 @@ describe('RunSweepPrompt', () => {
 
   it('no data: the text and the button, in one place', () => {
     const html = prompt(sweepPromptFor(null))
-    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect(html).toContain('>Run Sweep<')
   })
 
@@ -123,7 +123,7 @@ describe('RunSweepPrompt', () => {
 
   it('body text is 14 px (text-sm) or larger and follows the style rules', () => {
     const html = prompt(sweepPromptFor(null))
-    expect(html).toMatch(/<p class="text-sm[^"]*">No intel yet/)
+    expect(html).toMatch(/<p class="text-sm[^"]*">Readings for this objective/)
     expectStyleRules(html)
   })
 })
@@ -136,7 +136,7 @@ describe('Brief tab', () => {
 
   it('no brief: the Run Sweep prompt, not the old scheduled-sweep text', () => {
     const html = render({ brief: { time_windows: null }, emptyPrompt: flow(emptyTabPrompt(null)) })
-    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect(html).toContain('>Run Sweep<')
     expect(html).not.toMatch(/scheduled sweep|Check back after/i)
   })
@@ -164,15 +164,15 @@ describe('Brief tab', () => {
   it('a brief written with no evidence shows the prompt too, and the banner on its own line', () => {
     const brief = { go_no_go: 'MONITOR', time_windows: [], summary: `${ZERO_EVIDENCE_BANNER}\n\nTypical for this time of year.`, brief_generated_at: ago(0), sources: [], map_pins: [] }
     const html = render({ brief, emptyPrompt: flow(emptyTabPrompt(null)) })
-    expect(html).toContain('No intel yet. Tap Run Sweep')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect(html).toContain('whitespace-pre-line')
     expect(html).toContain('No data collected yet. This is typical for the season, not confirmed. Tap Run Sweep to get intel.')
   })
 
   it('without a prompt passed, the no-brief state still never mentions a schedule', () => {
     const html = render({ brief: { time_windows: null } })
-    expect(html).toContain('No intel yet. Tap Run Sweep')
-    expect(html).not.toMatch(/scheduled|check back/i)
+    expect(html).toContain(NO_DATA_PROMPT)
+    expect(html).not.toMatch(/scheduled sweep|check back after/i)
   })
 })
 
@@ -182,7 +182,7 @@ describe('Intel tab', () => {
 
   it('no signal data: the Run Sweep prompt, not "No signal data yet"', () => {
     const html = render({ emptyPrompt: flow(emptyTabPrompt(null)) })
-    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect(html).toContain('>Run Sweep<')
     expect(html).not.toContain('No signal data yet')
   })
@@ -209,9 +209,9 @@ describe('Signals tab', () => {
 
   it('no signals: the Run Sweep prompt, not "Signals are building"', () => {
     const html = renderToStaticMarkup(<SignalsBody groups={[]} emptyPrompt={flow(emptyTabPrompt(null))} />)
-    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect(html).toContain('>Run Sweep<')
-    expect(html).not.toMatch(/building|check back/i)
+    expect(html).not.toMatch(/are building|check back after/i)
   })
 
   it('old signals show the stale prompt above them', () => {
