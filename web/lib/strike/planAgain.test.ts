@@ -85,7 +85,7 @@ describe('planAgainForNextYear', () => {
 
   it('creates a new objective one year out, with the same spots, and leaves the source untouched', async () => {
     const before = JSON.stringify(db.tables.objective_profiles[0])
-    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db))
+    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), true)
     expect(JSON.stringify(db.tables.objective_profiles[0])).toBe(before)
 
     const newProfile = db.tables.objective_profiles.find(p => p.id === result.profileId)!
@@ -106,7 +106,7 @@ describe('planAgainForNextYear', () => {
 
   it('copies no briefs, notes or confidence history (none exist on the new row, nothing is queried for them)', async () => {
     db.tables.strike_briefs = [{ objective_id: 'arc-1', go_no_go: 'GO' }]
-    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db))
+    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), true)
     const briefsForNew = (db.tables.strike_briefs ?? []).filter((b: Record<string, unknown>) => b.objective_id === result.objectiveId)
     expect(briefsForNew).toEqual([])
   })
@@ -118,7 +118,7 @@ describe('planAgainForNextYear', () => {
         { id: 'spot-2', objective_id: 'arc-1', name: 'Camp B', lat: 40.2, lon: -111.2, is_active: true },
       ],
     })
-    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db))
+    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), true)
     const newSpots = db.tables.objective_spots.filter(s => s.objective_id === result.objectiveId)
     expect(newSpots).toHaveLength(2)
     const active = newSpots.find(s => s.is_active)
@@ -128,7 +128,7 @@ describe('planAgainForNextYear', () => {
 
   it('shifts a source with no dates into a dateless new objective', async () => {
     db = seedDb({ timing: {} })
-    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db))
+    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), true)
     const newProfile = db.tables.objective_profiles.find(p => p.id === result.profileId)!
     expect(newProfile.timing).toEqual({})
   })
@@ -136,13 +136,13 @@ describe('planAgainForNextYear', () => {
   it('refuses an objective that is not finished yet', async () => {
     const farFuture = String(new Date().getUTCFullYear() + 2)
     db = seedDb({ profileStatus: 'active', timing: { trip_start: `${farFuture}-10-01`, trip_end: `${farFuture}-10-10` } })
-    await expect(planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db)))
+    await expect(planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), true))
       .rejects.toMatchObject({ code: 'not_finished' })
   })
 
   it('refuses a campaign unit', async () => {
     db.tables.campaign_units.push({ id: 'cu1', objective_id: 'arc-1' })
-    await expect(planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db)))
+    await expect(planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), true))
       .rejects.toBeInstanceOf(ManagementError)
   })
 
@@ -155,7 +155,34 @@ describe('planAgainForNextYear', () => {
     db.tables.objective_profiles.push(...extra)
     let err: unknown
     try {
-      await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db))
+      await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), true)
+    } catch (e) { err = e }
+    expect(err).toBeInstanceOf(LimitReachedError)
+    expect((err as LimitReachedError).category).toBe('hunt')
+    expect((err as LimitReachedError).max).toBe(3)
+  })
+
+  it('a non-friend is not limited, even at 5 active objectives', async () => {
+    const extra = Array.from({ length: 5 }, (_, i) => ({
+      id: `fill-${i}`, objective_id: `arc-fill-${i}`, user_id: 'u1', org_source: 'strike', status: 'active',
+      taxonomy_key: 'elk.bull.archery', state: 'UT', timing: {}, ended_at: null, ended_reason: null,
+      hunt_code: null, domain: 'elk', lat: null, lon: null, hunt_unit_id: null,
+    }))
+    db.tables.objective_profiles.push(...extra)
+    const result = await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), false)
+    expect(db.tables.objective_profiles.find(p => p.id === result.profileId)).toBeTruthy()
+  })
+
+  it('a friend at the cap is still refused with objective_limit_reached', async () => {
+    const extra = Array.from({ length: 3 }, (_, i) => ({
+      id: `fill-${i}`, objective_id: `arc-fill-${i}`, user_id: 'u1', org_source: 'strike', status: 'active',
+      taxonomy_key: 'elk.bull.archery', state: 'UT', timing: {}, ended_at: null, ended_reason: null,
+      hunt_code: null, domain: 'elk', lat: null, lon: null, hunt_unit_id: null,
+    }))
+    db.tables.objective_profiles.push(...extra)
+    let err: unknown
+    try {
+      await planAgainForNextYear(db as unknown as Parameters<typeof planAgainForNextYear>[0], profileFor(db), true)
     } catch (e) { err = e }
     expect(err).toBeInstanceOf(LimitReachedError)
     expect((err as LimitReachedError).category).toBe('hunt')

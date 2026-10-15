@@ -5,7 +5,7 @@ import { INVITE_ONLY_MESSAGE } from '@/lib/auth/inviteGate'
 import { POST } from './route'
 
 let db: FakeDb
-let sessionUser: { id: string; email?: string } | null = null
+let sessionUser: { id: string; email?: string; app_metadata?: Record<string, unknown> } | null = null
 
 vi.mock('@/lib/supabase/server', () => ({
   createServiceClient: () => db,
@@ -24,7 +24,8 @@ vi.mock('@/lib/geo/locationResolver', () => ({
   })),
 }))
 
-const OWNER = { id: 'u1', email: 'owner@example.com' }
+// Strike-friend by default: most tests here exercise the limited path, same as /join users.
+const OWNER = { id: 'u1', email: 'owner@example.com', app_metadata: { signup_source: 'strike' } }
 
 function seed(overrides: Record<string, unknown> = {}) {
   db = new FakeDb({
@@ -122,5 +123,34 @@ describe('POST plan-again', () => {
     expect(res.status).toBe(403)
     const body = await res.json()
     expect(body).toEqual({ error: 'objective_limit_reached', category: 'hunt', max: 3 })
+  })
+
+  it('a friend at the cap is still refused with objective_limit_reached', async () => {
+    sessionUser = { id: 'u1', email: 'owner@example.com', app_metadata: { signup_source: 'strike' } }
+    const extra = Array.from({ length: 3 }, (_, i) => ({
+      id: `fill-${i}`, objective_id: `arc-fill-${i}`, user_id: 'u1', org_source: 'strike', status: 'active',
+      taxonomy_key: 'elk.bull.archery', state: 'UT', timing: {}, ended_at: null, ended_reason: null,
+      hunt_code: null, domain: 'elk', lat: null, lon: null, hunt_unit_id: null, geo: {}, priority_stack: [],
+    }))
+    db.tables.objective_profiles.push(...extra)
+    const res = await post('prof-1')
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('objective_limit_reached')
+  })
+
+  // Not on the strike_friend plan (no app_metadata.signup_source === 'strike'): same as the
+  // create route and /api/strike/slots, this user is not limited at all.
+  it('a non-friend with 5 active objectives can still plan again', async () => {
+    sessionUser = { id: 'u1', email: 'owner@example.com' }
+    const extra = Array.from({ length: 5 }, (_, i) => ({
+      id: `fill-${i}`, objective_id: `arc-fill-${i}`, user_id: 'u1', org_source: 'strike', status: 'active',
+      taxonomy_key: 'elk.bull.archery', state: 'UT', timing: {}, ended_at: null, ended_reason: null,
+      hunt_code: null, domain: 'elk', lat: null, lon: null, hunt_unit_id: null, geo: {}, priority_stack: [],
+    }))
+    db.tables.objective_profiles.push(...extra)
+    const res = await post('prof-1')
+    expect(res.status).toBe(201)
+    const body = await res.json() as { objective_id: string }
+    expect(db.tables.objective_profiles.find(p => p.id === body.objective_id)).toBeTruthy()
   })
 })

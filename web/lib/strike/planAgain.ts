@@ -5,6 +5,9 @@
 // Deliberately does NOT use objectives.parent_objective_id to link the two: the abandon route
 // cascades on that column, and a "planned again" objective must never be swept up by it. No
 // lineage between the old and new objective is recorded anywhere.
+//
+// Strike-friend category/total limits (lib/strike/limits.ts) are enforced only when the caller
+// says the owner is a Strike friend — see planAgainForNextYear's isStrikeFriend param.
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { waitUntil } from '@vercel/functions'
 import { evaluateProfileWindow } from '@/lib/objectives/objectiveWindow'
@@ -69,6 +72,11 @@ export type PlanAgainResult = { objectiveId: string; profileId: string }
 export async function planAgainForNextYear(
   db: SupabaseClient,
   profile: ManagedProfile,
+  // Strike-friend limits (lib/strike/limits.ts) apply only to users who joined via /join
+  // (auth app_metadata.signup_source === 'strike'), same as the create route and /api/strike/slots.
+  // Anyone else — including a Strike objective owned by a non-friend user, if that ever exists —
+  // is not limited at all here.
+  isStrikeFriend: boolean,
   now: Date = new Date(),
 ): Promise<PlanAgainResult> {
   if (await isCampaignUnit(db, profile)) {
@@ -89,11 +97,13 @@ export async function planAgainForNextYear(
   if (extraErr || !extra) throw new ManagementError('Could not read the objective. Try again.', 500, 'write_failed')
   const geo = (extra.geo ?? {}) as Record<string, unknown>
 
-  const category = categoryFor({ domain: profile.domain, taxonomy_key: profile.taxonomy_key })
-  const slots = await strikeSlots(db, profile.user_id as string)
-  const categorySlot = slots[category]
-  if (categorySlot.used >= categorySlot.max) throw new LimitReachedError(category, categorySlot.max)
-  if (slots.total.used >= slots.total.max) throw new LimitReachedError('total', slots.total.max)
+  if (isStrikeFriend) {
+    const category = categoryFor({ domain: profile.domain, taxonomy_key: profile.taxonomy_key })
+    const slots = await strikeSlots(db, profile.user_id as string)
+    const categorySlot = slots[category]
+    if (categorySlot.used >= categorySlot.max) throw new LimitReachedError(category, categorySlot.max)
+    if (slots.total.used >= slots.total.max) throw new LimitReachedError('total', slots.total.max)
+  }
 
   const timing = shiftTimingOneYear(profile.timing)
   const { agents, buildStatus } = await resolveAgentBundle(profile.taxonomy_key ?? '', {
