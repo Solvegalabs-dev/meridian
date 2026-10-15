@@ -4,6 +4,7 @@ import { isEndedWindowState, type WindowEvaluation } from '@/lib/objectives/wind
 import { isClosedBrief } from '@/lib/strikeBrief/goNoGo'
 import { verdictStyle, TIER_CHIP } from '@/lib/strike/verdictStyles'
 import { PRESEASON_CAPTION, WINDOW_CHIP_TONE, isPreseasonState, windowStatusChip } from '@/lib/strike/windowStatus'
+import { isFishingTaxonomyKey } from '@/lib/strike/config/fishing-taxonomy'
 
 type Props = {
   title: string
@@ -19,7 +20,7 @@ type Props = {
 }
 
 export default function StrikeHeader({ title, huntCode, taxonomyKey, evaluation, hasBrief, brief, isOnline }: Props) {
-  const chip = windowStatusChip(evaluation)
+  const chip = windowStatusChip(evaluation, isFishingTaxonomyKey(taxonomyKey))
   const ended = evaluation ? isEndedWindowState(evaluation.state) : false
   const closed = ended || isClosedBrief(brief as { go_no_go?: string | null } | null)
   // Verdict and tier only when a real brief exists and the hunt is live.

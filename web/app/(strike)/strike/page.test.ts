@@ -148,7 +148,7 @@ describe('/strike Other objectives (FF-095 Part 1)', () => {
     )
     const { props } = await render()
     expect(props.others.map(o => o.id)).toEqual(['prof-active', 'prof-upcoming', 'prof-ended'])
-    expect(props.others.map(o => o.chip?.label)).toEqual(['Active', 'Opens Nov 10', 'Trip ended on Sep 15'])
+    expect(props.others.map(o => o.chip?.label)).toEqual(['Active', 'Fishing trip starts Nov 10', 'Trip ended on Sep 15'])
   })
 
   it('shows the verdict of a live brief and none for an ended hunt', async () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import StrikeBriefPanel from './StrikeBriefPanel'
+import { NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 
@@ -81,13 +82,13 @@ describe('StrikeBriefPanel', () => {
 
   it('pending state, upcoming hunt: says when briefs start', () => {
     const html = render({ brief: brief({ time_windows: null }), windowState: 'upcoming', tripStart: '2026-10-15' })
-    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect(html).toContain('Briefs start when your trip window opens (Oct 15).')
   })
 
   it('pending state without an upcoming hunt has no start line', () => {
     const html = render({ brief: brief({ time_windows: null }), windowState: 'active' })
-    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect(html).not.toContain('Briefs start')
   })
 
@@ -149,7 +150,7 @@ describe('StrikeBriefPanel: no location (FF-095 Part 3)', () => {
 
   it('an objective that has a location but no brief yet gets the Run Sweep prompt, not the old scheduled-sweep text', () => {
     const html = render({ brief: brief({ time_windows: null }), noLocation: false, onGoToPrep: () => {} })
-    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect(html).not.toContain('Intelligence sweep pending')
     expect(html).not.toContain('Check back after the next run')
     expect(html).not.toContain('Add a hunt spot')

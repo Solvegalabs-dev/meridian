@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import StrikeBriefClient from './StrikeBriefClient'
+import { NO_DATA_PROMPT } from '@/lib/strike/sweepStatus'
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }))
 vi.mock('@/hooks/useStrikeCache', () => ({ useStrikeCache: () => ({ cachedBrief: null, cacheBrief: vi.fn() }) }))
@@ -68,7 +69,7 @@ describe('header', () => {
 describe('Brief tab', () => {
   it('an objective with no sweep data and no brief gets the no-intel prompt with the button inline', () => {
     const html = render()
-    expect(html).toContain('No intel yet. Tap Run Sweep to get intel for this objective.')
+    expect(html).toContain(NO_DATA_PROMPT)
     expect((html.match(/>Run Sweep</g) ?? []).length).toBe(2) // header and inline
   })
 
@@ -79,7 +80,7 @@ describe('Brief tab', () => {
 
   it('recent sweep data with no brief still points at Run Sweep (a sweep writes the brief)', () => {
     const html = render({ sweep: { lastSweepAt: ago(1), nextSweepAt: null, latestDataAt: ago(1) } })
-    expect(html).toContain('No intel yet. Tap Run Sweep')
+    expect(html).toContain(NO_DATA_PROMPT)
   })
 
   it('a missing location wins over the sweep prompt', () => {
@@ -88,7 +89,7 @@ describe('Brief tab', () => {
     expect(html).not.toContain('No intel yet')
   })
 
-  it('never mentions a scheduled sweep', () => {
-    expect(render()).not.toMatch(/scheduled|check back/i)
+  it('never mentions the old scheduled-sweep wording', () => {
+    expect(render()).not.toMatch(/scheduled sweep|check back after/i)
   })
 })

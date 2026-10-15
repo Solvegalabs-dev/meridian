@@ -18,14 +18,19 @@ export function isPreseasonState(evaluation: WindowEvaluation | null | undefined
   return evaluation?.state === 'upcoming' || evaluation?.state === 'season_not_open'
 }
 
-export function windowStatusChip(evaluation: WindowEvaluation | null | undefined): WindowChip | null {
+// isFishing picks the wording for the user's own trip start (FF-105B Fix 4): it is the
+// user's trip, not a season opening, so "Opens" is wrong there. The season_start case below
+// really is a season opening, so it keeps "Opens".
+export function windowStatusChip(evaluation: WindowEvaluation | null | undefined, isFishing: boolean): WindowChip | null {
   if (!evaluation) return null
   const d = evaluation.detail
   switch (evaluation.state) {
     case 'active':
       return { label: 'Active', tone: 'live' }
     case 'upcoming':
-      return d.trip_start ? { label: `Opens ${formatDateOnly(d.trip_start)}`, tone: 'pending' } : null
+      return d.trip_start
+        ? { label: `${isFishing ? 'Fishing' : 'Hunt'} trip starts ${formatDateOnly(d.trip_start)}`, tone: 'pending' }
+        : null
     case 'season_not_open':
       return d.season_start ? { label: `Opens ${formatDateOnly(d.season_start)}`, tone: 'pending' } : null
     case 'season_closed':

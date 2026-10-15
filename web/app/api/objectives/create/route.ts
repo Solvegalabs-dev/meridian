@@ -20,8 +20,13 @@ import { checkCoverage, coverageNotice, toStateCode, COVERAGE_MODE } from '@/lib
 import { loadSeasonIndex } from '@/lib/strike/coverageData'
 import { checkTripDate } from '@/lib/strike/tripDateRange'
 import { createLinkedObjective, LinkedObjectiveError } from '@/lib/objectives/linkedObjective'
+import { createSpot, PRIMARY_SPOT_NAME } from '@/lib/spots/spotService'
+import { runAgentsForObjective } from '@/lib/agents/runAgentsForObjective'
 
 export const dynamic = 'force-dynamic'
+// FF-105B: the Strike session path now also creates the first spot and kicks off the
+// objective's first agent run after the response is sent (both best-effort, below).
+export const maxDuration = 120
 
 const MAX_PARTNER_REF = 128
 // FF-105: Strike friends who joined via /join are capped at 2 objectives. This session
@@ -188,9 +193,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Could not create the objective. Try again.' }, { status: 500 })
   }
 
+  // FF-105B Fix 1: the Strike session path's pin becomes the objective's first spot, resolved
+  // exactly as a hand-added spot would be. Best-effort — a failure here still lets the
+  // objective succeed; the user can add the spot by hand. Partner objectives are untouched.
+  let primarySpotCreated = false
+  if (caller.partnerId === null && lat != null && lon != null) {
+    try {
+      await createSpot(supabase, {
+        objectiveId: created.objectiveId,
+        userId: caller.ownerUserId,
+        name: PRIMARY_SPOT_NAME,
+        lat,
+        lon,
+        makeActive: true,
+      })
+      primarySpotCreated = true
+    } catch (err) {
+      // No pin coordinates in the log.
+      console.error('[objectives/create] primary spot failed', err instanceof Error ? err.message : 'unknown')
+    }
+  }
+
   // Resolve full geography (FF-089) if lat/lon provided — non-blocking, best-effort.
   // waitUntil keeps the function alive after the response so the ~8s resolve completes.
-  if (lat != null && lon != null) {
+  // Skipped when the primary spot above already wrote the same columns synchronously.
+  if (lat != null && lon != null && !primarySpotCreated) {
     waitUntil(resolveFullGeography(lat, lon).then(async (geo) => {
       if (!geo) return
       const { error } = await supabase
@@ -199,6 +226,17 @@ export async function POST(request: NextRequest) {
         .eq('id', created.profileId)
       if (error) console.error('[objectives/create] geography update failed:', error.message)
     }).catch(e => console.error('[objectives/create] geography update failed:', e)))
+  }
+
+  // FF-105B Fix 2: run this Strike objective's own assigned agents once, after the response is
+  // sent, so Intel and Signals have first readings before the next 6-hourly swarm. Never for
+  // partner/MIP objectives, and never the sweep or a brief.
+  if (caller.partnerId === null) {
+    waitUntil(
+      runAgentsForObjective(supabase, created.objectiveId).catch(e =>
+        console.error('[objectives/create] first collection run failed:', e)
+      )
+    )
   }
 
   return NextResponse.json(

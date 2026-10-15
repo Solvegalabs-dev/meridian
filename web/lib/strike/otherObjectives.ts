@@ -82,7 +82,7 @@ export function buildOtherObjectives(input: {
     const ended = resolveEndedNotice({ evaluation, profileStatus: p.status, endedReason: p.ended_reason })
     const chip: WindowChip | null = ended
       ? { label: endedNoticeLabel(ended), tone: 'ended' }
-      : windowStatusChip(evaluation)
+      : windowStatusChip(evaluation, isFishingObjective(p))
 
     const brief = input.briefs.get(key) ?? null
     const verdict = !ended && brief?.go_no_go && !isClosedBrief(brief) ? brief.go_no_go : null

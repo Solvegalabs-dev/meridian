@@ -52,16 +52,19 @@ describe('default tab', () => {
 })
 
 describe('window status chip', () => {
-  it('shows Active, Opens {date}, and the ended states', () => {
-    expect(windowStatusChip(ev('active'))?.label).toBe('Active')
-    expect(windowStatusChip(ev('upcoming', { code: 'X', trip_start: '2026-10-15' }))?.label).toBe('Opens Oct 15')
-    expect(windowStatusChip(ev('season_not_open', { code: 'X', season_start: '2026-08-01' }))?.label).toBe('Opens Aug 1')
-    expect(windowStatusChip(ev('season_closed'))?.label).toBe('Season closed')
-    expect(windowStatusChip(ev('trip_ended'))?.label).toBe('Trip ended')
+  it('shows Active, trip starts {date} for hunting, and the ended states', () => {
+    expect(windowStatusChip(ev('active'), false)?.label).toBe('Active')
+    expect(windowStatusChip(ev('upcoming', { code: 'X', trip_start: '2026-10-15' }), false)?.label).toBe('Hunt trip starts Oct 15')
+    expect(windowStatusChip(ev('season_not_open', { code: 'X', season_start: '2026-08-01' }), false)?.label).toBe('Opens Aug 1')
+    expect(windowStatusChip(ev('season_closed'), false)?.label).toBe('Season closed')
+    expect(windowStatusChip(ev('trip_ended'), false)?.label).toBe('Trip ended')
+  })
+  it('says "Fishing trip starts {date}" for a fishing objective', () => {
+    expect(windowStatusChip(ev('upcoming', { code: 'X', trip_start: '2026-10-15' }), true)?.label).toBe('Fishing trip starts Oct 15')
   })
   it('shows nothing without dates or evaluation', () => {
-    expect(windowStatusChip(ev('no_dates'))).toBeNull()
-    expect(windowStatusChip(null)).toBeNull()
+    expect(windowStatusChip(ev('no_dates'), false)).toBeNull()
+    expect(windowStatusChip(null, false)).toBeNull()
   })
 })
 

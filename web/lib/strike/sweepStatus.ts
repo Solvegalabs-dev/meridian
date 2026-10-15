@@ -9,7 +9,10 @@ const RATE_LIMIT_MS = 23 * 60 * 60 * 1000
 const RATE_LIMITED_TYPES = new Set(['alpha_personal', 'alpha_business', 'beta', 'personal'])
 const DAY_MS = 24 * 60 * 60 * 1000
 
-export const NO_DATA_PROMPT = 'No intel yet. Tap Run Sweep to get intel for this objective.'
+// FF-105B Fix 3: Run Sweep does not collect readings and is locked for 24h after use, so the
+// old "Tap Run Sweep to get intel" text sent the user to a button that could not help.
+export const NO_DATA_PROMPT =
+  'Readings for this objective are still being collected. This usually takes a few minutes for a new objective, or up to six hours. Check back soon, then tap Run Sweep to build your brief.'
 export const SWEEP_SCOPE_LINE = 'Checks all your active objectives'
 
 export function stalePrompt(days: number): string {

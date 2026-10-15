@@ -61,8 +61,16 @@ describe('buildOtherObjectives', () => {
     const by = (id: string) => out.find(o => o.id === id)!
 
     expect(by('a')).toMatchObject({ group: 'active', chip: { label: 'Active', tone: 'live' } })
-    expect(by('u')).toMatchObject({ group: 'upcoming', chip: { label: 'Opens Nov 10', tone: 'pending' } })
+    expect(by('u')).toMatchObject({ group: 'upcoming', chip: { label: 'Fishing trip starts Nov 10', tone: 'pending' } })
     expect(by('e')).toMatchObject({ group: 'ended', chip: { label: 'Trip ended on Sep 15', tone: 'ended' } })
+  })
+
+  it('says "Hunt trip starts" for an upcoming hunting objective, not "Fishing"', () => {
+    const upcoming = profile('hu', {
+      taxonomy_key: 'elk.cow.archery', domain: 'elk', timing: { trip_start: '2026-11-10', trip_end: '2026-11-20' },
+    })
+    const out = build([upcoming])
+    expect(out[0]).toMatchObject({ chip: { label: 'Hunt trip starts Nov 10', tone: 'pending' } })
   })
 
   it('sorts active first, then upcoming, then ended last, newest first inside each group', () => {
