@@ -7,7 +7,7 @@ import { resetRateLimitsForTests } from '@/lib/auth/rateLimit'
 import { POST } from './route'
 
 let db: FakeDb
-let sessionUser: { id: string; email?: string } | null = null
+let sessionUser: { id: string; email?: string; app_metadata?: Record<string, unknown> } | null = null
 
 vi.mock('@/lib/supabase/server', () => ({
   createServiceClient: () => db,
@@ -238,6 +238,45 @@ describe('POST /api/objectives/create: partner door', () => {
     const res = await POST(req(BODY, `Bearer ${PARTNER_KEY}`))
     expect(res.status).toBe(500)
     expect(db.tables.objectives).toHaveLength(0)
+  })
+})
+
+describe('POST /api/objectives/create: Strike-friend objective limit (FF-105)', () => {
+  const STRIKE_FRIEND = { id: 'user-friend', email: 'invited@example.com', app_metadata: { signup_source: 'strike' } }
+
+  it('a Strike friend can create a 1st and 2nd objective', async () => {
+    sessionUser = STRIKE_FRIEND
+    expect((await POST(req(BODY))).status).toBe(201)
+    expect((await POST(req(BODY))).status).toBe(201)
+    expect(db.tables.objectives).toHaveLength(2)
+  })
+
+  it('a Strike friend is refused a 3rd objective', async () => {
+    sessionUser = STRIKE_FRIEND
+    await POST(req(BODY))
+    await POST(req(BODY))
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('objective_limit_reached')
+    expect(db.tables.objectives).toHaveLength(2)
+  })
+
+  it('a closed objective does not count against the limit', async () => {
+    sessionUser = STRIKE_FRIEND
+    await POST(req(BODY))
+    await POST(req(BODY))
+    db.tables.objectives[0].status = 'closed'
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(201)
+    expect(db.tables.objectives).toHaveLength(3)
+  })
+
+  it('an invited user without the strike signup_source marker is not limited to 2', async () => {
+    sessionUser = INVITED // no app_metadata.signup_source
+    await POST(req(BODY))
+    await POST(req(BODY))
+    const res = await POST(req(BODY))
+    expect(res.status).toBe(201)
   })
 })
 

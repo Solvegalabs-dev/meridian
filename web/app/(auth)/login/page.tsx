@@ -27,7 +27,7 @@ export default function LoginPage() {
     setLoading(true)
     setError(null)
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
 
     if (error) {
       setError(error.message)
@@ -35,7 +35,8 @@ export default function LoginPage() {
       return
     }
 
-    router.push('/dashboard')
+    const isStrikeFriend = data.user?.app_metadata?.signup_source === 'strike'
+    router.push(isStrikeFriend ? '/strike' : '/dashboard')
     router.refresh()
   }
 

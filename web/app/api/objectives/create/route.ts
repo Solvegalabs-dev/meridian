@@ -24,6 +24,10 @@ import { createLinkedObjective, LinkedObjectiveError } from '@/lib/objectives/li
 export const dynamic = 'force-dynamic'
 
 const MAX_PARTNER_REF = 128
+// FF-105: Strike friends who joined via /join are capped at 2 objectives. This session
+// door has no tier/limit check at all otherwise, and Arc's getMaxObjectives (trial: 3)
+// is not wired into this path — so this is a small, Strike-friend-only check, not a tier change.
+const STRIKE_FRIEND_MAX_OBJECTIVES = 2
 
 type CreateObjectiveBody = {
   domain: string
@@ -76,10 +80,24 @@ async function resolveCaller(request: NextRequest, body: CreateObjectiveBody): P
   const { data: { user } } = await createClient().auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const service = createServiceClient()
+
   // FF-092 Part 2.3: the session door is invite-only. Partner keys never reach this branch.
-  if (!(await isUserInvited(createServiceClient(), user))) {
+  if (!(await isUserInvited(service, user))) {
     return NextResponse.json({ error: INVITE_ONLY_MESSAGE }, { status: 403 })
   }
+
+  if (user.app_metadata?.signup_source === 'strike') {
+    const { data: existing } = await service.from('objectives').select('status').eq('user_id', user.id)
+    const activeCount = (existing ?? []).filter(o => o.status === 'active').length
+    if (activeCount >= STRIKE_FRIEND_MAX_OBJECTIVES) {
+      return NextResponse.json(
+        { error: 'objective_limit_reached', max: STRIKE_FRIEND_MAX_OBJECTIVES },
+        { status: 403 },
+      )
+    }
+  }
+
   return { ownerUserId: user.id, orgSource: 'strike', partnerId: null, partnerRef: null }
 }
 

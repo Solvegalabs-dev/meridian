@@ -38,6 +38,8 @@ export async function middleware(request: NextRequest) {
     pathname === '/' ||
     pathname.startsWith('/home') ||
     pathname.startsWith('/alpha') ||
+    pathname.startsWith('/join') ||
+    pathname.startsWith('/api/strike/join') ||
     pathname.startsWith('/login') ||
     pathname.startsWith('/auth') ||
     pathname.startsWith('/api/auth') ||
